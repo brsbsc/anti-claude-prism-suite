@@ -42,6 +42,7 @@
     mascotMinCount: MASCOT_MIN_COUNT_DEFAULT, // 1..3 floor count in 'agents' mode
     mascotStyle: 'trio',       // 'trio' | 'crab' | 'cat' (used in fixed mode)
     mascotRoam: true,          // Random run & leap along composer top while busy
+    mascotVibe: 'lively',      // 'calm' | 'lively' (personality intensity)
     mascotSize: MASCOT_SIZE_DEFAULT, // 16..36 px (step 2)
     thoughtMode: 'bilingual'   // 'off' | 'bilingual' | 'immersive'
   };
@@ -55,6 +56,7 @@
         merged.mascotRoam = merged.mascotRoam !== false;
         merged.mascotCountMode = merged.mascotCountMode === 'agents' ? 'agents' : 'fixed';
         merged.mascotMinCount = clampMascotMinCount(merged.mascotMinCount);
+        merged.mascotVibe = merged.mascotVibe === 'calm' ? 'calm' : 'lively';
         return merged;
       }
     } catch {}
@@ -661,6 +663,8 @@
   }
 
   function pushInkRange(textNode, fromIdx, toIdx) {
+    if (mascotWaitingDoze) wakeMascotFromWait();
+    else if (!mascotFirstTokenSeen) mascotFirstTokenSeen = true;
     if (!SUPPORTS_HIGHLIGHTS || !prefs.inkStream || REDUCED_MOTION || !textNode || textNode.nodeType !== 3) return;
     if (toIdx <= fromIdx || toIdx > textNode.length) return;
     try {
@@ -880,15 +884,117 @@
   }
 
   const CHEER_LINES = ['代码一遍过 ✨', '缓存命中稳稳的', '摸摸头，继续冲！', '0fps 节能待机中', '今天效率拉满 🚀'];
+  const COMBO_LINES = [
+    '别戳啦！正在帮你狂省 Token ✨',
+    '连击 ×5！送你 99% 缓存好运 🍀',
+    '头晕啦～再戳我就去写 Bug 啦 🌀',
+    '摸头暴击！灵感 +999 🚀'
+  ];
   let wasMascotBusy = false;
   let mascotCheerUntil = 0;
   let mascotIdleSince = Date.now();
   let mascotBubbleTimer = 0;
   let mascotRoamingActive = false;
-  let mascotActors = []; // [{ key, label, busy, el, x, facing, moveTimer, settleTimer, clickTimer, roaming }]
+  let mascotActors = []; // [{ key, label, busy, el, emoteEl, emoteText, emoteTempUntil, tapTimes, x, facing, moveTimer, settleTimer, clickTimer, roaming }]
   let lastTrackWidth = 0;
   let lastRosterSig = '';
   let mascotSnapRaf = 0;
+  let mascotBusyStartedAt = 0;
+  let mascotBusyStartLen = 0;
+  let mascotFirstTokenSeen = true;
+  let mascotWaitingDoze = false;
+  let lastHighFiveAt = 0;
+
+  function setActorEmote(actor, text, isSleepZ = false, tempMs = 0) {
+    if (!actor || !actor.emoteEl) return;
+    const now = Date.now();
+    if (tempMs > 0) {
+      actor.emoteTempUntil = now + tempMs;
+      if (actor.emoteTimer) clearTimeout(actor.emoteTimer);
+      actor.emoteTimer = setTimeout(() => {
+        actor.emoteTimer = 0;
+        actor.emoteTempUntil = 0;
+        if (!disposed && actor.emoteEl?.isConnected) {
+          actor.emoteText = '';
+          actor.emoteEl.textContent = '';
+          actor.emoteEl.removeAttribute('data-show');
+          actor.emoteEl.removeAttribute('data-sleep-z');
+        }
+      }, tempMs);
+    } else if (actor.emoteTempUntil > now) {
+      return; // Let transient high-five / combo emote finish
+    }
+    const want = String(text || '');
+    if (actor.emoteText !== want) {
+      actor.emoteText = want;
+      actor.emoteEl.textContent = want;
+    }
+    if (want) {
+      actor.emoteEl.setAttribute('data-show', '1');
+      if (isSleepZ) actor.emoteEl.setAttribute('data-sleep-z', '1');
+      else actor.emoteEl.removeAttribute('data-sleep-z');
+    } else {
+      actor.emoteEl.removeAttribute('data-show');
+      actor.emoteEl.removeAttribute('data-sleep-z');
+    }
+  }
+
+  function sampleLatestResponseLen() {
+    const vp = document.querySelector('[data-testid="autoscroll-viewport"]');
+    if (!vp) return 0;
+    const resps = vp.querySelectorAll('[data-testid="planner-response-text"], [data-testid="agent-response"]');
+    if (resps.length) {
+      const last = resps[resps.length - 1];
+      return (last && last.textContent ? last.textContent.length : 0);
+    }
+    return 0;
+  }
+
+  function detectLeadStatusEmote(mainBusy) {
+    // 1. High context pressure or cache collapse warning (O(1) memory check)
+    const stats = window.__ag_last_metrics && window.__ag_last_metrics.stats;
+    const curId = getCurrentCascadeIdFromUrl();
+    if (stats && (!curId || !window.__ag_last_metrics.cascadeId || window.__ag_last_metrics.cascadeId === curId)) {
+      if (stats.cacheCollapsed || (Number(stats.pct) || 0) >= 85) {
+        return { icon: '💦', tip: '上下文偏高或缓存波动，可考虑 /compact' };
+      }
+    }
+    if (!mainBusy) return { icon: '', tip: '' };
+    if (mascotWaitingDoze) return { icon: '…', tip: '等待模型首字输出中' };
+    // 2. Lightweight stage hint: tool call vs deep thinking
+    if (document.querySelector('.animate-shimmer-text')) {
+      return { icon: '🔧', tip: '工具执行中' };
+    }
+    const triggers = document.querySelectorAll('[data-testid="thinking-collapsible-trigger"]');
+    if (triggers.length) {
+      const lastTxt = (triggers[triggers.length - 1].textContent || '').trim();
+      if (lastTxt && !/\d+\s*s\b|\d+\s*秒|已思考|Thought\s+for/i.test(lastTxt)) {
+        return { icon: '💡', tip: '深度思考中' };
+      }
+    }
+    return { icon: '', tip: '' };
+  }
+
+  function wakeMascotFromWait() {
+    if (!mascotWaitingDoze) return;
+    mascotFirstTokenSeen = true;
+    mascotWaitingDoze = false;
+    const dock = document.getElementById('ag-ps-mascot-dock');
+    if (!dock || !mascotActors.length) return;
+    mascotActors.forEach((a) => {
+      if (a.el && a.el.getAttribute('data-act') === 'doze') {
+        a.el.removeAttribute('data-act');
+        const ms = triggerActorTrick(a, 'leap');
+        if (a.clickTimer) clearTimeout(a.clickTimer);
+        a.clickTimer = setTimeout(() => {
+          a.clickTimer = 0;
+          if (a.el?.getAttribute('data-act') === 'leap') a.el.removeAttribute('data-act');
+        }, ms);
+      }
+    });
+    showMascotBubble('出字啦！冲冲冲 ⚡', 1700);
+    syncMascotRoaming(dock);
+  }
 
   function cancelSnapRaf() {
     if (mascotSnapRaf) {
@@ -948,6 +1054,7 @@
     if (actor.moveTimer) { clearTimeout(actor.moveTimer); actor.moveTimer = 0; }
     if (actor.settleTimer) { clearTimeout(actor.settleTimer); actor.settleTimer = 0; }
     if (actor.clickTimer) { clearTimeout(actor.clickTimer); actor.clickTimer = 0; }
+    if (actor.emoteTimer) { clearTimeout(actor.emoteTimer); actor.emoteTimer = 0; }
   }
 
   function getMascotRunwayBounds(dock) {
@@ -1036,34 +1143,84 @@
   function triggerActorTrick(actor, preferredAct) {
     if (!actor || !actor.el) return 0;
     const facingRight = actor.facing >= 0;
+    const isCalm = prefs.mascotVibe === 'calm';
     let act = preferredAct;
     if (!act) {
       const r = Math.random();
-      if (r < 0.34) act = facingRight ? 'flip-r' : 'flip-l';
-      else if (r < 0.58) act = 'leap';
-      else if (r < 0.80) act = 'double-hop';
-      else act = 'wiggle';
+      if (isCalm) {
+        act = r < 0.55 ? 'leap' : 'wiggle';
+      } else if (r < 0.34) {
+        act = facingRight ? 'flip-r' : 'flip-l';
+      } else if (r < 0.58) {
+        act = 'leap';
+      } else if (r < 0.80) {
+        act = 'double-hop';
+      } else {
+        act = 'wiggle';
+      }
     }
-    const durMap = { 'flip-r': 740, 'flip-l': 740, 'double-hop': 760, wiggle: 680, leap: 640 };
+    const durMap = {
+      'combo-flip': 1340,
+      'flip-r': 740,
+      'flip-l': 740,
+      'double-hop': 760,
+      wiggle: 680,
+      leap: 640
+    };
     const ms = durMap[act] || 660;
-    // Restart animation cleanly if same act was triggered consecutively
     actor.el.removeAttribute('data-act');
     void actor.el.offsetWidth;
     actor.el.setAttribute('data-act', act);
     return ms;
   }
 
+  function tryBuddyHighFive(actor, idx) {
+    if (!actor || prefs.mascotVibe === 'calm' || mascotActors.length < 2) return false;
+    const now = Date.now();
+    if (now - lastHighFiveAt < 6000) return false;
+    const { w } = getMascotDims();
+    const neighbor = mascotActors.find((other, oi) => {
+      if (oi === idx || !other.el?.isConnected) return false;
+      const act = other.el.getAttribute('data-act') || '';
+      if (act === 'run' || act === 'roll-r' || act === 'roll-l' || act === 'combo-flip') return false;
+      return Math.abs(other.x - actor.x) <= w + 20;
+    });
+    if (!neighbor || Math.random() > 0.48) return false;
+    lastHighFiveAt = now;
+    // Turn toward each other and share a quick high-five hop
+    const actorFacesRight = neighbor.x >= actor.x ? 1 : -1;
+    applyActorTransform(actor, actor.x, actorFacesRight, 0.15);
+    applyActorTransform(neighbor, neighbor.x, -actorFacesRight, 0.15);
+    const msA = triggerActorTrick(actor, 'leap');
+    const msB = triggerActorTrick(neighbor, 'leap');
+    const icon = Math.random() < 0.55 ? '🤝' : '⚡';
+    setActorEmote(actor, icon, false, 900);
+    setActorEmote(neighbor, icon, false, 900);
+    if (neighbor.clickTimer) clearTimeout(neighbor.clickTimer);
+    neighbor.clickTimer = setTimeout(() => {
+      neighbor.clickTimer = 0;
+      if (neighbor.el?.getAttribute('data-act') === 'leap') neighbor.el.removeAttribute('data-act');
+    }, msB);
+    actor.settleTimer = setTimeout(() => {
+      actor.settleTimer = 0;
+      if (actor.el?.getAttribute('data-act') === 'leap') actor.el.removeAttribute('data-act');
+      scheduleActorRoamStep(idx);
+    }, msA);
+    return true;
+  }
+
   function scheduleActorRoamStep(idx, initialDelayMs) {
     const actor = mascotActors[idx];
-    if (!actor || !actor.roaming || !mascotRoamingActive || disposed || document.hidden) return;
+    if (!actor || !actor.roaming || !mascotRoamingActive || disposed || document.hidden || mascotWaitingDoze) return;
     clearActorTimers(actor);
+    const isCalm = prefs.mascotVibe === 'calm';
     const delay = typeof initialDelayMs === 'number'
       ? initialDelayMs
-      : 850 + Math.floor(Math.random() * 1850);
+      : (isCalm ? 1500 : 850) + Math.floor(Math.random() * (isCalm ? 2400 : 1850));
 
     actor.moveTimer = setTimeout(() => {
       actor.moveTimer = 0;
-      if (!actor.roaming || !mascotRoamingActive || disposed || document.hidden) return;
+      if (!actor.roaming || !mascotRoamingActive || disposed || document.hidden || mascotWaitingDoze) return;
       const dock = document.getElementById('ag-ps-mascot-dock');
       if (!dock || !actor.el?.isConnected) return;
       const trackW = dock.clientWidth || 0;
@@ -1078,7 +1235,7 @@
       const span = maxX - minX;
 
       const roll = Math.random();
-      if (span >= w * 2 && roll < 0.58) {
+      if (span >= w * 2 && roll < (isCalm ? 0.52 : 0.58)) {
         let targetX = actor.x;
         const minStep = Math.min(48, span * 0.25);
         for (let attempt = 0; attempt < 6; attempt++) {
@@ -1090,20 +1247,20 @@
         }
         const dist = Math.abs(targetX - actor.x);
         if (dist >= 10) {
-          const speedScale = syncMascotSpeedVars(dock);
-          const doRollDash = dist >= 65 && Math.random() < (speedScale >= 1.35 ? 0.42 : 0.26);
+          const speedScale = syncMascotSpeedVars(dock) * (isCalm ? 0.72 : 1);
+          const doRollDash = !isCalm && dist >= 65 && Math.random() < (speedScale >= 1.35 ? 0.42 : 0.26);
           const baseSpeed = doRollDash ? 115 + Math.random() * 45 : 88 + Math.random() * 48;
           const speed = baseSpeed * speedScale;
-          const dur = Math.max(0.32, Math.min(2.4, dist / speed));
+          const dur = Math.max(0.34, Math.min(2.6, dist / speed));
           const dir = targetX < actor.x ? -1 : 1;
           actor.el.setAttribute('data-act', doRollDash ? (dir > 0 ? 'roll-r' : 'roll-l') : 'run');
           applyActorTransform(actor, targetX, dir, dur);
           actor.settleTimer = setTimeout(() => {
             actor.settleTimer = 0;
-            if (!actor.roaming || !mascotRoamingActive || disposed || !actor.el?.isConnected) return;
+            if (!actor.roaming || !mascotRoamingActive || disposed || !actor.el?.isConnected || mascotWaitingDoze) return;
+            if (tryBuddyHighFive(actor, idx)) return;
             const landRoll = Math.random();
-            if (landRoll < 0.42) {
-              // Playful arrival trick (somersault / leap / wiggle / double-hop)
+            if (landRoll < (isCalm ? 0.22 : 0.42)) {
               const trickMs = triggerActorTrick(actor);
               actor.settleTimer = setTimeout(() => {
                 actor.settleTimer = 0;
@@ -1119,8 +1276,7 @@
         }
       }
 
-      if (roll < 0.90) {
-        // In-place diverse trick: somersault flip, high leap, double-hop, or happy wiggle
+      if (roll < (isCalm ? 0.78 : 0.90)) {
         const trickMs = triggerActorTrick(actor);
         actor.settleTimer = setTimeout(() => {
           actor.settleTimer = 0;
@@ -1128,11 +1284,10 @@
           scheduleActorRoamStep(idx);
         }, trickMs);
       } else {
-        // Curious look-around patrol (glance both ways)
         applyActorTransform(actor, actor.x, actor.facing * -1, 0.2);
         actor.settleTimer = setTimeout(() => {
           actor.settleTimer = 0;
-          if (!actor.roaming || !mascotRoamingActive || disposed) return;
+          if (!actor.roaming || !mascotRoamingActive || disposed || mascotWaitingDoze) return;
           applyActorTransform(actor, actor.x, actor.facing * -1, 0.2);
           scheduleActorRoamStep(idx, 900 + Math.floor(Math.random() * 1300));
         }, 520);
@@ -1141,8 +1296,8 @@
   }
 
   function syncMascotRoaming(dock) {
-    if (!dock || !prefs.mascotRoam || REDUCED_MOTION || document.hidden || (dock.clientWidth || 0) < 480) {
-      if (mascotRoamingActive) stopMascotRoaming(true);
+    if (!dock || !prefs.mascotRoam || REDUCED_MOTION || document.hidden || mascotWaitingDoze || (dock.clientWidth || 0) < 480) {
+      if (mascotRoamingActive) stopMascotRoaming(!mascotWaitingDoze);
       return;
     }
     const anyBusy = mascotActors.some((a) => a.busy);
@@ -1224,25 +1379,38 @@
         e.stopPropagation();
         const idx = Number(actorEl.getAttribute('data-actor-idx'));
         const actor = mascotActors[idx];
-        mascotCheerUntil = Date.now() + 2000;
+        const now = Date.now();
+        mascotCheerUntil = now + 2000;
+        let isCombo = false;
         if (actor) {
+          actor.tapTimes = (actor.tapTimes || []).filter((t) => now - t <= 2000);
+          actor.tapTimes.push(now);
+          isCombo = actor.tapTimes.length >= 5;
+          if (isCombo) actor.tapTimes = [];
+
           const curAct = actorEl.getAttribute('data-act') || '';
           const isMoving = curAct === 'run' || curAct === 'roll-r' || curAct === 'roll-l';
-          if (!isMoving) {
-            const trickMs = triggerActorTrick(actor);
+          if (isCombo || !isMoving) {
+            if (isCombo) clearActorTimers(actor);
+            const trickMs = triggerActorTrick(actor, isCombo ? 'combo-flip' : undefined);
+            if (isCombo) setActorEmote(actor, '✨', false, 1500);
             if (actor.clickTimer) clearTimeout(actor.clickTimer);
             const appliedAct = actorEl.getAttribute('data-act');
             actor.clickTimer = setTimeout(() => {
               actor.clickTimer = 0;
               if (actorEl.getAttribute('data-act') === appliedAct) actorEl.removeAttribute('data-act');
+              if (isCombo && actor.roaming && mascotRoamingActive && !disposed) {
+                scheduleActorRoamStep(idx, 500);
+              }
             }, trickMs);
           }
         } else {
           dock.setAttribute('data-mood', 'cheer');
         }
-        const line = CHEER_LINES[Math.floor(Math.random() * CHEER_LINES.length)];
-        const msg = prefs.mascotCountMode === 'agents' && actor?.label ? `${actor.label}：${line}` : line;
-        showMascotBubble(msg, 2200);
+        const pool = isCombo ? COMBO_LINES : CHEER_LINES;
+        const line = pool[Math.floor(Math.random() * pool.length)];
+        const msg = !isCombo && prefs.mascotCountMode === 'agents' && actor?.label ? `${actor.label}：${line}` : line;
+        showMascotBubble(msg, isCombo ? 2800 : 2200);
       });
       box.appendChild(dock);
       rebuilt = true;
@@ -1254,7 +1422,7 @@
       const actorsHtml = roster
         .map(
           (item, idx) =>
-            `<span class="ag-ps-actor" data-actor-idx="${idx}" data-busy="${item.busy ? '1' : '0'}" style="--ag-ps-idx:${idx}" title="${escapeHtml(item.label)}（${item.busy ? '运行中' : '待命 · 0fps'}）"><span class="ag-ps-actor-body">${item.svg}</span></span>`
+            `<span class="ag-ps-actor" data-actor-idx="${idx}" data-busy="${item.busy ? '1' : '0'}" style="--ag-ps-idx:${idx}" title="${escapeHtml(item.label)}（${item.busy ? '运行中' : '待命 · 0fps'}）"><span class="ag-ps-emote" aria-hidden="true"></span><span class="ag-ps-actor-body">${item.svg}</span></span>`
         )
         .join('');
       const badgeHtml = overflow > 0 ? `<span class="ag-ps-more-badge" title="还有 ${overflow} 个活跃 Agent">+${overflow}</span>` : '';
@@ -1264,6 +1432,11 @@
         label: roster[idx].label,
         busy: roster[idx].busy,
         el,
+        emoteEl: el.querySelector('.ag-ps-emote'),
+        emoteText: '',
+        emoteTempUntil: 0,
+        emoteTimer: 0,
+        tapTimes: [],
         x: 0,
         facing: 1,
         moveTimer: 0,
@@ -1274,7 +1447,6 @@
       applyMascotSizeVars(dock, false);
       parkActorsHome(dock, true, false);
     } else {
-      // Update per-actor live busy status & hover title without rebuilding DOM
       mascotActors.forEach((actor, idx) => {
         const item = roster[idx];
         if (!item) return;
@@ -1287,13 +1459,33 @@
       });
       applyMascotSizeVars(dock, false);
     }
+    dock.setAttribute('data-vibe', prefs.mascotVibe === 'calm' ? 'calm' : 'lively');
     syncMascotCompactGuard();
 
     const anyBusy = mascotActors.some((a) => a.busy);
     const now = Date.now();
     if (anyBusy) {
       mascotIdleSince = now;
-      if (!wasMascotBusy) showMascotBubble(prefs.mascotRoam ? '开工啦！出发巡逻 ⚡' : '思考中… ⚡', 1800);
+      if (!wasMascotBusy) {
+        mascotBusyStartedAt = now;
+        mascotBusyStartLen = sampleLatestResponseLen();
+        mascotFirstTokenSeen = false;
+        mascotWaitingDoze = false;
+        showMascotBubble(prefs.mascotRoam ? '开工啦！出发巡逻 ⚡' : '思考中… ⚡', 1800);
+      } else if (!mascotFirstTokenSeen) {
+        const curLen = sampleLatestResponseLen();
+        if (Math.abs(curLen - mascotBusyStartLen) > 12) {
+          if (mascotWaitingDoze) wakeMascotFromWait();
+          else mascotFirstTokenSeen = true;
+        } else if (now - mascotBusyStartedAt >= 8000 && !mascotWaitingDoze) {
+          // High TTFT waiting (>8s without first token): gently doze until first token arrives
+          mascotWaitingDoze = true;
+          stopMascotRoaming(false);
+          mascotActors.forEach((a) => {
+            if (a.busy && a.el) a.el.setAttribute('data-act', 'doze');
+          });
+        }
+      }
       dock.setAttribute('data-mood', 'busy');
       mascotActors.forEach((a) => {
         if (a.el) {
@@ -1302,12 +1494,17 @@
         }
       });
       syncMascotSpeedVars(dock);
-      syncMascotRoaming(dock);
+      if (!mascotWaitingDoze) syncMascotRoaming(dock);
     } else {
+      mascotFirstTokenSeen = true;
+      mascotWaitingDoze = false;
       if (mascotRoamingActive) {
         stopMascotRoaming(true);
       }
-      mascotActors.forEach((a) => a.el?.removeAttribute('data-sleep'));
+      mascotActors.forEach((a) => {
+        a.el?.removeAttribute('data-sleep');
+        if (a.el?.getAttribute('data-act') === 'doze') a.el.removeAttribute('data-act');
+      });
       if (wasMascotBusy) {
         mascotCheerUntil = now + 1900 + mascotActors.length * 110;
         showMascotBubble('完成啦 ✨', 2400);
@@ -1318,6 +1515,24 @@
         dock.setAttribute('data-mood', 'sleep');
       } else {
         dock.setAttribute('data-mood', 'calm');
+      }
+    }
+
+    // Update lightweight status micro-emote on lead actor (O(1), no extra timers)
+    const lead = mascotActors[0];
+    if (lead) {
+      const moodNow = dock.getAttribute('data-mood');
+      const status = detectLeadStatusEmote(Boolean(busy));
+      if (status.icon) {
+        setActorEmote(lead, status.icon, false);
+        if (status.tip && lead.el) lead.el.title = `${lead.label}（${status.tip}）`;
+      } else if (moodNow === 'sleep') {
+        setActorEmote(lead, 'zZ', true);
+      } else {
+        setActorEmote(lead, '', false);
+      }
+      for (let i = 1; i < mascotActors.length; i++) {
+        setActorEmote(mascotActors[i], '', false);
       }
     }
     wasMascotBusy = anyBusy;
@@ -1513,7 +1728,7 @@
         <button type="button" class="ag-ps-pal-btn" data-set-dark="basalt" data-selected="${prefs.darkPalette === 'basalt' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:#141312"></span>暖炭玄岩</button>
       </div>
 
-      <div class="ag-ps-sec-lbl"><span>增强功能开关</span><span class="ag-ps-sec-tag">v0.2.2</span></div>
+      <div class="ag-ps-sec-lbl"><span>增强功能开关</span><span class="ag-ps-sec-tag">v0.2.3</span></div>
       <div class="ag-ps-toggle-list">
         <div class="ag-ps-toggle-row">
           <div class="ag-ps-toggle-label"><span>会话大纲 &amp; 跳轮</span><span class="ag-ps-toggle-sub">Alt+↑/↓ 跳轮 · Alt+O 大纲</span></div>
@@ -1562,6 +1777,13 @@
               <div class="ag-ps-toggle-row">
                 <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">工作态漫游跑跳（闲时自动归位）</span></div>
                 <button type="button" class="ag-ps-switch" data-toggle="mascotRoam" data-on="${prefs.mascotRoam ? '1' : '0'}"></button>
+              </div>
+              <div class="ag-ps-toggle-row">
+                <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">伙伴性格</span></div>
+                <div class="ag-ps-seg-group">
+                  <button type="button" class="ag-ps-seg-btn" data-mascot-vibe="calm" data-selected="${prefs.mascotVibe === 'calm' ? '1' : '0'}">温顺</button>
+                  <button type="button" class="ag-ps-seg-btn" data-mascot-vibe="lively" data-selected="${prefs.mascotVibe !== 'calm' ? '1' : '0'}">活泼</button>
+                </div>
               </div>
               <div class="ag-ps-toggle-row">
                 <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">伙伴大小</span></div>
@@ -1663,6 +1885,14 @@
       const mmc = e.target.closest('[data-mascot-min-count]');
       if (mmc) {
         prefs.mascotMinCount = clampMascotMinCount(mmc.getAttribute('data-mascot-min-count'));
+        savePrefs();
+        syncMascotDock(isAgentGenerating());
+        renderPopoverContent(pop);
+        return;
+      }
+      const mv = e.target.closest('[data-mascot-vibe]');
+      if (mv) {
+        prefs.mascotVibe = mv.getAttribute('data-mascot-vibe') === 'calm' ? 'calm' : 'lively';
         savePrefs();
         syncMascotDock(isAgentGenerating());
         renderPopoverContent(pop);

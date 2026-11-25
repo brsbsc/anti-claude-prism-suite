@@ -35,6 +35,10 @@ test('extension JS syntax is valid and enforces zero-body-observer performance g
   assert.match(jsSrc, /syncMascotRoaming/);
   assert.match(jsSrc, /getMascotSpeedScale/);
   assert.match(jsSrc, /triggerActorTrick/);
+  assert.match(jsSrc, /tryBuddyHighFive/);
+  assert.match(jsSrc, /detectLeadStatusEmote/);
+  assert.match(jsSrc, /wakeMascotFromWait/);
+  assert.match(jsSrc, /mascotVibe/);
   assert.doesNotMatch(jsSrc, /streamObserver\.observe\(document\.body/, 'Must never permanently observe document.body');
   assert.match(cssSrc, /data-ag-ps-light="crystal"/);
   assert.match(cssSrc, /data-ag-ps-dark="obsidian"/);
@@ -44,6 +48,8 @@ test('extension JS syntax is valid and enforces zero-body-observer performance g
   assert.match(cssSrc, /agPsRollR/);
   assert.match(cssSrc, /agPsDoubleHop/);
   assert.match(cssSrc, /agPsWiggle/);
+  assert.match(cssSrc, /agPsComboFlip/);
+  assert.match(cssSrc, /agPsDoze/);
   assert.match(cssSrc, /--ag-ps-sprite-w/);
 });
 
