@@ -854,8 +854,8 @@
       // Guarantee user-selected floor count (1..3) so composer is never empty when no subagents are active
       const floorCount = clampMascotMinCount(prefs.mascotMinCount);
       const fillerSpecs = [
-        { key: 'floor:cat', label: '保底伙伴 · 紫猫', svg: SVG_CAT },
-        { key: 'floor:slime', label: '保底伙伴 · 蓝萌', svg: SVG_SLIME }
+        { key: 'floor:cat', label: '紫猫', svg: SVG_CAT },
+        { key: 'floor:slime', label: '蓝萌', svg: SVG_SLIME }
       ];
       let fi = 0;
       while (roster.length < floorCount && fi < fillerSpecs.length) {
@@ -1004,16 +1004,38 @@
   }
   onCleanup(cancelSnapRaf);
 
-  function showMascotBubble(text, ms = 2000) {
+  let mascotBubbleOwner = null;
+
+  function syncBubbleEdgeAlign(bubble, actor, dock) {
+    if (!bubble || !actor || !dock) return;
+    const trackW = dock.clientWidth || dock.parentElement?.getBoundingClientRect().width || 0;
+    if (trackW <= 0) return;
+    const { w } = getMascotDims();
+    const center = actor.x + w / 2;
+    if (center > trackW - 140) bubble.setAttribute('data-align', 'right');
+    else if (center < 140) bubble.setAttribute('data-align', 'left');
+    else bubble.removeAttribute('data-align');
+  }
+
+  function showMascotBubble(text, ms = 2000, actor = null) {
     const dock = document.getElementById('ag-ps-mascot-dock');
     const b = dock && dock.querySelector('.ag-ps-mascot-bubble');
     if (!b) return;
+    const target = actor && actor.el?.isConnected ? actor : mascotActors[0] || null;
+    if (target && target.el && b.parentElement !== target.el) {
+      target.el.appendChild(b);
+    }
+    mascotBubbleOwner = target;
+    syncBubbleEdgeAlign(b, target, dock);
     b.textContent = text;
     b.setAttribute('data-show', '1');
     clearTimeout(mascotBubbleTimer);
     mascotBubbleTimer = setTimeout(() => b.removeAttribute('data-show'), ms);
   }
-  onCleanup(() => clearTimeout(mascotBubbleTimer));
+  onCleanup(() => {
+    clearTimeout(mascotBubbleTimer);
+    mascotBubbleOwner = null;
+  });
 
   function getMascotDims() {
     const w = clampMascotSize(prefs.mascotSize);
@@ -1114,6 +1136,11 @@
     actor.el.style.setProperty('--ag-ps-flip', String(facing));
     if (typeof durSec === 'number') {
       actor.el.style.setProperty('--ag-ps-dur', `${durSec.toFixed(2)}s`);
+    }
+    if (mascotBubbleOwner === actor) {
+      const dock = actor.el.parentElement;
+      const b = actor.el.querySelector('.ag-ps-mascot-bubble');
+      if (b && b.getAttribute('data-show') === '1') syncBubbleEdgeAlign(b, actor, dock);
     }
   }
 
@@ -1410,7 +1437,7 @@
         const pool = isCombo ? COMBO_LINES : CHEER_LINES;
         const line = pool[Math.floor(Math.random() * pool.length)];
         const msg = !isCombo && prefs.mascotCountMode === 'agents' && actor?.label ? `${actor.label}：${line}` : line;
-        showMascotBubble(msg, isCombo ? 2800 : 2200);
+        showMascotBubble(msg, isCombo ? 2800 : 2200, actor);
       });
       box.appendChild(dock);
       rebuilt = true;
