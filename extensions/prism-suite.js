@@ -916,6 +916,33 @@
     return { w, h, gap };
   }
 
+  function getCurrentTokPerSec() {
+    const el = document.getElementById('ag-live-metrics-text');
+    const txt = (el && el.textContent) || (window.__ag_last_metrics && window.__ag_last_metrics.inlineHtml) || '';
+    const m = String(txt).match(/(\d+(?:\.\d+)?)\s*tok\/s/i);
+    if (!m) return 0;
+    const v = Number(m[1]);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  }
+
+  function getMascotSpeedScale() {
+    const tps = getCurrentTokPerSec();
+    if (tps <= 0) return 1;
+    // Map ~30 tok/s -> 0.78x (calm), ~80 tok/s -> 1.0x (brisk), 180+ tok/s -> 2.0x (turbo)
+    const raw = 0.62 + tps / 140;
+    return Math.max(0.75, Math.min(2.05, raw));
+  }
+
+  function syncMascotSpeedVars(dock) {
+    if (!dock) return 1;
+    const scale = getMascotSpeedScale();
+    const trot = Math.max(0.14, Math.min(0.36, 0.28 / scale));
+    const roll = Math.max(0.24, Math.min(0.60, 0.46 / scale));
+    dock.style.setProperty('--ag-ps-trot-dur', `${trot.toFixed(2)}s`);
+    dock.style.setProperty('--ag-ps-roll-dur', `${roll.toFixed(2)}s`);
+    return scale;
+  }
+
   function clearActorTimers(actor) {
     if (!actor) return;
     if (actor.moveTimer) { clearTimeout(actor.moveTimer); actor.moveTimer = 0; }
@@ -1006,13 +1033,33 @@
     }
   }
 
+  function triggerActorTrick(actor, preferredAct) {
+    if (!actor || !actor.el) return 0;
+    const facingRight = actor.facing >= 0;
+    let act = preferredAct;
+    if (!act) {
+      const r = Math.random();
+      if (r < 0.34) act = facingRight ? 'flip-r' : 'flip-l';
+      else if (r < 0.58) act = 'leap';
+      else if (r < 0.80) act = 'double-hop';
+      else act = 'wiggle';
+    }
+    const durMap = { 'flip-r': 740, 'flip-l': 740, 'double-hop': 760, wiggle: 680, leap: 640 };
+    const ms = durMap[act] || 660;
+    // Restart animation cleanly if same act was triggered consecutively
+    actor.el.removeAttribute('data-act');
+    void actor.el.offsetWidth;
+    actor.el.setAttribute('data-act', act);
+    return ms;
+  }
+
   function scheduleActorRoamStep(idx, initialDelayMs) {
     const actor = mascotActors[idx];
     if (!actor || !actor.roaming || !mascotRoamingActive || disposed || document.hidden) return;
     clearActorTimers(actor);
     const delay = typeof initialDelayMs === 'number'
       ? initialDelayMs
-      : 900 + Math.floor(Math.random() * 1900);
+      : 850 + Math.floor(Math.random() * 1850);
 
     actor.moveTimer = setTimeout(() => {
       actor.moveTimer = 0;
@@ -1031,7 +1078,7 @@
       const span = maxX - minX;
 
       const roll = Math.random();
-      if (span >= w * 2 && roll < 0.64) {
+      if (span >= w * 2 && roll < 0.58) {
         let targetX = actor.x;
         const minStep = Math.min(48, span * 0.25);
         for (let attempt = 0; attempt < 6; attempt++) {
@@ -1043,21 +1090,26 @@
         }
         const dist = Math.abs(targetX - actor.x);
         if (dist >= 10) {
-          const speed = 88 + Math.random() * 48;
-          const dur = Math.max(0.45, Math.min(2.4, dist / speed));
+          const speedScale = syncMascotSpeedVars(dock);
+          const doRollDash = dist >= 65 && Math.random() < (speedScale >= 1.35 ? 0.42 : 0.26);
+          const baseSpeed = doRollDash ? 115 + Math.random() * 45 : 88 + Math.random() * 48;
+          const speed = baseSpeed * speedScale;
+          const dur = Math.max(0.32, Math.min(2.4, dist / speed));
           const dir = targetX < actor.x ? -1 : 1;
-          actor.el.setAttribute('data-act', 'run');
+          actor.el.setAttribute('data-act', doRollDash ? (dir > 0 ? 'roll-r' : 'roll-l') : 'run');
           applyActorTransform(actor, targetX, dir, dur);
           actor.settleTimer = setTimeout(() => {
             actor.settleTimer = 0;
             if (!actor.roaming || !mascotRoamingActive || disposed || !actor.el?.isConnected) return;
-            if (Math.random() < 0.32) {
-              actor.el.setAttribute('data-act', 'leap');
+            const landRoll = Math.random();
+            if (landRoll < 0.42) {
+              // Playful arrival trick (somersault / leap / wiggle / double-hop)
+              const trickMs = triggerActorTrick(actor);
               actor.settleTimer = setTimeout(() => {
                 actor.settleTimer = 0;
                 actor.el?.removeAttribute('data-act');
                 scheduleActorRoamStep(idx);
-              }, 640);
+              }, trickMs);
             } else {
               actor.el.removeAttribute('data-act');
               scheduleActorRoamStep(idx);
@@ -1067,16 +1119,23 @@
         }
       }
 
-      if (roll < 0.88) {
-        actor.el.setAttribute('data-act', 'leap');
+      if (roll < 0.90) {
+        // In-place diverse trick: somersault flip, high leap, double-hop, or happy wiggle
+        const trickMs = triggerActorTrick(actor);
         actor.settleTimer = setTimeout(() => {
           actor.settleTimer = 0;
           actor.el?.removeAttribute('data-act');
           scheduleActorRoamStep(idx);
-        }, 640);
+        }, trickMs);
       } else {
+        // Curious look-around patrol (glance both ways)
         applyActorTransform(actor, actor.x, actor.facing * -1, 0.2);
-        scheduleActorRoamStep(idx, 1000 + Math.floor(Math.random() * 1400));
+        actor.settleTimer = setTimeout(() => {
+          actor.settleTimer = 0;
+          if (!actor.roaming || !mascotRoamingActive || disposed) return;
+          applyActorTransform(actor, actor.x, actor.facing * -1, 0.2);
+          scheduleActorRoamStep(idx, 900 + Math.floor(Math.random() * 1300));
+        }, 520);
       }
     }, delay);
   }
@@ -1166,14 +1225,17 @@
         const idx = Number(actorEl.getAttribute('data-actor-idx'));
         const actor = mascotActors[idx];
         mascotCheerUntil = Date.now() + 2000;
-        if (mascotRoamingActive && actor) {
-          if (actorEl.getAttribute('data-act') !== 'run') {
-            actorEl.setAttribute('data-act', 'leap');
+        if (actor) {
+          const curAct = actorEl.getAttribute('data-act') || '';
+          const isMoving = curAct === 'run' || curAct === 'roll-r' || curAct === 'roll-l';
+          if (!isMoving) {
+            const trickMs = triggerActorTrick(actor);
             if (actor.clickTimer) clearTimeout(actor.clickTimer);
+            const appliedAct = actorEl.getAttribute('data-act');
             actor.clickTimer = setTimeout(() => {
               actor.clickTimer = 0;
-              if (actorEl.getAttribute('data-act') === 'leap') actorEl.removeAttribute('data-act');
-            }, 640);
+              if (actorEl.getAttribute('data-act') === appliedAct) actorEl.removeAttribute('data-act');
+            }, trickMs);
           }
         } else {
           dock.setAttribute('data-mood', 'cheer');
@@ -1192,7 +1254,7 @@
       const actorsHtml = roster
         .map(
           (item, idx) =>
-            `<span class="ag-ps-actor" data-actor-idx="${idx}" data-busy="${item.busy ? '1' : '0'}" title="${escapeHtml(item.label)}（${item.busy ? '运行中' : '待命 · 0fps'}）"><span class="ag-ps-actor-body">${item.svg}</span></span>`
+            `<span class="ag-ps-actor" data-actor-idx="${idx}" data-busy="${item.busy ? '1' : '0'}" style="--ag-ps-idx:${idx}" title="${escapeHtml(item.label)}（${item.busy ? '运行中' : '待命 · 0fps'}）"><span class="ag-ps-actor-body">${item.svg}</span></span>`
         )
         .join('');
       const badgeHtml = overflow > 0 ? `<span class="ag-ps-more-badge" title="还有 ${overflow} 个活跃 Agent">+${overflow}</span>` : '';
@@ -1239,6 +1301,7 @@
           else a.el.removeAttribute('data-sleep');
         }
       });
+      syncMascotSpeedVars(dock);
       syncMascotRoaming(dock);
     } else {
       if (mascotRoamingActive) {
@@ -1246,8 +1309,8 @@
       }
       mascotActors.forEach((a) => a.el?.removeAttribute('data-sleep'));
       if (wasMascotBusy) {
-        mascotCheerUntil = now + 2400;
-        showMascotBubble('完成啦 ✨', 2200);
+        mascotCheerUntil = now + 1900 + mascotActors.length * 110;
+        showMascotBubble('完成啦 ✨', 2400);
       }
       if (now < mascotCheerUntil) {
         dock.setAttribute('data-mood', 'cheer');
