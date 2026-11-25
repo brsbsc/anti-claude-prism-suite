@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "updatedAt": "2026-11-25",
+  "upstreams": {
+    "antiClaude": {
+      "repo": "hongqi7/Anti-Claude",
+      "role": "host-runtime",
+      "license": "MIT",
+      "baselineTag": "v3.1.7",
+      "baselineCommit": "2cc8a1d",
+      "trackedPaths": [
+        "core/daemon.mjs",
+        "core/runtime.js",
+        "user/custom.js",
+        "user/custom.css"
+      ],
+      "requiredDaemonCapabilities": [
+        "listUserExtensionFiles",
+        "getUsageSummary",
+        "translateText"
+      ]
+    },
+    "obsidianPrism": {
+      "repo": "RMvdesi/obsidian-prism",
+      "role": "inspiration-reference-only",
+      "license": "GPL-3.0",
+      "cleanRoomNote": "Reference UX ideas only; never copy GPL-3.0 source code into this MIT repository.",
+      "baselineTag": "v1.0.7",
+      "baselineCommit": "e294da1",
+      "trackedPaths": [
+        "CHANGELOG.md",
+        "README.md"
+      ]
+    }
+  }
+}

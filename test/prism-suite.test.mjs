@@ -7,10 +7,11 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { installExtensions } from '../install.mjs';
 import { uninstallExtensions } from '../uninstall.mjs';
+import { inspectLocalDaemon } from '../scripts/check-upstream.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-test('extension JS syntax is valid and exposes clean dispose hook', () => {
+test('extension JS syntax is valid and enforces zero-body-observer performance guards', () => {
   const jsPath = path.join(REPO, 'extensions', 'prism-suite.js');
   const cssPath = path.join(REPO, 'extensions', 'prism-suite.css');
   assert.equal(fs.existsSync(jsPath), true);
@@ -22,11 +23,13 @@ test('extension JS syntax is valid and exposes clean dispose hook', () => {
   const cssSrc = fs.readFileSync(cssPath, 'utf8');
   assert.match(jsSrc, /__agPrismSuiteDispose/);
   assert.match(jsSrc, /positionFloatingPanel/);
-  assert.match(jsSrc, /translateText/);
-  assert.match(jsSrc, /getUsageSummary/);
+  assert.match(jsSrc, /isUserActivelyTyping/);
+  assert.match(jsSrc, /detectViewportTurnIndex/);
+  assert.match(jsSrc, /ag-ps-thought-peek/);
+  assert.doesNotMatch(jsSrc, /streamObserver\.observe\(document\.body/, 'Must never permanently observe document.body');
   assert.match(cssSrc, /data-ag-ps-light="crystal"/);
   assert.match(cssSrc, /data-ag-ps-dark="obsidian"/);
-  assert.match(cssSrc, /::highlight\(ag-ps-ink-1\)/);
+  assert.match(cssSrc, /color-mix\(in srgb, var\(--foreground/);
 });
 
 test('installExtensions and uninstallExtensions round-trip cleanly without touching other files', () => {
@@ -47,6 +50,33 @@ test('installExtensions and uninstallExtensions round-trip cleanly without touch
     assert.equal(fs.existsSync(path.join(userDir, 'extensions', 'prism-suite.css')), false);
     assert.equal(fs.existsSync(path.join(userDir, 'extensions', 'prism-suite.js')), false);
     assert.equal(fs.existsSync(keepFile), true, 'Unrelated extension files must be preserved');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('upstream.json and check-upstream daemon compatibility inspector work properly', () => {
+  const upstream = JSON.parse(fs.readFileSync(path.join(REPO, 'upstream.json'), 'utf8'));
+  assert.equal(upstream.upstreams.antiClaude.repo, 'hongqi7/Anti-Claude');
+  assert.equal(upstream.upstreams.obsidianPrism.repo, 'RMvdesi/obsidian-prism');
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-daemon-check-'));
+  try {
+    const coreDir = path.join(tmp, 'core');
+    fs.mkdirSync(coreDir, { recursive: true });
+    fs.writeFileSync(path.join(coreDir, 'daemon.mjs'), '// stock daemon without hooks');
+    const stock = inspectLocalDaemon(tmp);
+    assert.equal(stock.found, true);
+    assert.equal(stock.compatible, false);
+    assert.equal(stock.missing.length, 3);
+
+    fs.writeFileSync(
+      path.join(coreDir, 'daemon.mjs'),
+      'function listUserExtensionFiles(){} function getUsageSummary(){} function translateText(){}'
+    );
+    const patched = inspectLocalDaemon(tmp);
+    assert.equal(patched.compatible, true);
+    assert.equal(patched.missing.length, 0);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

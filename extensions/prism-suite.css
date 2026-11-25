@@ -1,13 +1,13 @@
 /* ============================================================================
- * Prism Suite Extension for Anti-Claude (Clean-Room Original)
+ * Anti-Claude Prism Suite v0.2.0 (Clean-Room Original, MIT)
  * Modules:
  *   1. Light/Dark Multi-Palette Themes (Crystal / Alabaster / Obsidian / Basalt)
  *   2. Toolbar Control Popover
- *   3. Conversation Outline Drawer & Alt+Up/Down Turn Jump
- *   4. Usage Book Yardstick + 12-Week Heatmap (augments [data-ov-card="usage"])
- *   5. 5-Stage Ink Stream Fade-In (CSS Custom Highlight API, zero DOM wrapping)
- *   6. Composer Pixel Mascots (idle 0fps)
- *   7. Thought Process Live Chinese Translation (Bilingual / Immersive)
+ *   3. Conversation Outline Drawer & Alt+Up/Down Viewport Turn Jump
+ *   4. Usage Book Yardstick + Weekday-Aligned 12-Week Heatmap
+ *   5. 5-Stage Ink Stream Fade-In (CSS.highlights, theme-adaptive, zero DOM wrap)
+ *   6. Composer Pixel Mascots (0fps idle sleep + narrow/reduced-motion guard)
+ *   7. Thought Process Live Chinese Translation (per-block toggle, anti-flicker)
  * ============================================================================ */
 
 /* ---- 1. Multi-Palette Theme Overrides (respects host light/dark & browser-hole) ---- */
@@ -171,10 +171,10 @@ html[data-ag-ps-dark="basalt"] body.dark {
 
 #ag-ps-popover {
   position: fixed;
-  top: 40px;
+  top: 72px;
   right: 16px;
-  width: 312px;
-  max-height: calc(100vh - 64px);
+  width: 316px;
+  max-height: calc(100vh - 88px);
   overflow-y: auto;
   z-index: 99990;
   background-color: var(--background, #FFFFFF);
@@ -197,7 +197,7 @@ html[data-ag-ps-dark="basalt"] body.dark {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .ag-ps-pop-title {
@@ -218,10 +218,19 @@ html[data-ag-ps-dark="basalt"] body.dark {
 }
 
 .ag-ps-sec-lbl {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   font-size: 11px;
   font-weight: 600;
   color: var(--muted-foreground, #6B6964);
   margin: 9px 0 5px;
+}
+
+.ag-ps-sec-tag {
+  font-size: 10px;
+  font-weight: 500;
+  opacity: 0.85;
 }
 
 .ag-ps-palette-row {
@@ -349,9 +358,9 @@ html[data-ag-ps-dark="basalt"] body.dark {
 /* ---- 3. Conversation Outline Drawer & Jump Toast ---- */
 #ag-ps-outline {
   position: fixed;
-  top: 44px;
+  top: 72px;
   right: 16px;
-  width: 286px;
+  width: 292px;
   max-height: 68vh;
   z-index: 99985;
   display: none;
@@ -405,18 +414,25 @@ html[data-ag-ps-dark="basalt"] body.dark {
   gap: 6px;
   width: 100%;
   border: none;
+  border-left: 2px solid transparent;
   background: transparent;
   color: var(--foreground, #141413);
   padding: 5px 7px;
-  border-radius: 7px;
+  border-radius: 6px;
   cursor: pointer;
   text-align: left;
   font-size: 11.5px;
-  transition: background-color 110ms ease;
+  transition: background-color 110ms ease, border-color 110ms ease;
 }
 
 .ag-ps-outline-item:hover {
   background: var(--secondary, rgba(0, 0, 0, 0.05));
+}
+
+.ag-ps-outline-item[aria-current="true"] {
+  border-left-color: var(--primary, #2F75C3);
+  background: var(--muted, rgba(47, 117, 195, 0.08));
+  font-weight: 500;
 }
 
 .ag-ps-outline-idx {
@@ -473,7 +489,7 @@ html[data-ag-ps-dark="basalt"] body.dark {
   pointer-events: none;
   opacity: 0;
   transition: opacity 160ms ease, transform 160ms ease;
-  max-width: 380px;
+  max-width: 420px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -485,7 +501,7 @@ html[data-ag-ps-dark="basalt"] body.dark {
   transform: translateX(-50%) translateY(0);
 }
 
-/* ---- 4. Usage Book Yardstick + 12-Week Heatmap (inside [data-ov-card="usage"]) ---- */
+/* ---- 4. Usage Book Yardstick + Weekday-Aligned 12-Week Heatmap ---- */
 #ag-claude-ov-sections .ag-ps-usage-extra {
   border-top: 1px solid var(--ag-ov-border);
   padding-top: 7px;
@@ -555,6 +571,11 @@ html[data-ag-ps-dark="basalt"] body.dark {
   transition: transform 100ms ease;
 }
 
+#ag-claude-ov-sections .ag-ps-heat-cell.is-pad {
+  background-color: transparent;
+  pointer-events: none;
+}
+
 #ag-claude-ov-sections .ag-ps-heat-cell[data-lv="1"] {
   background-color: color-mix(in srgb, var(--ag-ov-blue) 26%, transparent);
 }
@@ -568,24 +589,27 @@ html[data-ag-ps-dark="basalt"] body.dark {
   background-color: var(--ag-ov-blue);
 }
 
-#ag-claude-ov-sections .ag-ps-heat-cell:hover {
+#ag-claude-ov-sections .ag-ps-heat-cell:not(.is-pad):hover {
   transform: scale(1.22);
 }
 
-/* ---- 5. 5-Stage Ink Stream Fade-In (CSS Custom Highlight API) ---- */
-::highlight(ag-ps-ink-1) { color: rgba(20, 20, 19, 0.24); }
-::highlight(ag-ps-ink-2) { color: rgba(20, 20, 19, 0.44); }
-::highlight(ag-ps-ink-3) { color: rgba(20, 20, 19, 0.64); }
-::highlight(ag-ps-ink-4) { color: rgba(20, 20, 19, 0.82); }
-::highlight(ag-ps-ink-5) { color: rgba(20, 20, 19, 0.94); }
+#ag-claude-ov-sections .ag-ps-heat-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--ag-ov-muted);
+  opacity: 0.88;
+}
 
-:is(html[data-ag-theme-mode="dark"], body.dark) ::highlight(ag-ps-ink-1) { color: rgba(236, 236, 234, 0.24); }
-:is(html[data-ag-theme-mode="dark"], body.dark) ::highlight(ag-ps-ink-2) { color: rgba(236, 236, 234, 0.44); }
-:is(html[data-ag-theme-mode="dark"], body.dark) ::highlight(ag-ps-ink-3) { color: rgba(236, 236, 234, 0.64); }
-:is(html[data-ag-theme-mode="dark"], body.dark) ::highlight(ag-ps-ink-4) { color: rgba(236, 236, 234, 0.82); }
-:is(html[data-ag-theme-mode="dark"], body.dark) ::highlight(ag-ps-ink-5) { color: rgba(236, 236, 234, 0.94); }
+/* ---- 5. 5-Stage Ink Stream Fade-In (CSS Custom Highlight API, theme-adaptive) ---- */
+::highlight(ag-ps-ink-1) { color: rgba(20, 20, 19, 0.24); color: color-mix(in srgb, var(--foreground, #141413) 24%, transparent); }
+::highlight(ag-ps-ink-2) { color: rgba(20, 20, 19, 0.44); color: color-mix(in srgb, var(--foreground, #141413) 44%, transparent); }
+::highlight(ag-ps-ink-3) { color: rgba(20, 20, 19, 0.64); color: color-mix(in srgb, var(--foreground, #141413) 64%, transparent); }
+::highlight(ag-ps-ink-4) { color: rgba(20, 20, 19, 0.82); color: color-mix(in srgb, var(--foreground, #141413) 82%, transparent); }
+::highlight(ag-ps-ink-5) { color: rgba(20, 20, 19, 0.94); color: color-mix(in srgb, var(--foreground, #141413) 94%, transparent); }
 
-/* ---- 6. Composer Pixel Mascots (idle 0fps) ---- */
+/* ---- 6. Composer Pixel Mascots (idle 0fps + narrow guard) ---- */
 #antigravity\.agentSidePanelInputBox {
   position: relative;
 }
@@ -601,6 +625,10 @@ html[data-ag-ps-dark="basalt"] body.dark {
   pointer-events: auto;
   user-select: none;
   cursor: pointer;
+}
+
+#ag-ps-mascot-dock[data-compact-hide="1"] {
+  display: none;
 }
 
 .ag-ps-sprite {
@@ -626,9 +654,14 @@ html[data-ag-ps-dark="basalt"] body.dark {
 }
 
 #ag-ps-mascot-dock[data-mood="sleep"] .ag-ps-sprite {
-  opacity: 0.82;
-  /* Zero animation on sleep -> 0fps idle */
+  opacity: 0.78;
   animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #ag-ps-mascot-dock .ag-ps-sprite {
+    animation: none !important;
+  }
 }
 
 .ag-ps-mascot-bubble {
@@ -666,25 +699,6 @@ html[data-ag-ps-dark="basalt"] body.dark {
 }
 
 /* ---- 7. Thought Live Chinese Translation ---- */
-.ag-ps-thought-btn {
-  margin-left: 6px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  border: 1px solid var(--sidebar-border, rgba(0, 0, 0, 0.12));
-  background: var(--muted, #F4F4F2);
-  color: var(--muted-foreground, #6B6964);
-  font-size: 10.5px;
-  font-weight: 500;
-  cursor: pointer;
-  vertical-align: middle;
-  transition: background-color 120ms ease, color 120ms ease;
-}
-
-.ag-ps-thought-btn:hover {
-  background: var(--secondary, #EAEAE6);
-  color: var(--foreground, #141413);
-}
-
 .ag-ps-thought-zh {
   margin: 6px 0 8px 2px;
   padding: 7px 10px;
@@ -701,14 +715,31 @@ html[data-ag-ps-dark="basalt"] body.dark {
   font-size: 10.5px;
   font-weight: 600;
   color: var(--primary, #2F75C3);
-  margin-bottom: 3px;
+  margin-bottom: 4px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+}
+
+.ag-ps-thought-peek {
+  border: 1px solid var(--sidebar-border, rgba(0, 0, 0, 0.12));
+  background: var(--background, #FFFFFF);
+  color: var(--muted-foreground, #6B6964);
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.ag-ps-thought-peek:hover {
+  color: var(--foreground, #141413);
+  border-color: var(--primary, #2F75C3);
 }
 
 .ag-ps-thought-src-dim {
-  opacity: 0.62;
+  opacity: 0.60;
   font-size: 0.92em;
 }
 

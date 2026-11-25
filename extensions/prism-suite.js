@@ -1,6 +1,11 @@
 /* ============================================================================
- * Prism Suite Extension for Anti-Claude (Clean-Room Original)
- * 6 independent toggleable modules, hot-reload safe, zero GPL code.
+ * Anti-Claude Prism Suite v0.2.0 (Clean-Room Original, MIT)
+ * Performance-first architecture:
+ *   - Zero document.body MutationObserver (0.0ms typing latency in composer)
+ *   - Stream ink observer attaches ONLY to [data-testid="autoscroll-viewport"]
+ *     during active generation and disconnects immediately on idle
+ *   - Typing-grace guard + visibility pause on lightweight periodic sync
+ *   - Reused CSS Highlight objects with 30fps throttling & reduced-motion guard
  * ============================================================================ */
 (() => {
   if (typeof window.__agPrismSuiteDispose === 'function') {
@@ -12,7 +17,7 @@
     lightPalette: 'default',   // 'default' | 'crystal' | 'alabaster'
     darkPalette: 'default',    // 'default' | 'obsidian' | 'basalt'
     outline: true,             // Conversation outline + Alt+Up/Down turn jump
-    usageExtra: true,          // Book yardstick + 12-week heatmap inside Usage card
+    usageExtra: true,          // Book yardstick + weekday-aligned 12-week heatmap
     inkStream: true,           // 5-stage CSS.highlights stream fade-in
     mascot: true,              // Composer pixel mascots (0fps idle)
     mascotStyle: 'trio',       // 'trio' | 'crab' | 'cat'
@@ -35,6 +40,14 @@
   const cleanups = [];
   const onCleanup = (fn) => cleanups.push(fn);
 
+  const REDUCED_MOTION = (() => {
+    try {
+      return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch {
+      return false;
+    }
+  })();
+
   function escapeHtml(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;')
@@ -53,9 +66,40 @@
     return String(Math.round(v));
   }
 
+  /* ---- Typing-grace tracker: never run background DOM scans while user is typing ---- */
+  let lastTypingAt = 0;
+  function markUserTyping(e) {
+    const t = e && e.target;
+    if (t && (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'INPUT')) {
+      lastTypingAt = Date.now();
+    }
+  }
+  document.addEventListener('keydown', markUserTyping, { capture: true, passive: true });
+  document.addEventListener('compositionstart', markUserTyping, { capture: true, passive: true });
+  document.addEventListener('compositionupdate', markUserTyping, { capture: true, passive: true });
+  onCleanup(() => {
+    document.removeEventListener('keydown', markUserTyping, true);
+    document.removeEventListener('compositionstart', markUserTyping, true);
+    document.removeEventListener('compositionupdate', markUserTyping, true);
+  });
+
+  function isUserActivelyTyping() {
+    return Date.now() - lastTypingAt < 1800;
+  }
+
   /* ==========================================================================
    * 1. Multi-Palette Theme Application
    * ========================================================================== */
+  const LIGHT_NAMES = { default: '纯白默认', crystal: '白昼冷晶', alabaster: '暖白画册' };
+  const DARK_NAMES = { default: '暖炭默认', obsidian: '深空黑曜', basalt: '暖炭玄岩' };
+
+  function isCurrentlyDark() {
+    return (
+      document.documentElement.getAttribute('data-ag-theme-mode') === 'dark' ||
+      document.body.classList.contains('dark')
+    );
+  }
+
   function applyPalettes() {
     const html = document.documentElement;
     if (!html) return;
@@ -77,10 +121,9 @@
   });
 
   /* ==========================================================================
-   * 2. Conversation Outline Drawer, Alt+Up/Down Jump & /btw Quick Insert
+   * 2. Conversation Outline Drawer, Viewport-Anchored Alt+Up/Down Jump & /btw
    * ========================================================================== */
   let jumpToastTimer = 0;
-  let lastTurnIndex = -1;
 
   function showJumpToast(text) {
     let el = document.getElementById('ag-ps-jump-toast');
@@ -96,39 +139,76 @@
     clearTimeout(jumpToastTimer);
     jumpToastTimer = setTimeout(() => {
       el.removeAttribute('data-show');
-    }, 1700);
+    }, 2000);
   }
+  onCleanup(() => clearTimeout(jumpToastTimer));
 
   function getUserTurnElements() {
     const nodes = Array.from(document.querySelectorAll('[data-testid="user-message-content"]'));
     return nodes.filter((n) => n && n.isConnected && (n.textContent || '').trim().length > 0);
   }
 
+  function detectViewportTurnIndex(turns) {
+    if (!turns.length) return -1;
+    const vp = document.querySelector('[data-testid="autoscroll-viewport"]');
+    const vpRect = vp ? vp.getBoundingClientRect() : { top: 0, height: window.innerHeight };
+    const anchorY = vpRect.top + vpRect.height * 0.35;
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < turns.length; i++) {
+      const r = turns[i].getBoundingClientRect();
+      const dist = Math.abs(r.top - anchorY);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIdx = i;
+      }
+    }
+    return bestIdx;
+  }
+
   function jumpToTurn(el, index, total) {
     if (!el) return;
     const bubble = el.closest('[data-testid="user-message-bubble"]') || el.closest('[data-testid="user-message"]') || el;
-    bubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    bubble.scrollIntoView({ behavior: REDUCED_MOTION ? 'auto' : 'smooth', block: 'center' });
     bubble.classList.remove('ag-ps-turn-pulse');
     void bubble.offsetWidth;
     bubble.classList.add('ag-ps-turn-pulse');
     setTimeout(() => bubble.classList.remove('ag-ps-turn-pulse'), 1500);
-    const preview = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 34);
+    const preview = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 36);
     showJumpToast(`第 ${index + 1} / ${total} 轮 · ${preview}`);
-    lastTurnIndex = index;
   }
 
   function insertBtwQuote(text) {
+    const snippet = `/btw 关于「${String(text || '').replace(/\s+/g, ' ').trim().slice(0, 48)}」：`;
     const box = document.getElementById('antigravity.agentSidePanelInputBox');
     const editor = box && box.querySelector('[contenteditable="true"], textarea');
-    if (!editor) return;
-    editor.focus();
-    const snippet = `/btw 关于「${String(text || '').replace(/\s+/g, ' ').trim().slice(0, 48)}」：`;
-    try {
-      document.execCommand('insertText', false, snippet);
-    } catch {
-      if ('value' in editor) editor.value = snippet;
+    let inserted = false;
+    if (editor) {
+      editor.focus();
+      const before = (editor.textContent || editor.value || '').length;
+      try {
+        document.execCommand('insertText', false, snippet);
+        const after = (editor.textContent || editor.value || '').length;
+        inserted = after > before;
+      } catch {}
+      if (!inserted && editor.tagName === 'TEXTAREA') {
+        editor.value = snippet + (editor.value || '');
+        editor.dispatchEvent(new Event('input', { bubbles: true }));
+        inserted = true;
+      }
     }
-    showJumpToast('已填入 /btw 支线提问前缀');
+    if (inserted) {
+      showJumpToast('已填入 /btw 支线提问前缀');
+      return;
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      navigator.clipboard.writeText(snippet).then(
+        () => showJumpToast('已复制 /btw 引用，按 Ctrl+V 粘贴'),
+        () => showJumpToast('未能写入输入框，请手动输入 /btw')
+      );
+    } else {
+      showJumpToast('未能写入输入框，请手动输入 /btw');
+    }
   }
 
   function stepTurn(delta) {
@@ -138,19 +218,8 @@
       showJumpToast('当前视图暂无可跳转的提问轮次');
       return;
     }
-    const vp = document.querySelector('[data-testid="autoscroll-viewport"]');
-    const vpMid = vp ? vp.getBoundingClientRect().top + vp.getBoundingClientRect().height * 0.42 : window.innerHeight * 0.42;
-    let cur = lastTurnIndex;
-    if (cur < 0 || cur >= turns.length) {
-      let bestDist = Infinity;
-      for (let i = 0; i < turns.length; i++) {
-        const d = Math.abs(turns[i].getBoundingClientRect().top - vpMid);
-        if (d < bestDist) {
-          bestDist = d;
-          cur = i;
-        }
-      }
-    }
+    // Always compute relative to current viewport reading position (never stale after manual scroll)
+    const cur = detectViewportTurnIndex(turns);
     const next = Math.max(0, Math.min(turns.length - 1, cur + delta));
     jumpToTurn(turns[next], next, turns.length);
   }
@@ -161,8 +230,34 @@
     return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
   }
 
+  function closeTopFloatingPanel(restoreFocus = false) {
+    const pop = document.getElementById('ag-ps-popover');
+    if (pop && pop.getAttribute('data-open') === '1') {
+      pop.removeAttribute('data-open');
+      syncToolbarActiveStates();
+      if (restoreFocus) document.getElementById('ag-ps-btn-suite')?.focus();
+      return true;
+    }
+    const drawer = document.getElementById('ag-ps-outline');
+    if (drawer && drawer.getAttribute('data-open') === '1') {
+      drawer.removeAttribute('data-open');
+      syncToolbarActiveStates();
+      if (restoreFocus) document.getElementById('ag-ps-btn-outline')?.focus();
+      return true;
+    }
+    return false;
+  }
+
   function onGlobalKeyDown(e) {
-    if (disposed || !prefs.outline) return;
+    if (disposed) return;
+    if (e.key === 'Escape') {
+      if (closeTopFloatingPanel(true)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      return;
+    }
+    if (!prefs.outline) return;
     if (e.altKey && !e.ctrlKey && !e.metaKey) {
       if (e.key === 'ArrowUp' && (!isEditableTarget(e.target) || e.shiftKey)) {
         e.preventDefault();
@@ -179,21 +274,44 @@
   window.addEventListener('keydown', onGlobalKeyDown, true);
   onCleanup(() => window.removeEventListener('keydown', onGlobalKeyDown, true));
 
+  let resizeRaf = 0;
+  function onWindowResize() {
+    if (disposed || resizeRaf) return;
+    resizeRaf = requestAnimationFrame(() => {
+      resizeRaf = 0;
+      const pop = document.getElementById('ag-ps-popover');
+      if (pop && pop.getAttribute('data-open') === '1') {
+        positionFloatingPanel(pop, document.getElementById('ag-ps-btn-suite'));
+      }
+      const drawer = document.getElementById('ag-ps-outline');
+      if (drawer && drawer.getAttribute('data-open') === '1') {
+        positionFloatingPanel(drawer, document.getElementById('ag-ps-btn-outline'));
+      }
+      syncMascotCompactGuard();
+    });
+  }
+  window.addEventListener('resize', onWindowResize, { passive: true });
+  onCleanup(() => {
+    window.removeEventListener('resize', onWindowResize);
+    if (resizeRaf) cancelAnimationFrame(resizeRaf);
+  });
+
   function renderOutlineList(filter = '') {
     const drawer = document.getElementById('ag-ps-outline');
     if (!drawer) return;
     const list = drawer.querySelector('.ag-ps-outline-list');
     if (!list) return;
     const turns = getUserTurnElements();
+    const curIdx = detectViewportTurnIndex(turns);
     const q = String(filter || '').trim().toLowerCase();
     const items = [];
     for (let i = 0; i < turns.length; i++) {
       const txt = (turns[i].textContent || '').replace(/\s+/g, ' ').trim();
       if (q && !txt.toLowerCase().includes(q)) continue;
-      items.push({ idx: i, txt, el: turns[i] });
+      items.push({ idx: i, txt, isCurrent: i === curIdx });
     }
     const countEl = drawer.querySelector('.ag-ps-outline-count');
-    if (countEl) countEl.textContent = `${items.length}/${turns.length} 轮`;
+    if (countEl) countEl.textContent = `已加载 ${turns.length} 轮`;
 
     if (!items.length) {
       list.innerHTML = `<div style="padding:14px 8px;text-align:center;color:var(--muted-foreground)">暂无匹配提问（快捷键 Alt+↑/↓ 跳轮）</div>`;
@@ -202,7 +320,7 @@
     list.innerHTML = items
       .map(
         (it) =>
-          `<button type="button" class="ag-ps-outline-item" data-turn-idx="${it.idx}">
+          `<button type="button" class="ag-ps-outline-item" data-turn-idx="${it.idx}"${it.isCurrent ? ' aria-current="true"' : ''}>
             <span class="ag-ps-outline-idx">#${it.idx + 1}</span>
             <span class="ag-ps-outline-txt" title="${escapeHtml(it.txt)}">${escapeHtml(it.txt.slice(0, 60))}</span>
             <span class="ag-ps-outline-btw" data-btw-idx="${it.idx}" title="作为 /btw 支线提问">btw</span>
@@ -222,7 +340,7 @@
         <span style="font-weight:600;font-size:12.5px">会话大纲</span>
         <span class="ag-ps-outline-count ag-ps-pop-badge">0 轮</span>
       </div>
-      <input type="text" class="ag-ps-outline-search" placeholder="筛选提问关键词… (Alt+↑/↓ 跳轮)" />
+      <input type="text" class="ag-ps-outline-search" placeholder="筛选提问关键词… (Alt+↑/↓ 跳轮 · Esc 关)" />
       <div class="ag-ps-outline-list"></div>
     `;
     const input = drawer.querySelector('.ag-ps-outline-search');
@@ -235,13 +353,17 @@
         const turns = getUserTurnElements();
         if (turns[idx]) insertBtwQuote(turns[idx].textContent || '');
         drawer.removeAttribute('data-open');
+        syncToolbarActiveStates();
         return;
       }
       const row = e.target.closest('[data-turn-idx]');
       if (row) {
         const idx = Number(row.getAttribute('data-turn-idx'));
         const turns = getUserTurnElements();
-        if (turns[idx]) jumpToTurn(turns[idx], idx, turns.length);
+        if (turns[idx]) {
+          jumpToTurn(turns[idx], idx, turns.length);
+          renderOutlineList(input ? input.value : '');
+        }
       }
     });
     document.body.appendChild(drawer);
@@ -253,7 +375,7 @@
     if (!panelEl) return;
     const rect = anchorBtn && anchorBtn.isConnected ? anchorBtn.getBoundingClientRect() : null;
     const topPx = rect ? Math.max(48, Math.round(rect.bottom + 8)) : 78;
-    const widthPx = panelEl.offsetWidth || (panelEl.id === 'ag-ps-outline' ? 286 : 312);
+    const widthPx = panelEl.offsetWidth || (panelEl.id === 'ag-ps-outline' ? 292 : 316);
     let leftPx = rect ? Math.round(rect.right - widthPx) : window.innerWidth - widthPx - 16;
     leftPx = Math.max(12, Math.min(window.innerWidth - widthPx - 12, leftPx));
     panelEl.style.top = `${topPx}px`;
@@ -280,19 +402,20 @@
   }
 
   /* ==========================================================================
-   * 3. Usage Book Yardstick + 12-Week Heatmap (augments [data-ov-card="usage"])
+   * 3. Usage Book Yardstick + Weekday-Aligned 12-Week Heatmap
    * ========================================================================== */
   const BOOK_YARDSTICKS = [
-    { name: '《道德经》', tokens: 7600 },
-    { name: '《小王子》', tokens: 21000 },
-    { name: '《变形记》', tokens: 28000 },
-    { name: '《老人与海》', tokens: 36000 },
-    { name: '《浮士德》', tokens: 54000 },
-    { name: '《围城》', tokens: 180000 },
-    { name: '《三体》全集', tokens: 880000 },
-    { name: '《红楼梦》', tokens: 960000 },
-    { name: '《哈利·波特》全集', tokens: 1450000 },
-    { name: '《大英百科全书》', tokens: 55000000 }
+    { name: '《道德经》', unit: '本', tokens: 7600 },
+    { name: '《小王子》', unit: '本', tokens: 21000 },
+    { name: '《变形记》', unit: '本', tokens: 28000 },
+    { name: '《老人与海》', unit: '本', tokens: 36000 },
+    { name: '《浮士德》', unit: '本', tokens: 54000 },
+    { name: '《围城》', unit: '本', tokens: 180000 },
+    { name: '《三体》全集', unit: '套', tokens: 880000 },
+    { name: '《红楼梦》', unit: '部', tokens: 960000 },
+    { name: '《哈利·波特》全集', unit: '套', tokens: 1450000 },
+    { name: '《大英百科全书》', unit: '套', tokens: 55000000 },
+    { name: '《四库全书》', unit: '部', tokens: 550000000 }
   ];
 
   function pickBookYardstick(totalTokens) {
@@ -300,15 +423,27 @@
     if (t < 1500) return '刚翻开扉页';
     let chosen = BOOK_YARDSTICKS[0];
     for (const b of BOOK_YARDSTICKS) {
-      if (t >= b.tokens * 0.8) chosen = b;
+      if (t >= b.tokens * 0.75) chosen = b;
     }
     const mult = t / chosen.tokens;
     const multStr = mult >= 100 ? Math.round(mult).toString() : mult >= 10 ? mult.toFixed(1) : mult.toFixed(2).replace(/\.?0+$/, '');
-    return `≈ ${multStr} 本${chosen.name}`;
+    return `≈ ${multStr} ${chosen.unit}${chosen.name}`;
+  }
+
+  function computeStreakDays(hist) {
+    if (!Array.isArray(hist) || !hist.length) return 0;
+    let streak = 0;
+    for (let i = hist.length - 1; i >= 0; i--) {
+      if ((Number(hist[i].totalTokens) || 0) > 0) streak += 1;
+      else if (i === hist.length - 1) continue; // Allow today still 0 when checking yesterday streak
+      else break;
+    }
+    return streak;
   }
 
   let heatCache = { ts: 0, data: null };
   let heatInFlight = null;
+  let heatPartialTimer = 0;
   let bookScopeIdx = 0; // 0: 12周, 1: 今日
 
   function ensureHeatmapData(force = false) {
@@ -323,12 +458,20 @@
           if (disposed || !res || !res.ok) return;
           heatCache = { ts: Date.now(), data: res };
           syncUsageExtraMount();
+          if (res.partial && !document.hidden) {
+            clearTimeout(heatPartialTimer);
+            heatPartialTimer = setTimeout(() => {
+              heatPartialTimer = 0;
+              if (!disposed && prefs.usageExtra && !document.hidden) ensureHeatmapData(true);
+            }, 1100);
+          }
         })
         .catch(() => {})
         .finally(() => { heatInFlight = null; });
     }
     return heatCache.data;
   }
+  onCleanup(() => clearTimeout(heatPartialTimer));
 
   function syncUsageExtraMount() {
     const cardBody = document.querySelector('#ag-claude-ov-sections [data-ov-card="usage"] .ag-ov-card-body');
@@ -345,14 +488,24 @@
     const scopeTokens = bookScopeIdx === 0 ? data.totalWindowTokens : (data.today ? data.today.totalTokens : 0);
     const scopeLbl = bookScopeIdx === 0 ? '近12周' : '今日';
     const bookText = pickBookYardstick(scopeTokens);
-    const sig = `${data.todayDate}|${data.totalWindowTokens}|${data.today?.totalTokens}|${bookScopeIdx}`;
+    const sig = `${data.todayDate}|${data.totalWindowTokens}|${data.today?.totalTokens}|${data.partial ? 1 : 0}|${bookScopeIdx}`;
 
     if (existing && existing.getAttribute('data-sig') === sig) return;
 
     const maxTok = hist.reduce((m, d) => Math.max(m, Number(d.totalTokens) || 0), 0);
     const activeDays = hist.filter((d) => (Number(d.totalTokens) || 0) > 0).length;
-    const defaultMeta = `12周活跃 ${activeDays} 天`;
+    const streak = computeStreakDays(hist);
+    const avgActive = activeDays > 0 ? Math.round(data.totalWindowTokens / activeDays) : 0;
+    const defaultMeta = data.partial
+      ? `同步中 · 活跃 ${activeDays} 天`
+      : `连续 ${streak} 天 · 活跃日均 ${fmtTokens(avgActive)}`;
 
+    // Align grid rows strictly to Monday (0) .. Sunday (6)
+    const firstParts = String(hist[0].date || '').split('-').map(Number);
+    const firstDate = firstParts.length === 3 ? new Date(firstParts[0], firstParts[1] - 1, firstParts[2]) : new Date();
+    const leadPads = (firstDate.getDay() + 6) % 7;
+
+    const padHtml = Array.from({ length: leadPads }, () => `<span class="ag-ps-heat-cell is-pad" aria-hidden="true"></span>`).join('');
     const cellsHtml = hist
       .map((d) => {
         const tot = Number(d.totalTokens) || 0;
@@ -362,7 +515,7 @@
           lv = r >= 0.72 ? 4 : r >= 0.42 ? 3 : r >= 0.16 ? 2 : 1;
         }
         const tip = tot > 0 ? `${d.label} · ${fmtTokens(tot)} · ${d.activeSessions}会话` : `${d.label} · 无消耗`;
-        return `<span class="ag-ps-heat-cell" data-lv="${lv}" data-tip="${escapeHtml(tip)}" title="${escapeHtml(`${d.date}: ${fmtTokens(tot)}`)}"></span>`;
+        return `<span class="ag-ps-heat-cell" data-lv="${lv}" data-tip="${escapeHtml(tip)}" title="${escapeHtml(`${d.date}: ${fmtTokens(tot)} (${d.activeSessions} 会话)`)}"></span>`;
       })
       .join('');
 
@@ -370,7 +523,7 @@
     wrap.className = 'ag-ps-usage-extra';
     wrap.setAttribute('data-sig', sig);
     wrap.innerHTML = `
-      <div class="ag-ps-book-row" title="点击切换 今日 / 近12周 名著换算">
+      <div class="ag-ps-book-row" title="点击切换 今日 / 近12周 名著换算（基于精确总量 ${fmtTokens(scopeTokens)}）">
         <span class="ag-ov-muted">📚 ${scopeLbl}体量</span>
         <span class="ag-ps-book-val">${escapeHtml(bookText)}</span>
       </div>
@@ -378,7 +531,11 @@
         <span class="ag-ov-muted">12 周热力图</span>
         <span class="ag-ps-heat-meta ag-ov-tabular" data-default="${escapeHtml(defaultMeta)}">${escapeHtml(defaultMeta)}</span>
       </div>
-      <div class="ag-ps-heat-grid">${cellsHtml}</div>
+      <div class="ag-ps-heat-grid">${padHtml}${cellsHtml}</div>
+      <div class="ag-ps-heat-foot ag-ov-tabular">
+        <span>周一→周日</span>
+        <span>活跃 ${activeDays} / ${hist.length} 天</span>
+      </div>
     `;
     if (!existing) {
       wrap.addEventListener('click', (e) => {
@@ -410,13 +567,19 @@
   }
 
   /* ==========================================================================
-   * 4. 5-Stage Ink Stream Fade-In (CSS.highlights, zero DOM wrapping, 0fps idle)
+   * 4. Zero-Latency 5-Stage Ink Stream Fade-In
+   *    - NEVER observes document.body (0.0ms impact on typing in composer)
+   *    - Attaches ONLY to [data-testid="autoscroll-viewport"] while generating
+   *    - Reuses 5 persistent Highlight instances + 30fps throttling
    * ========================================================================== */
   const SUPPORTS_HIGHLIGHTS = typeof CSS !== 'undefined' && Boolean(CSS.highlights) && typeof Highlight === 'function';
   const INK_NAMES = ['ag-ps-ink-1', 'ag-ps-ink-2', 'ag-ps-ink-3', 'ag-ps-ink-4', 'ag-ps-ink-5'];
+  const INK_HIGHLIGHTS = SUPPORTS_HIGHLIGHTS ? INK_NAMES.map(() => new Highlight()) : [];
   const INK_DURATION_MS = 320;
-  let inkEntries = []; // { range, startMs }
+  const INK_FRAME_INTERVAL_MS = 33; // ~30fps cap even on 144Hz/300Hz monitors
+  let inkEntries = [];
   let inkRafId = 0;
+  let lastInkTickMs = 0;
   const seenTextLens = new WeakMap();
 
   function clearInkHighlights() {
@@ -426,32 +589,40 @@
     }
     inkEntries = [];
     if (SUPPORTS_HIGHLIGHTS) {
-      for (const name of INK_NAMES) {
-        try { CSS.highlights.delete(name); } catch {}
+      for (let i = 0; i < INK_NAMES.length; i++) {
+        try {
+          INK_HIGHLIGHTS[i].clear();
+          CSS.highlights.delete(INK_NAMES[i]);
+        } catch {}
       }
     }
   }
 
   function tickInkFade(now) {
     inkRafId = 0;
-    if (disposed || !prefs.inkStream || !SUPPORTS_HIGHLIGHTS || !inkEntries.length) {
+    if (disposed || !prefs.inkStream || REDUCED_MOTION || !SUPPORTS_HIGHLIGHTS || !inkEntries.length) {
       clearInkHighlights();
       return;
     }
-    const buckets = [[], [], [], [], []];
+    if (now - lastInkTickMs < INK_FRAME_INTERVAL_MS) {
+      inkRafId = requestAnimationFrame(tickInkFade);
+      return;
+    }
+    lastInkTickMs = now;
+    for (let i = 0; i < 5; i++) INK_HIGHLIGHTS[i].clear();
     const alive = [];
     for (const item of inkEntries) {
       const age = now - item.startMs;
       if (age >= INK_DURATION_MS) continue;
       if (!item.range || !item.range.startContainer || !item.range.startContainer.isConnected) continue;
       const stage = Math.min(4, Math.floor((age / INK_DURATION_MS) * 5));
-      buckets[stage].push(item.range);
+      INK_HIGHLIGHTS[stage].add(item.range);
       alive.push(item);
     }
     inkEntries = alive;
     for (let i = 0; i < 5; i++) {
       try {
-        if (buckets[i].length) CSS.highlights.set(INK_NAMES[i], new Highlight(...buckets[i]));
+        if (INK_HIGHLIGHTS[i].size > 0) CSS.highlights.set(INK_NAMES[i], INK_HIGHLIGHTS[i]);
         else CSS.highlights.delete(INK_NAMES[i]);
       } catch {}
     }
@@ -461,55 +632,72 @@
   }
 
   function pushInkRange(textNode, fromIdx, toIdx) {
-    if (!SUPPORTS_HIGHLIGHTS || !prefs.inkStream || !textNode || textNode.nodeType !== 3) return;
+    if (!SUPPORTS_HIGHLIGHTS || !prefs.inkStream || REDUCED_MOTION || !textNode || textNode.nodeType !== 3) return;
     if (toIdx <= fromIdx || toIdx > textNode.length) return;
     try {
       const range = document.createRange();
       range.setStart(textNode, fromIdx);
       range.setEnd(textNode, toIdx);
       inkEntries.push({ range, startMs: performance.now() });
-      if (inkEntries.length > 48) inkEntries = inkEntries.slice(-48);
+      if (inkEntries.length > 36) inkEntries = inkEntries.slice(-36);
       if (!inkRafId) inkRafId = requestAnimationFrame(tickInkFade);
     } catch {}
   }
 
-  function isAgentGenerating() {
-    return Boolean(document.querySelector('[data-testid="input-cancel-button"]'));
+  let streamObserver = null;
+  let observedStreamVp = null;
+
+  function detachStreamObserver() {
+    if (streamObserver) {
+      streamObserver.disconnect();
+      streamObserver = null;
+    }
+    observedStreamVp = null;
   }
 
-  const streamObserver = new MutationObserver((mutations) => {
-    if (disposed || !prefs.inkStream || !SUPPORTS_HIGHLIGHTS || !isAgentGenerating()) return;
-    for (const m of mutations) {
-      if (m.type === 'characterData' && m.target && m.target.nodeType === 3) {
-        const parent = m.target.parentElement;
-        if (!parent || parent.closest('pre, code') || !parent.closest('[data-testid="planner-response-text"]')) continue;
-        const prevLen = seenTextLens.get(m.target) || 0;
-        const curLen = m.target.length;
-        seenTextLens.set(m.target, curLen);
-        if (curLen > prevLen) {
-          pushInkRange(m.target, Math.max(0, prevLen), curLen);
-        }
-      } else if (m.type === 'childList' && m.addedNodes && m.addedNodes.length) {
-        const host = m.target && m.target.nodeType === 1 ? m.target : m.target?.parentElement;
-        if (!host || host.closest('pre, code') || !host.closest('[data-testid="planner-response-text"]')) continue;
-        for (const n of m.addedNodes) {
-          if (n.nodeType === 3 && n.length > 0 && n.length <= 240) {
-            seenTextLens.set(n, n.length);
-            pushInkRange(n, 0, n.length);
+  function syncStreamObserver(isBusy) {
+    if (disposed || !prefs.inkStream || REDUCED_MOTION || !SUPPORTS_HIGHLIGHTS || !isBusy || document.hidden) {
+      detachStreamObserver();
+      if (!isBusy) clearInkHighlights();
+      return;
+    }
+    const vp = document.querySelector('[data-testid="autoscroll-viewport"]');
+    if (!vp) return;
+    if (streamObserver && observedStreamVp === vp) return;
+    detachStreamObserver();
+    observedStreamVp = vp;
+    streamObserver = new MutationObserver((mutations) => {
+      if (disposed || !prefs.inkStream) return;
+      for (const m of mutations) {
+        if (m.type === 'characterData' && m.target && m.target.nodeType === 3) {
+          const parent = m.target.parentElement;
+          if (!parent || parent.closest('pre, code') || !parent.closest('[data-testid="planner-response-text"]')) continue;
+          const prevLen = seenTextLens.get(m.target) || 0;
+          const curLen = m.target.length;
+          seenTextLens.set(m.target, curLen);
+          if (curLen > prevLen) pushInkRange(m.target, prevLen, curLen);
+        } else if (m.type === 'childList' && m.addedNodes && m.addedNodes.length) {
+          const host = m.target && m.target.nodeType === 1 ? m.target : m.target?.parentElement;
+          if (!host || host.closest('pre, code') || !host.closest('[data-testid="planner-response-text"]')) continue;
+          for (const n of m.addedNodes) {
+            if (n.nodeType === 3 && n.length > 0 && n.length <= 240) {
+              seenTextLens.set(n, n.length);
+              pushInkRange(n, 0, n.length);
+            }
           }
         }
       }
-    }
-  });
-  streamObserver.observe(document.body || document.documentElement, {
-    childList: true,
-    subtree: true,
-    characterData: true
-  });
+    });
+    streamObserver.observe(vp, { childList: true, subtree: true, characterData: true });
+  }
   onCleanup(() => {
-    streamObserver.disconnect();
+    detachStreamObserver();
     clearInkHighlights();
   });
+
+  function isAgentGenerating() {
+    return Boolean(document.querySelector('[data-testid="input-cancel-button"]'));
+  }
 
   /* ==========================================================================
    * 5. Composer Pixel Mascots (Original Crisp Pixel SVGs, 0fps Idle)
@@ -555,8 +743,18 @@
     clearTimeout(mascotBubbleTimer);
     mascotBubbleTimer = setTimeout(() => b.removeAttribute('data-show'), ms);
   }
+  onCleanup(() => clearTimeout(mascotBubbleTimer));
 
-  function syncMascotDock() {
+  function syncMascotCompactGuard() {
+    const box = document.getElementById('antigravity.agentSidePanelInputBox');
+    const dock = document.getElementById('ag-ps-mascot-dock');
+    if (!box || !dock) return;
+    const w = box.getBoundingClientRect().width;
+    if (w > 0 && w < 420) dock.setAttribute('data-compact-hide', '1');
+    else dock.removeAttribute('data-compact-hide');
+  }
+
+  function syncMascotDock(busy) {
     const box = document.getElementById('antigravity.agentSidePanelInputBox');
     let dock = document.getElementById('ag-ps-mascot-dock');
     if (!prefs.mascot || !box) {
@@ -584,8 +782,8 @@
       const sprites = styleKey === 'crab' ? SVG_CRAB : styleKey === 'cat' ? SVG_CAT : `${SVG_CRAB}${SVG_CAT}${SVG_SLIME}`;
       dock.innerHTML = `<span class="ag-ps-mascot-bubble"></span>${sprites}`;
     }
+    syncMascotCompactGuard();
 
-    const busy = isAgentGenerating();
     const now = Date.now();
     if (busy) {
       mascotIdleSince = now;
@@ -609,10 +807,15 @@
   onCleanup(() => document.getElementById('ag-ps-mascot-dock')?.remove());
 
   /* ==========================================================================
-   * 6. Thought Process Live Chinese Translation (Bilingual / Immersive)
+   * 6. Thought Process Live Chinese Translation
+   *    - Waits until generation settles (no repeated RPC every tick while streaming)
+   *    - Cleans up cleanly when thinking block collapses
+   *    - Per-block "看原文 / 看译文" peek toggle in immersive mode
    * ========================================================================== */
   const thoughtInFlight = new WeakSet();
-  const thoughtTextMemo = new WeakMap(); // container -> { src, zh }
+  const thoughtTextMemo = new WeakMap(); // bodyEl -> { src, zh, ver }
+  const thoughtPeekOriginal = new WeakSet(); // bodyEl user chose to peek original
+  let thoughtSeq = 0;
 
   function looksMostlyEnglish(text) {
     const s = String(text || '').trim();
@@ -636,6 +839,15 @@
     return null;
   }
 
+  function removeThoughtBoxNear(triggerBtn) {
+    const parent = triggerBtn && triggerBtn.parentElement;
+    if (!parent) return;
+    parent.querySelectorAll(':scope > .ag-ps-thought-zh').forEach((n) => n.remove());
+    parent.querySelectorAll('.ag-ps-thought-src-dim, .ag-ps-thought-src-hidden').forEach((n) => {
+      n.classList.remove('ag-ps-thought-src-dim', 'ag-ps-thought-src-hidden');
+    });
+  }
+
   function applyThoughtDisplay(bodyEl, zhText, mode) {
     if (!bodyEl || !bodyEl.parentElement) return;
     let box = bodyEl.parentElement.querySelector(':scope > .ag-ps-thought-zh');
@@ -644,15 +856,29 @@
       if (box) box.remove();
       return;
     }
+    const peeking = thoughtPeekOriginal.has(bodyEl);
     if (!box) {
       box = document.createElement('div');
       box.className = 'ag-ps-thought-zh';
       box.setAttribute('data-ag-i18n-ignore', '1');
+      box.addEventListener('click', (e) => {
+        const btn = e.target.closest('.ag-ps-thought-peek');
+        if (!btn) return;
+        e.stopPropagation();
+        if (thoughtPeekOriginal.has(bodyEl)) thoughtPeekOriginal.delete(bodyEl);
+        else thoughtPeekOriginal.add(bodyEl);
+        const memo = thoughtTextMemo.get(bodyEl);
+        applyThoughtDisplay(bodyEl, memo ? memo.zh : zhText, prefs.thoughtMode);
+      });
       bodyEl.parentElement.insertBefore(box, bodyEl.nextSibling);
     }
-    const label = mode === 'immersive' ? '中文思考（沉浸）' : '中文思考（双语）';
-    box.innerHTML = `<div class="ag-ps-thought-zh-hdr"><span>${label}</span></div><div>${escapeHtml(zhText)}</div>`;
-    if (mode === 'immersive') {
+    const effectiveImmersive = mode === 'immersive' && !peeking;
+    const label = mode === 'immersive' ? (peeking ? '中文思考（对照中）' : '中文思考（沉浸）') : '中文思考（双语）';
+    const peekBtn = mode === 'immersive'
+      ? `<button type="button" class="ag-ps-thought-peek">${peeking ? '隐藏原文' : '看原文'}</button>`
+      : '';
+    box.innerHTML = `<div class="ag-ps-thought-zh-hdr"><span>${label}</span>${peekBtn}</div><div>${escapeHtml(zhText)}</div>`;
+    if (effectiveImmersive) {
       bodyEl.classList.add('ag-ps-thought-src-hidden');
       bodyEl.classList.remove('ag-ps-thought-src-dim');
     } else {
@@ -661,29 +887,33 @@
     }
   }
 
-  function translateThoughtContainer(bodyEl, modeOverride = null) {
+  function translateThoughtContainer(bodyEl) {
     if (!bodyEl || typeof window.__agProjectCall !== 'function') return;
-    const mode = modeOverride || prefs.thoughtMode;
+    const mode = prefs.thoughtMode;
     if (mode === 'off') {
       applyThoughtDisplay(bodyEl, '', 'off');
       return;
     }
     const srcText = (bodyEl.innerText || bodyEl.textContent || '').trim();
     if (!looksMostlyEnglish(srcText)) return;
-    const clipped = srcText.slice(0, 4200);
+    const clipped = srcText.slice(0, 9800);
     const memo = thoughtTextMemo.get(bodyEl);
     if (memo && memo.src === clipped && memo.zh) {
       applyThoughtDisplay(bodyEl, memo.zh, mode);
       return;
     }
     if (thoughtInFlight.has(bodyEl)) return;
+    const myVer = ++thoughtSeq;
+    thoughtTextMemo.set(bodyEl, { src: clipped, zh: memo ? memo.zh : '', ver: myVer });
     thoughtInFlight.add(bodyEl);
-    Promise.resolve(window.__agProjectCall('translateText', { text: clipped, targetLang: 'zh-CN' }, 9000))
+    Promise.resolve(window.__agProjectCall('translateText', { text: clipped, targetLang: 'zh-CN' }, 12000))
       .then((res) => {
         if (disposed || !bodyEl.isConnected) return;
+        const latest = thoughtTextMemo.get(bodyEl);
+        if (!latest || latest.ver !== myVer) return; // Discard stale response
         if (res && res.ok && res.translated && !res.skipped) {
-          thoughtTextMemo.set(bodyEl, { src: clipped, zh: res.translated });
-          applyThoughtDisplay(bodyEl, res.translated, modeOverride || prefs.thoughtMode);
+          thoughtTextMemo.set(bodyEl, { src: clipped, zh: res.translated, ver: myVer });
+          applyThoughtDisplay(bodyEl, res.translated, prefs.thoughtMode);
         }
       })
       .catch(() => {})
@@ -692,14 +922,24 @@
       });
   }
 
-  function syncThoughtBlocks() {
+  function syncThoughtBlocks(isBusy) {
     const triggers = document.querySelectorAll('[data-testid="thinking-collapsible-trigger"]');
     for (const trig of triggers) {
       const expanded = trig.getAttribute('aria-expanded') === 'true';
-      const bodyEl = expanded ? findThoughtBody(trig) : null;
+      if (!expanded) {
+        removeThoughtBoxNear(trig);
+        continue;
+      }
+      const bodyEl = findThoughtBody(trig);
       if (!bodyEl) continue;
       if (prefs.thoughtMode === 'off') {
         applyThoughtDisplay(bodyEl, '', 'off');
+        continue;
+      }
+      // Wait for active streaming turn to finish before firing translation RPC (no 1.4s spam)
+      if (isBusy) {
+        const memo = thoughtTextMemo.get(bodyEl);
+        if (memo && memo.zh) applyThoughtDisplay(bodyEl, memo.zh, prefs.thoughtMode);
         continue;
       }
       translateThoughtContainer(bodyEl);
@@ -715,13 +955,6 @@
   /* ==========================================================================
    * 7. Titlebar Entry & Control Popover
    * ========================================================================== */
-  function isCurrentlyDark() {
-    return (
-      document.documentElement.getAttribute('data-ag-theme-mode') === 'dark' ||
-      document.body.classList.contains('dark')
-    );
-  }
-
   function renderPopoverContent(pop) {
     const darkNow = isCurrentlyDark();
     pop.innerHTML = `
@@ -729,32 +962,32 @@
         <span class="ag-ps-pop-title">✦ 棱镜扩展套件 <span class="ag-ps-pop-badge">${darkNow ? '当前深色' : '当前浅色'}</span></span>
       </div>
 
-      <div class="ag-ps-sec-lbl">浅色主题配色</div>
+      <div class="ag-ps-sec-lbl"><span>浅色主题配色</span><span class="ag-ps-sec-tag">${!darkNow ? '即时生效' : '浅色首选'}</span></div>
       <div class="ag-ps-palette-row">
         <button type="button" class="ag-ps-pal-btn" data-set-light="default" data-selected="${prefs.lightPalette === 'default' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:#FFFFFF"></span>纯白默认</button>
         <button type="button" class="ag-ps-pal-btn" data-set-light="crystal" data-selected="${prefs.lightPalette === 'crystal' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:#E8EEF6"></span>白昼冷晶</button>
         <button type="button" class="ag-ps-pal-btn" data-set-light="alabaster" data-selected="${prefs.lightPalette === 'alabaster' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:#EBE6DC"></span>暖白画册</button>
       </div>
 
-      <div class="ag-ps-sec-lbl">深色主题配色</div>
+      <div class="ag-ps-sec-lbl"><span>深色主题配色</span><span class="ag-ps-sec-tag">${darkNow ? '即时生效' : '深色首选'}</span></div>
       <div class="ag-ps-palette-row">
         <button type="button" class="ag-ps-pal-btn" data-set-dark="default" data-selected="${prefs.darkPalette === 'default' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:#212120"></span>暖炭默认</button>
         <button type="button" class="ag-ps-pal-btn" data-set-dark="obsidian" data-selected="${prefs.darkPalette === 'obsidian' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:#09090B"></span>深空黑曜</button>
         <button type="button" class="ag-ps-pal-btn" data-set-dark="basalt" data-selected="${prefs.darkPalette === 'basalt' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:#141312"></span>暖炭玄岩</button>
       </div>
 
-      <div class="ag-ps-sec-lbl">增强功能开关</div>
+      <div class="ag-ps-sec-lbl"><span>增强功能开关</span><span class="ag-ps-sec-tag">v0.2.0</span></div>
       <div class="ag-ps-toggle-list">
         <div class="ag-ps-toggle-row">
           <div class="ag-ps-toggle-label"><span>会话大纲 &amp; 跳轮</span><span class="ag-ps-toggle-sub">Alt+↑/↓ 跳轮 · Alt+O 大纲</span></div>
           <button type="button" class="ag-ps-switch" data-toggle="outline" data-on="${prefs.outline ? '1' : '0'}"></button>
         </div>
         <div class="ag-ps-toggle-row">
-          <div class="ag-ps-toggle-label"><span>名著换算 &amp; 12 周热力图</span><span class="ag-ps-toggle-sub">位于右侧「概览 → 用量统计」底部 <a href="#" data-jump-usage="1" style="color:var(--primary,#2F75C3);text-decoration:none;margin-left:4px">定位 ↗</a></span></div>
+          <div class="ag-ps-toggle-label"><span>名著换算 &amp; 12 周热力图</span><span class="ag-ps-toggle-sub">右侧「概览 → 用量统计」底部 <a href="#" data-jump-usage="1" style="color:var(--primary,#2F75C3);text-decoration:none;margin-left:4px">定位 ↗</a></span></div>
           <button type="button" class="ag-ps-switch" data-toggle="usageExtra" data-on="${prefs.usageExtra ? '1' : '0'}"></button>
         </div>
         <div class="ag-ps-toggle-row">
-          <div class="ag-ps-toggle-label"><span>五级水墨流式淡入</span><span class="ag-ps-toggle-sub">CSS.highlights 零 DOM 侵入</span></div>
+          <div class="ag-ps-toggle-label"><span>五级水墨流式淡入</span><span class="ag-ps-toggle-sub">仅生成态生效 · 打字零开销</span></div>
           <button type="button" class="ag-ps-switch" data-toggle="inkStream" data-on="${prefs.inkStream ? '1' : '0'}"></button>
         </div>
         <div class="ag-ps-toggle-row">
@@ -774,7 +1007,7 @@
             : ''
         }
         <div class="ag-ps-toggle-row">
-          <div class="ag-ps-toggle-label"><span>思考过程实时中译</span><span class="ag-ps-toggle-sub">展开英文思考块自动翻译</span></div>
+          <div class="ag-ps-toggle-label"><span>思考过程实时中译</span><span class="ag-ps-toggle-sub">经 Google 翻译 · 沉浸可看原文</span></div>
           <div class="ag-ps-seg-group">
             <button type="button" class="ag-ps-seg-btn" data-thought-mode="off" data-selected="${prefs.thoughtMode === 'off' ? '1' : '0'}">关</button>
             <button type="button" class="ag-ps-seg-btn" data-thought-mode="bilingual" data-selected="${prefs.thoughtMode === 'bilingual' ? '1' : '0'}">双语</button>
@@ -807,7 +1040,7 @@
           syncUsageExtraMount();
           const card = document.querySelector('#ag-claude-ov-sections [data-ov-card="usage"]');
           if (card) {
-            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            card.scrollIntoView({ behavior: REDUCED_MOTION ? 'auto' : 'smooth', block: 'center' });
             card.classList.remove('ag-ps-turn-pulse');
             void card.offsetWidth;
             card.classList.add('ag-ps-turn-pulse');
@@ -818,18 +1051,24 @@
       }
       const lBtn = e.target.closest('[data-set-light]');
       if (lBtn) {
-        prefs.lightPalette = lBtn.getAttribute('data-set-light');
+        const val = lBtn.getAttribute('data-set-light');
+        prefs.lightPalette = val;
         savePrefs();
         applyPalettes();
         renderPopoverContent(pop);
+        const name = LIGHT_NAMES[val] || val;
+        showJumpToast(isCurrentlyDark() ? `已设为浅色首选「${name}」，切换浅色模式时生效` : `已切换浅色配色：${name}`);
         return;
       }
       const dBtn = e.target.closest('[data-set-dark]');
       if (dBtn) {
-        prefs.darkPalette = dBtn.getAttribute('data-set-dark');
+        const val = dBtn.getAttribute('data-set-dark');
+        prefs.darkPalette = val;
         savePrefs();
         applyPalettes();
         renderPopoverContent(pop);
+        const name = DARK_NAMES[val] || val;
+        showJumpToast(!isCurrentlyDark() ? `已设为深色首选「${name}」，切换深色模式时生效` : `已切换深色配色：${name}`);
         return;
       }
       const sw = e.target.closest('[data-toggle]');
@@ -837,9 +1076,10 @@
         const k = sw.getAttribute('data-toggle');
         prefs[k] = !prefs[k];
         savePrefs();
-        if (k === 'inkStream' && !prefs.inkStream) clearInkHighlights();
+        const busy = isAgentGenerating();
+        if (k === 'inkStream') syncStreamObserver(busy);
         if (k === 'outline' && !prefs.outline) toggleOutlineDrawer(false);
-        syncMascotDock();
+        syncMascotDock(busy);
         syncUsageExtraMount();
         syncToolbarButtons();
         renderPopoverContent(pop);
@@ -849,7 +1089,7 @@
       if (ms) {
         prefs.mascotStyle = ms.getAttribute('data-mascot-style');
         savePrefs();
-        syncMascotDock();
+        syncMascotDock(isAgentGenerating());
         renderPopoverContent(pop);
         return;
       }
@@ -857,7 +1097,7 @@
       if (tm) {
         prefs.thoughtMode = tm.getAttribute('data-thought-mode');
         savePrefs();
-        syncThoughtBlocks();
+        syncThoughtBlocks(isAgentGenerating());
         renderPopoverContent(pop);
       }
     });
@@ -955,7 +1195,7 @@
   onCleanup(() => document.removeEventListener('click', onDocClickOutside));
 
   /* ==========================================================================
-   * 8. Lightweight Periodic Sync & Zero-Flicker Overview Observer
+   * 8. Lightweight Periodic Sync, Visibility Pause & Shallow Overview Observer
    * ========================================================================== */
   let ovMountObserver = null;
   let observedOvEl = null;
@@ -966,6 +1206,7 @@
     if (observedOvEl === sec && ovMountObserver) return;
     if (ovMountObserver) ovMountObserver.disconnect();
     observedOvEl = sec;
+    // Shallow childList observation only (no subtree overhead)
     ovMountObserver = new MutationObserver(() => {
       if (disposed || !prefs.usageExtra) return;
       const body = sec.querySelector('[data-ov-card="usage"] .ag-ov-card-body');
@@ -973,7 +1214,7 @@
         syncUsageExtraMount();
       }
     });
-    ovMountObserver.observe(sec, { childList: true, subtree: true });
+    ovMountObserver.observe(sec, { childList: true });
   }
   onCleanup(() => {
     if (ovMountObserver) ovMountObserver.disconnect();
@@ -981,17 +1222,42 @@
     observedOvEl = null;
   });
 
+  let lastPath = window.location.pathname;
   function tickAll() {
-    if (disposed) return;
+    if (disposed || document.hidden) return;
+    // Detect SPA conversation switch and close stale outline drawer
+    if (window.location.pathname !== lastPath) {
+      lastPath = window.location.pathname;
+      const drawer = document.getElementById('ag-ps-outline');
+      if (drawer && drawer.getAttribute('data-open') === '1') {
+        renderOutlineList('');
+      }
+    }
+    const busy = isAgentGenerating();
+    syncStreamObserver(busy);
+    // Defer non-urgent DOM scans while user is actively typing in composer
+    if (isUserActivelyTyping() && !busy) return;
     syncToolbarButtons();
-    syncMascotDock();
+    syncMascotDock(busy);
     ensureOverviewObserver();
     syncUsageExtraMount();
-    syncThoughtBlocks();
+    syncThoughtBlocks(busy);
   }
 
+  function onVisibilityChange() {
+    if (disposed) return;
+    if (document.hidden) {
+      detachStreamObserver();
+      clearInkHighlights();
+    } else {
+      tickAll();
+    }
+  }
+  document.addEventListener('visibilitychange', onVisibilityChange);
+  onCleanup(() => document.removeEventListener('visibilitychange', onVisibilityChange));
+
   tickAll();
-  const intervalId = setInterval(tickAll, 1400);
+  const intervalId = setInterval(tickAll, 2400);
   onCleanup(() => clearInterval(intervalId));
 
   window.__agPrismSuiteDispose = function () {
