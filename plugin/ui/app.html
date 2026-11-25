@@ -1,0 +1,2800 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prism 文件工作台</title>
+  <style>
+    :root {
+      --p-bg: #ffffff;
+      --p-bg-subtle: #f8fafc;
+      --p-bg-hover: #f1f5f9;
+      --p-bg-active: #e2e8f0;
+      --p-bg-selected: rgba(37, 99, 235, 0.1);
+      --p-text: #0f172a;
+      --p-text-secondary: #475569;
+      --p-text-muted: #64748b;
+      --p-border: rgba(15, 23, 42, 0.1);
+      --p-border-strong: rgba(15, 23, 42, 0.18);
+      --p-accent: #2563eb;
+      --p-accent-soft: rgba(37, 99, 235, 0.11);
+      --p-warn: #d97706;
+      --p-warn-soft: rgba(217, 119, 6, 0.12);
+      --p-danger: #dc2626;
+      --p-danger-soft: rgba(220, 38, 38, 0.11);
+      --p-success: #059669;
+      --p-checker-a: #f1f5f9;
+      --p-checker-b: #e2e8f0;
+      --p-code-bg: #f8fafc;
+      --p-toast-bg: #0f172a;
+      --p-toast-text: #f8fafc;
+      --p-shadow: 0 6px 20px rgba(15, 23, 42, 0.14);
+      --p-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --p-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color-scheme: light;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --p-bg: #12151a;
+        --p-bg-subtle: #181c22;
+        --p-bg-hover: #21262e;
+        --p-bg-active: #2b323d;
+        --p-bg-selected: rgba(96, 165, 250, 0.16);
+        --p-text: #f1f5f9;
+        --p-text-secondary: #cbd5e1;
+        --p-text-muted: #94a3b8;
+        --p-border: rgba(248, 250, 252, 0.1);
+        --p-border-strong: rgba(248, 250, 252, 0.2);
+        --p-accent: #60a5fa;
+        --p-accent-soft: rgba(96, 165, 250, 0.16);
+        --p-warn: #fbbf24;
+        --p-warn-soft: rgba(251, 191, 36, 0.15);
+        --p-danger: #f87171;
+        --p-danger-soft: rgba(248, 113, 113, 0.16);
+        --p-success: #34d399;
+        --p-checker-a: #1b2028;
+        --p-checker-b: #242a35;
+        --p-code-bg: #161a21;
+        --p-toast-bg: #e2e8f0;
+        --p-toast-text: #0f172a;
+        --p-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+        color-scheme: dark;
+      }
+    }
+
+    :root[data-theme="dark"] {
+      --p-bg: #12151a;
+      --p-bg-subtle: #181c22;
+      --p-bg-hover: #21262e;
+      --p-bg-active: #2b323d;
+      --p-bg-selected: rgba(96, 165, 250, 0.16);
+      --p-text: #f1f5f9;
+      --p-text-secondary: #cbd5e1;
+      --p-text-muted: #94a3b8;
+      --p-border: rgba(248, 250, 252, 0.1);
+      --p-border-strong: rgba(248, 250, 252, 0.2);
+      --p-accent: #60a5fa;
+      --p-accent-soft: rgba(96, 165, 250, 0.16);
+      --p-warn: #fbbf24;
+      --p-warn-soft: rgba(251, 191, 36, 0.15);
+      --p-danger: #f87171;
+      --p-danger-soft: rgba(248, 113, 113, 0.16);
+      --p-success: #34d399;
+      --p-checker-a: #1b2028;
+      --p-checker-b: #242a35;
+      --p-code-bg: #161a21;
+      --p-toast-bg: #e2e8f0;
+      --p-toast-text: #0f172a;
+      --p-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      color-scheme: dark;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100vh;
+      overflow: hidden;
+      background: var(--color-background-primary, var(--p-bg));
+      color: var(--color-text-primary, var(--p-text));
+      font-family: var(--font-sans, var(--p-font-sans));
+      font-size: 13px;
+      line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .app-shell {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100vh;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    /* Top Bar */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 7px 10px;
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      border-bottom: 1px solid var(--color-border-primary, var(--p-border));
+      flex-shrink: 0;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+
+    .tab-group {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px;
+      border-radius: 8px;
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+      min-width: 0;
+    }
+
+    .tab-btn {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--color-text-secondary, var(--p-text-secondary));
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 5px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background-color 150ms cubic-bezier(0.22, 1, 0.36, 1),
+                  color 150ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .tab-btn:hover {
+      color: var(--color-text-primary, var(--p-text));
+    }
+
+    .tab-btn.is-active {
+      background: var(--color-background-primary, var(--p-bg));
+      color: var(--color-text-primary, var(--p-text));
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+    }
+
+    .topbar-controls {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+    }
+
+    .ctrl-btn {
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      height: 26px;
+      padding: 0 8px;
+      border-radius: 6px;
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-primary, var(--p-bg));
+      color: var(--color-text-secondary, var(--p-text-secondary));
+      font-family: inherit;
+      font-size: 11.5px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background-color 150ms cubic-bezier(0.22, 1, 0.36, 1),
+                  border-color 150ms cubic-bezier(0.22, 1, 0.36, 1),
+                  color 150ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .ctrl-btn:hover:not(:disabled) {
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+      border-color: var(--p-border-strong);
+      color: var(--color-text-primary, var(--p-text));
+    }
+
+    .ctrl-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .ctrl-btn.is-active {
+      background: var(--p-accent-soft);
+      border-color: transparent;
+      color: var(--color-accent, var(--p-accent));
+    }
+
+    .ctrl-btn.is-star-active {
+      color: #d97706;
+      background: var(--p-warn-soft);
+      border-color: transparent;
+    }
+
+    .ctrl-btn.is-primary {
+      background: var(--p-accent-soft);
+      color: var(--color-accent, var(--p-accent));
+      border-color: transparent;
+    }
+
+    .ctrl-btn.is-primary:hover:not(:disabled) {
+      border-color: var(--color-accent, var(--p-accent));
+    }
+
+    .ctrl-btn[hidden] {
+      display: none;
+    }
+
+    .ctrl-icon {
+      padding: 0 7px;
+      min-width: 26px;
+    }
+
+    .dot-indicator {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      opacity: 0.45;
+    }
+
+    .ctrl-btn.is-active .dot-indicator {
+      opacity: 1;
+    }
+
+    /* Main Workspace */
+    .workspace {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .tab-stage {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 110px;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .tab-panel {
+      display: none;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .tab-panel.is-active {
+      display: flex;
+    }
+
+    /* Browse Toolbar */
+    .toolbar {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-primary, var(--p-bg));
+      flex-shrink: 0;
+    }
+
+    .path-row {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+    }
+
+    .input-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .text-input {
+      width: 100%;
+      min-width: 0;
+      height: 28px;
+      padding: 0 9px;
+      border-radius: 6px;
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      color: var(--color-text-primary, var(--p-text));
+      font-family: inherit;
+      font-size: 12px;
+      outline: none;
+      transition: border-color 150ms cubic-bezier(0.22, 1, 0.36, 1),
+                  background-color 150ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .text-input:focus {
+      background: var(--color-background-primary, var(--p-bg));
+      border-color: var(--color-accent, var(--p-accent));
+    }
+
+    .path-input {
+      font-family: var(--font-mono, var(--p-font-mono));
+      font-size: 11.5px;
+    }
+
+    .filter-input {
+      padding-right: 26px;
+    }
+
+    .clear-input-btn {
+      position: absolute;
+      right: 4px;
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+    }
+
+    .clear-input-btn:hover {
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+      color: var(--color-text-primary, var(--p-text));
+    }
+
+    .clear-input-btn[hidden] {
+      display: none;
+    }
+
+    .filter-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .meta-count {
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .subbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-primary, var(--p-bg));
+      flex-shrink: 0;
+      min-width: 0;
+    }
+
+    .subbar-info {
+      font-size: 11.5px;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+
+    .subbar-mono {
+      font-family: var(--font-mono, var(--p-font-mono));
+    }
+
+    /* Banners */
+    .notice-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 6px 10px;
+      font-size: 11.5px;
+      background: var(--p-warn-soft);
+      color: var(--color-text-primary, var(--p-text));
+      border-bottom: 1px solid var(--color-border-secondary, var(--p-border));
+      flex-shrink: 0;
+    }
+
+    .notice-bar.is-error {
+      background: var(--p-danger-soft);
+      color: var(--p-danger);
+    }
+
+    .notice-bar[hidden] {
+      display: none;
+    }
+
+    /* Scrollable Lists */
+    .list-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 4px 6px;
+    }
+
+    .item-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .list-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 7px;
+      border: 1px solid transparent;
+      cursor: default;
+      user-select: none;
+      min-width: 0;
+      transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+                  border-color 140ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .list-row + .list-row {
+      margin-top: 1px;
+    }
+
+    .list-row:hover {
+      background: var(--color-background-secondary, var(--p-bg-hover));
+    }
+
+    .list-row.is-selected {
+      background: var(--p-bg-selected);
+      border-color: rgba(37, 99, 235, 0.28);
+    }
+
+    .list-row.is-missing {
+      opacity: 0.65;
+    }
+
+    .kind-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+    }
+
+    .kind-icon svg {
+      width: 14px;
+      height: 14px;
+      display: block;
+    }
+
+    .kind-dir { color: #d97706; background: rgba(217, 119, 6, 0.12); }
+    .kind-code { color: #2563eb; background: rgba(37, 99, 235, 0.12); }
+    .kind-markdown { color: #0891b2; background: rgba(8, 145, 178, 0.12); }
+    .kind-image { color: #059669; background: rgba(5, 150, 105, 0.12); }
+    .kind-pdf { color: #e11d48; background: rgba(225, 29, 72, 0.12); }
+    .kind-office { color: #4f46e5; background: rgba(79, 70, 229, 0.12); }
+    .kind-archive { color: #b45309; background: rgba(180, 83, 9, 0.12); }
+    .kind-file { color: var(--color-text-secondary, var(--p-text-muted)); }
+
+    .row-main {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+
+    .row-title-line {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .row-name {
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--color-text-primary, var(--p-text));
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .row-sub {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .row-sub-mono {
+      font-family: var(--font-mono, var(--p-font-mono));
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 0 5px;
+      height: 17px;
+      border-radius: 4px;
+      font-size: 10.5px;
+      font-variant-numeric: tabular-nums;
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+      color: var(--color-text-secondary, var(--p-text-secondary));
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+      flex-shrink: 0;
+    }
+
+    .pill-warn {
+      background: var(--p-warn-soft);
+      color: var(--p-warn);
+      border-color: transparent;
+    }
+
+    .pill-danger {
+      background: var(--p-danger-soft);
+      color: var(--p-danger);
+      border-color: transparent;
+    }
+
+    .row-size {
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .row-actions {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      flex-shrink: 0;
+      opacity: 0;
+      transition: opacity 140ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .list-row:hover .row-actions,
+    .list-row:focus-within .row-actions,
+    .list-row.is-selected .row-actions {
+      opacity: 1;
+    }
+
+    .mini-btn {
+      appearance: none;
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-primary, var(--p-bg));
+      color: var(--color-text-secondary, var(--p-text-secondary));
+      font-family: inherit;
+      font-size: 11px;
+      line-height: 1;
+      padding: 4px 6px;
+      border-radius: 5px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+                  color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+                  border-color 140ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .mini-btn:hover {
+      background: var(--color-background-tertiary, var(--p-bg-active));
+      border-color: var(--p-border-strong);
+      color: var(--color-text-primary, var(--p-text));
+    }
+
+    .mini-btn.is-primary {
+      color: var(--color-accent, var(--p-accent));
+      background: var(--p-accent-soft);
+      border-color: transparent;
+    }
+
+    .mini-btn[hidden] {
+      display: none;
+    }
+
+    .empty-state {
+      padding: 28px 16px;
+      text-align: center;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      font-size: 12.5px;
+    }
+
+    /* Resizable Preview Drawer */
+    .preview-drawer {
+      display: flex;
+      flex-direction: column;
+      flex: 0 0 auto;
+      height: 290px;
+      min-height: 36px;
+      max-height: 75vh;
+      border-top: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-primary, var(--p-bg));
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .preview-drawer[hidden] {
+      display: none;
+    }
+
+    .preview-drawer.is-collapsed {
+      height: 36px !important;
+    }
+
+    .preview-resizer {
+      height: 6px;
+      flex-shrink: 0;
+      cursor: row-resize;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      border-bottom: 1px solid var(--color-border-secondary, var(--p-border));
+      touch-action: none;
+    }
+
+    .preview-resizer::before {
+      content: "";
+      width: 34px;
+      height: 2px;
+      border-radius: 999px;
+      background: var(--p-border-strong);
+    }
+
+    .preview-resizer:hover::before {
+      background: var(--color-accent, var(--p-accent));
+    }
+
+    .preview-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 5px 10px;
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      border-bottom: 1px solid var(--color-border-primary, var(--p-border));
+      flex-shrink: 0;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+
+    .preview-title-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      flex: 1 1 140px;
+    }
+
+    .preview-name {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--color-text-primary, var(--p-text));
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .preview-size {
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .preview-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+    }
+
+    .seg-toggle {
+      display: inline-flex;
+      padding: 1px;
+      border-radius: 6px;
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+    }
+
+    .seg-btn {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--color-text-secondary, var(--p-text-secondary));
+      font-family: inherit;
+      font-size: 11px;
+      padding: 3px 7px;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+
+    .seg-btn.is-active {
+      background: var(--color-background-primary, var(--p-bg));
+      color: var(--color-text-primary, var(--p-text));
+      font-weight: 500;
+    }
+
+    .preview-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      min-width: 0;
+      overflow: auto;
+      position: relative;
+      background: var(--color-background-primary, var(--p-bg));
+    }
+
+    .preview-drawer.is-collapsed .preview-body,
+    .preview-drawer.is-collapsed .preview-banner {
+      display: none;
+    }
+
+    .preview-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 5px 10px;
+      font-size: 11.5px;
+      background: var(--p-warn-soft);
+      border-bottom: 1px solid var(--color-border-secondary, var(--p-border));
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    .preview-banner.is-danger {
+      background: var(--p-danger-soft);
+    }
+
+    .preview-banner[hidden] {
+      display: none;
+    }
+
+    .banner-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    /* Code View */
+    .code-view {
+      display: flex;
+      align-items: stretch;
+      min-height: 100%;
+      font-family: var(--font-mono, var(--p-font-mono));
+      font-size: 12px;
+      line-height: 1.55;
+      background: var(--p-code-bg);
+    }
+
+    .code-gutter {
+      padding: 10px 8px;
+      text-align: right;
+      user-select: none;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      border-right: 1px solid var(--color-border-secondary, var(--p-border));
+      font-variant-numeric: tabular-nums;
+      white-space: pre;
+      flex-shrink: 0;
+      opacity: 0.72;
+    }
+
+    .code-content {
+      margin: 0;
+      padding: 10px 12px;
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow-x: auto;
+      white-space: pre;
+      tab-size: 2;
+      color: var(--color-text-primary, var(--p-text));
+    }
+
+    /* Editor Textarea */
+    .editor-textarea {
+      display: block;
+      width: 100%;
+      height: 100%;
+      min-height: 100%;
+      border: 0;
+      resize: none;
+      outline: none;
+      padding: 10px 12px;
+      margin: 0;
+      background: var(--p-code-bg);
+      color: var(--color-text-primary, var(--p-text));
+      font-family: var(--font-mono, var(--p-font-mono));
+      font-size: 12px;
+      line-height: 1.55;
+      tab-size: 2;
+    }
+
+    /* Image View */
+    .image-stage {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 100%;
+      padding: 14px;
+      background-color: var(--p-checker-a);
+      background-image:
+        linear-gradient(45deg, var(--p-checker-b) 25%, transparent 25%),
+        linear-gradient(-45deg, var(--p-checker-b) 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, var(--p-checker-b) 75%),
+        linear-gradient(-45deg, transparent 75%, var(--p-checker-b) 75%);
+      background-size: 16px 16px;
+      background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+    }
+
+    .image-stage img {
+      max-width: 100%;
+      max-height: 460px;
+      object-fit: contain;
+      border-radius: 4px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
+    }
+
+    .image-meta {
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      background: var(--color-background-primary, var(--p-bg));
+      color: var(--color-text-secondary, var(--p-text-secondary));
+      border: 1px solid var(--color-border-primary, var(--p-border));
+    }
+
+    /* Markdown View */
+    .md-view {
+      padding: 12px 15px;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--color-text-primary, var(--p-text));
+      word-break: break-word;
+    }
+
+    .md-view > :first-child { margin-top: 0; }
+    .md-view > :last-child { margin-bottom: 0; }
+    .md-view h1, .md-view h2, .md-view h3, .md-view h4, .md-view h5, .md-view h6 {
+      margin: 1em 0 0.45em;
+      font-weight: 650;
+      line-height: 1.3;
+    }
+    .md-view h1 { font-size: 17px; padding-bottom: 4px; border-bottom: 1px solid var(--color-border-secondary, var(--p-border)); }
+    .md-view h2 { font-size: 15px; }
+    .md-view h3 { font-size: 13.5px; }
+    .md-view h4, .md-view h5, .md-view h6 { font-size: 12.5px; color: var(--color-text-secondary, var(--p-text-secondary)); }
+    .md-view p { margin: 0.55em 0; }
+    .md-view ul, .md-view ol { margin: 0.5em 0; padding-left: 1.5em; }
+    .md-view li + li { margin-top: 0.2em; }
+    .md-view blockquote {
+      margin: 0.65em 0;
+      padding: 4px 10px;
+      border-left: 3px solid var(--color-accent, var(--p-accent));
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      color: var(--color-text-secondary, var(--p-text-secondary));
+      border-radius: 0 6px 6px 0;
+    }
+    .md-view code {
+      font-family: var(--font-mono, var(--p-font-mono));
+      font-size: 11.5px;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+    }
+    .md-view pre.md-code {
+      margin: 0.7em 0;
+      padding: 9px 11px;
+      border-radius: 7px;
+      background: var(--p-code-bg);
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+      overflow-x: auto;
+    }
+    .md-view pre.md-code code {
+      padding: 0;
+      background: transparent;
+      font-size: 11.5px;
+      line-height: 1.5;
+    }
+    .md-view .md-code-lang {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      margin-bottom: 4px;
+      user-select: none;
+    }
+    .md-view hr {
+      border: 0;
+      border-top: 1px solid var(--color-border-primary, var(--p-border));
+      margin: 0.9em 0;
+    }
+    .md-view a {
+      color: var(--color-accent, var(--p-accent));
+      text-decoration: none;
+    }
+    .md-view a:hover {
+      text-decoration: underline;
+    }
+    .md-view .md-link-text {
+      color: var(--color-text-secondary, var(--p-text-secondary));
+      text-decoration: underline dotted;
+    }
+    .md-view table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 0.7em 0;
+      font-size: 12px;
+    }
+    .md-view th, .md-view td {
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      padding: 5px 8px;
+      text-align: left;
+    }
+    .md-view th {
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      font-weight: 600;
+    }
+    .md-task {
+      display: inline-block;
+      margin-right: 4px;
+      font-variant-numeric: tabular-nums;
+      color: var(--color-accent, var(--p-accent));
+    }
+
+    .preview-placeholder {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      min-height: 100%;
+      padding: 20px;
+      text-align: center;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      font-size: 12.5px;
+    }
+
+    .placeholder-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    /* Toast */
+    .toast {
+      position: fixed;
+      right: 12px;
+      bottom: 12px;
+      z-index: 40;
+      max-width: calc(100vw - 24px);
+      padding: 6px 11px;
+      border-radius: 7px;
+      background: var(--p-toast-bg);
+      color: var(--p-toast-text);
+      font-size: 12px;
+      box-shadow: var(--p-shadow);
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(5px);
+      transition: opacity 160ms cubic-bezier(0.22, 1, 0.36, 1),
+                  transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .toast.is-visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .toast.is-error {
+      background: var(--p-danger);
+      color: #ffffff;
+    }
+
+    @media (max-width: 420px) {
+      .topbar {
+        padding: 6px 8px;
+      }
+      .tab-btn {
+        padding: 4px 8px;
+        font-size: 11.5px;
+      }
+      .row-size {
+        display: none;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .tab-btn, .ctrl-btn, .text-input, .list-row, .row-actions, .mini-btn, .toast {
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <nav class="tab-group" role="tablist" aria-label="工作台视图">
+        <button type="button" class="tab-btn is-active" role="tab" id="tab-btn-browse" data-tab="browse" aria-selected="true">目录浏览</button>
+        <button type="button" class="tab-btn" role="tab" id="tab-btn-artifacts" data-tab="artifacts" aria-selected="false">最近产物</button>
+        <button type="button" class="tab-btn" role="tab" id="tab-btn-pins" data-tab="pins" aria-selected="false">收藏夹</button>
+      </nav>
+      <div class="topbar-controls">
+        <button type="button" id="btn-hidden-toggle" class="ctrl-btn" aria-pressed="false" title="切换显示以 . 开头的隐藏文件">
+          <span class="dot-indicator" aria-hidden="true"></span>
+          <span>隐藏</span>
+        </button>
+        <button type="button" id="btn-dblclick-toggle" class="ctrl-btn" title="切换双击文件时的默认动作">双击:定位</button>
+        <button type="button" id="btn-refresh" class="ctrl-btn ctrl-icon" title="刷新当前视图" aria-label="刷新">↻</button>
+      </div>
+    </header>
+
+    <div id="workspace" class="workspace">
+      <div class="tab-stage">
+        <!-- Tab 1: 目录浏览 -->
+        <section id="panel-browse" class="tab-panel is-active" role="tabpanel" aria-labelledby="tab-btn-browse">
+          <div class="toolbar">
+            <div class="path-row">
+              <button type="button" id="btn-parent" class="ctrl-btn ctrl-icon" title="返回上级目录" aria-label="返回上级目录">↑</button>
+              <button type="button" id="btn-home" class="ctrl-btn" title="回到用户家目录">家目录</button>
+              <div class="input-wrap">
+                <input id="path-input" class="text-input path-input" type="text" spellcheck="false" autocomplete="off" aria-label="当前目录路径" placeholder="输入目录路径并按回车…" />
+              </div>
+              <button type="button" id="btn-pin-dir" class="ctrl-btn ctrl-icon" title="收藏或取消收藏当前目录" aria-label="收藏当前目录" aria-pressed="false">★</button>
+            </div>
+            <div class="filter-row">
+              <div class="input-wrap">
+                <input id="filter-input" class="text-input filter-input" type="text" spellcheck="false" autocomplete="off" aria-label="筛选文件名" placeholder="筛选当前目录文件名…" />
+                <button type="button" id="btn-clear-filter" class="clear-input-btn" title="清除筛选" aria-label="清除筛选" hidden>×</button>
+              </div>
+              <span id="browse-count" class="meta-count">0 项</span>
+            </div>
+          </div>
+          <div id="browse-notice" class="notice-bar" hidden></div>
+          <div id="browse-list-wrap" class="list-scroll">
+            <div class="empty-state">正在读取目录…</div>
+          </div>
+        </section>
+
+        <!-- Tab 2: 最近产物 -->
+        <section id="panel-artifacts" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-artifacts">
+          <div class="subbar">
+            <span id="artifacts-dir-label" class="subbar-info subbar-mono">~/.gemini/antigravity/brain</span>
+            <span id="artifacts-count" class="meta-count">0 项</span>
+          </div>
+          <div class="toolbar">
+            <div class="filter-row">
+              <div class="input-wrap">
+                <input id="artifacts-filter-input" class="text-input filter-input" type="text" spellcheck="false" autocomplete="off" aria-label="筛选产物" placeholder="筛选产物名称或会话 ID…" />
+                <button type="button" id="btn-clear-artifacts-filter" class="clear-input-btn" title="清除筛选" aria-label="清除筛选" hidden>×</button>
+              </div>
+            </div>
+          </div>
+          <div id="artifacts-list-wrap" class="list-scroll">
+            <div class="empty-state">切换至「最近产物」后加载…</div>
+          </div>
+        </section>
+
+        <!-- Tab 3: 收藏夹 -->
+        <section id="panel-pins" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-pins">
+          <div class="subbar">
+            <span id="pins-summary" class="subbar-info">已收藏 0 项</span>
+            <button type="button" id="btn-pin-current-from-tab" class="ctrl-btn">★ 收藏当前目录</button>
+          </div>
+          <div id="pins-list-wrap" class="list-scroll">
+            <div class="empty-state">暂无收藏夹项目</div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Resizable Bottom Split Preview Drawer -->
+      <section id="preview-drawer" class="preview-drawer" aria-label="文件预览与编辑面板" hidden>
+        <div id="preview-resizer" class="preview-resizer" role="separator" aria-orientation="horizontal" aria-label="拖拽调整预览面板高度" title="拖拽调整高度（双击折叠或展开）"></div>
+        <header class="preview-header">
+          <div class="preview-title-group">
+            <span id="preview-icon" class="kind-icon kind-file" aria-hidden="true"></span>
+            <span id="preview-filename" class="preview-name">未选择文件</span>
+            <span id="preview-size" class="preview-size"></span>
+            <span id="preview-badge-ro" class="pill" hidden>只读</span>
+            <span id="preview-badge-trunc" class="pill pill-warn" hidden>已截断</span>
+            <span id="preview-badge-dirty" class="pill pill-warn" hidden>未保存</span>
+          </div>
+          <div class="preview-actions">
+            <div id="md-mode-group" class="seg-toggle" hidden>
+              <button type="button" id="btn-md-preview" class="seg-btn is-active">预览</button>
+              <button type="button" id="btn-md-source" class="seg-btn">源码</button>
+            </div>
+            <button type="button" id="btn-preview-pin" class="ctrl-btn ctrl-icon" title="收藏此文件" aria-label="收藏此文件" aria-pressed="false">★</button>
+            <button type="button" id="btn-preview-open" class="ctrl-btn is-primary" hidden>原生打开</button>
+            <button type="button" id="btn-preview-reveal" class="ctrl-btn">定位</button>
+            <button type="button" id="btn-preview-quote" class="ctrl-btn" hidden>引用选段</button>
+            <button type="button" id="btn-preview-edit" class="ctrl-btn" hidden>编辑</button>
+            <button type="button" id="btn-preview-save" class="ctrl-btn is-primary" title="保存修改 (Ctrl+S)" hidden>保存</button>
+            <button type="button" id="btn-preview-cancel" class="ctrl-btn" hidden>取消</button>
+            <button type="button" id="btn-preview-collapse" class="ctrl-btn ctrl-icon" title="收起或展开预览" aria-label="收起或展开预览">▾</button>
+            <button type="button" id="btn-preview-close" class="ctrl-btn ctrl-icon" title="关闭预览" aria-label="关闭预览">×</button>
+          </div>
+        </header>
+        <div id="preview-banner" class="preview-banner" hidden></div>
+        <div id="preview-body" class="preview-body"></div>
+      </section>
+    </div>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    (() => {
+      'use strict';
+
+      const KIND_ICONS = {
+        dir: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5A1.5 1.5 0 0 1 4 4h3.4c.5 0 .97.25 1.25.67l.75 1.08c.28.42.75.67 1.25.67H16A1.5 1.5 0 0 1 17.5 7.92v6.58A1.5 1.5 0 0 1 16 16H4a1.5 1.5 0 0 1-1.5-1.5v-9Z"/></svg>',
+        code: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 6.5 3.5 10 7 13.5M13 6.5 16.5 10 13 13.5M11 4.5 9 15.5"/></svg>',
+        markdown: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M5.5 12.5v-5l2 2.4 2-2.4v5M13.5 7.5v5m0 0-1.7-1.7m1.7 1.7 1.7-1.7"/></svg>',
+        image: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3.5" width="14" height="13" rx="2"/><circle cx="7.5" cy="7.5" r="1.2" fill="currentColor" stroke="none"/><path d="m4.5 14 3.7-3.6a1 1 0 0 1 1.4 0l2.4 2.3 1.7-1.6a1 1 0 0 1 1.4 0l1.9 1.9"/></svg>',
+        pdf: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2.8h6.5L15.5 6.8V16a1.2 1.2 0 0 1-1.2 1.2H5A1.2 1.2 0 0 1 3.8 16V4A1.2 1.2 0 0 1 5 2.8Z"/><path d="M11.5 2.8v4h4"/><path d="M6.8 12.5h6.4"/></svg>',
+        office: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2.8h6.5L15.5 6.8V16a1.2 1.2 0 0 1-1.2 1.2H5A1.2 1.2 0 0 1 3.8 16V4A1.2 1.2 0 0 1 5 2.8Z"/><path d="M7 10h6M7 13h4"/></svg>',
+        archive: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4" width="13" height="12" rx="1.8"/><path d="M3.5 8h13M10 8v8M8.8 10.5h2.4"/></svg>',
+        file: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.2 2.8h6.3L15.5 6.8V16a1.2 1.2 0 0 1-1.2 1.2H5.2A1.2 1.2 0 0 1 4 16V4a1.2 1.2 0 0 1 1.2-1.2Z"/><path d="M11.5 2.8v4h4"/></svg>'
+      };
+
+      const appState = {
+        initialized: false,
+        hasToolInput: false,
+        hasToolResult: false,
+        hostCapabilities: {},
+        hostContext: {},
+        nativeTabUnsupported: false,
+        activeTab: 'browse',
+        prefs: {
+          pinnedPaths: [],
+          lastPath: '',
+          showHidden: false,
+          doubleClickAction: 'reveal'
+        },
+        homeDir: '',
+        brainDir: '',
+        platformLabel: 'Windows 资源管理器',
+        browse: {
+          dir: '',
+          parent: '',
+          total: 0,
+          truncated: false,
+          ok: true,
+          error: '',
+          entries: [],
+          query: '',
+          selectedPath: '',
+          loading: false,
+          seq: 0
+        },
+        artifacts: {
+          loaded: false,
+          loading: false,
+          items: [],
+          query: '',
+          selectedPath: ''
+        },
+        pins: {
+          loaded: false,
+          loading: false,
+          items: [],
+          selectedPath: ''
+        },
+        preview: {
+          visible: false,
+          collapsed: false,
+          height: 290,
+          loading: false,
+          data: null,
+          mdMode: 'preview', // 'preview' | 'source'
+          editing: false,
+          draft: '',
+          dirty: false,
+          conflictMsg: '',
+          pendingSwitchPath: '',
+          seq: 0
+        }
+      };
+
+      const $ = (id) => document.getElementById(id);
+      const workspaceEl = $('workspace');
+      const tabBtns = Array.from(document.querySelectorAll('.tab-btn'));
+      const tabPanels = {
+        browse: $('panel-browse'),
+        artifacts: $('panel-artifacts'),
+        pins: $('panel-pins')
+      };
+
+      const btnHiddenToggle = $('btn-hidden-toggle');
+      const btnDblClickToggle = $('btn-dblclick-toggle');
+      const btnRefresh = $('btn-refresh');
+
+      const btnParent = $('btn-parent');
+      const btnHome = $('btn-home');
+      const pathInput = $('path-input');
+      const btnPinDir = $('btn-pin-dir');
+      const filterInput = $('filter-input');
+      const btnClearFilter = $('btn-clear-filter');
+      const browseCountEl = $('browse-count');
+      const browseNoticeEl = $('browse-notice');
+      const browseListWrap = $('browse-list-wrap');
+
+      const artifactsDirLabel = $('artifacts-dir-label');
+      const artifactsCountEl = $('artifacts-count');
+      const artifactsFilterInput = $('artifacts-filter-input');
+      const btnClearArtifactsFilter = $('btn-clear-artifacts-filter');
+      const artifactsListWrap = $('artifacts-list-wrap');
+
+      const pinsSummaryEl = $('pins-summary');
+      const btnPinCurrentFromTab = $('btn-pin-current-from-tab');
+      const pinsListWrap = $('pins-list-wrap');
+
+      const previewDrawer = $('preview-drawer');
+      const previewResizer = $('preview-resizer');
+      const previewIcon = $('preview-icon');
+      const previewFilename = $('preview-filename');
+      const previewSize = $('preview-size');
+      const previewBadgeRo = $('preview-badge-ro');
+      const previewBadgeTrunc = $('preview-badge-trunc');
+      const previewBadgeDirty = $('preview-badge-dirty');
+      const mdModeGroup = $('md-mode-group');
+      const btnMdPreview = $('btn-md-preview');
+      const btnMdSource = $('btn-md-source');
+      const btnPreviewPin = $('btn-preview-pin');
+      const btnPreviewOpen = $('btn-preview-open');
+      const btnPreviewReveal = $('btn-preview-reveal');
+      const btnPreviewQuote = $('btn-preview-quote');
+      const btnPreviewEdit = $('btn-preview-edit');
+      const btnPreviewSave = $('btn-preview-save');
+      const btnPreviewCancel = $('btn-preview-cancel');
+      const btnPreviewCollapse = $('btn-preview-collapse');
+      const btnPreviewClose = $('btn-preview-close');
+      const previewBanner = $('preview-banner');
+      const previewBody = $('preview-body');
+      const toastEl = $('toast');
+
+      let rpcCounter = 1;
+      const pendingRequests = new Map();
+      let toastTimer = null;
+      let filterDebounceTimer = null;
+
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function showToast(message, isError = false) {
+        if (toastTimer) clearTimeout(toastTimer);
+        toastEl.textContent = String(message || '');
+        toastEl.classList.toggle('is-error', Boolean(isError));
+        toastEl.classList.add('is-visible');
+        toastTimer = setTimeout(() => {
+          toastEl.classList.remove('is-visible');
+        }, 2800);
+      }
+
+      function formatTimeAgo(mtimeMs) {
+        const ts = Number(mtimeMs) || 0;
+        if (!ts) return '';
+        const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+        if (diffSec < 60) return '刚刚';
+        if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
+        if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`;
+        if (diffSec < 86400 * 7) return `${Math.floor(diffSec / 86400)} 天前`;
+        const d = new Date(ts);
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mi = String(d.getMinutes()).padStart(2, '0');
+        return `${mm}-${dd} ${hh}:${mi}`;
+      }
+
+      function applyHostContext(ctx) {
+        if (!ctx || typeof ctx !== 'object') return;
+        appState.hostContext = { ...appState.hostContext, ...ctx };
+        const themeRaw = typeof ctx.theme === 'string' ? ctx.theme : ctx.theme?.colorScheme;
+        if (themeRaw === 'dark' || themeRaw === 'light') {
+          document.documentElement.dataset.theme = themeRaw;
+          document.documentElement.style.colorScheme = themeRaw;
+        }
+        const vars = ctx.styles && ctx.styles.variables;
+        if (vars && typeof vars === 'object') {
+          for (const [k, v] of Object.entries(vars)) {
+            if (typeof k === 'string' && k.startsWith('--') && typeof v === 'string' && v.trim()) {
+              document.documentElement.style.setProperty(k, v);
+            }
+          }
+        }
+      }
+
+      function postToHost(payload) {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage(payload, '*');
+        }
+      }
+
+      function sendNotification(method, params = {}) {
+        postToHost({ jsonrpc: '2.0', method, params });
+      }
+
+      function sendRequest(method, params = {}, timeoutMs = 15000) {
+        const id = rpcCounter++;
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            pendingRequests.delete(id);
+            reject(new Error('请求宿主超时'));
+          }, timeoutMs);
+          pendingRequests.set(id, { resolve, reject, timer });
+          postToHost({ jsonrpc: '2.0', id, method, params });
+        });
+      }
+
+      async function callServerTool(name, args = {}) {
+        const res = await sendRequest('tools/call', { name, arguments: args }, 20000);
+        if (res && res.isError) {
+          const errText = res.structuredContent?.error || res.content?.find?.((c) => c.type === 'text')?.text || '工具调用失败';
+          throw new Error(errText);
+        }
+        return res?.structuredContent ?? res;
+      }
+
+      async function openInNativeTab(uri) {
+        if (!uri) {
+          showToast('缺少有效的文件 URI', true);
+          return false;
+        }
+        try {
+          const res = await sendRequest('com.google.antigravity/toggle-aux-pane', {
+            tabType: 'fileView',
+            uri
+          }, 12000);
+          if (res && res.isError) {
+            throw Object.assign(new Error(res.message || '宿主不支持原生标签页'), { code: -32601 });
+          }
+          return true;
+        } catch (err) {
+          if (err && err.code === -32601) {
+            appState.nativeTabUnsupported = true;
+            renderAll();
+            showToast('当前宿主暂不支持原生标签页打开', true);
+          } else {
+            showToast(err?.message || '打开原生标签页失败', true);
+          }
+          return false;
+        }
+      }
+
+      async function attachContext(text) {
+        if (!appState.hostCapabilities?.updateModelContext) {
+          showToast('当前宿主暂不支持引用到对话上下文', true);
+          return false;
+        }
+        try {
+          await sendRequest('ui/update-model-context', {
+            content: [{ type: 'text', text }]
+          }, 10000);
+          return true;
+        } catch (err) {
+          showToast(err?.message || '引用上下文失败', true);
+          return false;
+        }
+      }
+
+      async function revealPath(targetPath) {
+        if (!targetPath) return;
+        try {
+          const res = await callServerTool('reveal_in_explorer', { path: targetPath });
+          if (res && res.ok === false) {
+            showToast(res.error || '定位失败', true);
+            return;
+          }
+          showToast(`已在 ${appState.platformLabel || 'Windows 资源管理器'} 中定位`);
+        } catch (err) {
+          showToast(err?.message || '定位失败', true);
+        }
+      }
+
+      // Safe XSS-escaped Markdown Renderer
+      function sanitizeHref(rawUrl) {
+        const trimmed = String(rawUrl || '').trim();
+        if (!trimmed) return '';
+        if (/^(https?:|mailto:|#)/i.test(trimmed)) return trimmed;
+        return '';
+      }
+
+      function renderInlineMarkdown(raw) {
+        const codeTokens = [];
+        const withCodeTokens = String(raw || '').replace(/(`+)([^`]*?)\1/g, (_, _ticks, code) => {
+          const idx = codeTokens.length;
+          codeTokens.push(`<code>${escapeHtml(code.trim())}</code>`);
+          return `\u0000MD_CODE_${idx}\u0000`;
+        });
+
+        const linkTokens = [];
+        const withLinkTokens = withCodeTokens.replace(/(!?)\[([^\]]*)\]\(([^)\s]+(?:\s+"[^"]*")?)\)/g, (_, bang, label, rawHref) => {
+          const hrefPart = rawHref.replace(/\s+"[^"]*"$/, '');
+          const idx = linkTokens.length;
+          if (bang === '!') {
+            linkTokens.push(`<span class="md-link-text">[图片: ${escapeHtml(label || hrefPart)}]</span>`);
+          } else {
+            const safeHref = sanitizeHref(hrefPart);
+            const inner = formatStyledText(label || hrefPart);
+            if (safeHref) {
+              linkTokens.push(`<a href="${escapeHtml(safeHref)}" target="_blank" rel="noopener noreferrer">${inner}</a>`);
+            } else {
+              const safeTitle = /^(javascript|vbscript|data):/i.test(hrefPart.trim()) ? '已拦截不安全链接' : hrefPart;
+              linkTokens.push(`<span class="md-link-text" title="${escapeHtml(safeTitle)}">${inner}</span>`);
+            }
+          }
+          return `\u0000MD_LINK_${idx}\u0000`;
+        });
+
+        let formatted = formatStyledText(withLinkTokens);
+        formatted = formatted.replace(/\u0000MD_LINK_(\d+)\u0000/g, (_, idx) => linkTokens[Number(idx)] || '');
+        formatted = formatted.replace(/\u0000MD_CODE_(\d+)\u0000/g, (_, idx) => codeTokens[Number(idx)] || '');
+        return formatted;
+      }
+
+      function formatStyledText(raw) {
+        let s = escapeHtml(raw);
+        s = s.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
+        s = s.replace(/__([^_]+?)__/g, '<strong>$1</strong>');
+        s = s.replace(/~~([^~]+?)~~/g, '<del>$1</del>');
+        s = s.replace(/(^|[^*])\*([^*\n]+?)\*(?!\*)/g, '$1<em>$2</em>');
+        s = s.replace(/(^|[^_a-zA-Z0-9])_([^_\n]+?)_(?![_a-zA-Z0-9])/g, '$1<em>$2</em>');
+        return s;
+      }
+
+      function parseTableRow(line) {
+        let trimmed = line.trim();
+        if (trimmed.startsWith('|')) trimmed = trimmed.slice(1);
+        if (trimmed.endsWith('|')) trimmed = trimmed.slice(0, -1);
+        return trimmed.split('|').map((cell) => cell.trim());
+      }
+
+      function isTableSeparator(line) {
+        return /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/.test(line) ||
+               /^\s*\|?\s*:?-{3,}:?\s*\|?\s*$/.test(line) && line.includes('|');
+      }
+
+      function renderMarkdownToHtml(markdownText) {
+        const lines = String(markdownText || '').replace(/\r\n?/g, '\n').split('\n');
+        const out = [];
+        let i = 0;
+
+        while (i < lines.length) {
+          const line = lines[i];
+
+          // Blank line
+          if (!line.trim()) {
+            i++;
+            continue;
+          }
+
+          // Fenced code block
+          const fenceMatch = line.match(/^\s*(`{3,}|~{3,})(.*)$/);
+          if (fenceMatch) {
+            const fenceChar = fenceMatch[1][0];
+            const fenceLen = fenceMatch[1].length;
+            const lang = fenceMatch[2].trim();
+            const codeLines = [];
+            i++;
+            while (i < lines.length) {
+              const closeMatch = lines[i].match(new RegExp(`^\\s*${fenceChar}{${fenceLen},}\\s*$`));
+              if (closeMatch) {
+                i++;
+                break;
+              }
+              codeLines.push(lines[i]);
+              i++;
+            }
+            const langHtml = lang ? `<div class="md-code-lang">${escapeHtml(lang)}</div>` : '';
+            out.push(`<pre class="md-code">${langHtml}<code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+            continue;
+          }
+
+          // Heading
+          const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+          if (headingMatch) {
+            const level = headingMatch[1].length;
+            const text = headingMatch[2].replace(/\s+#+\s*$/, '');
+            out.push(`<h${level}>${renderInlineMarkdown(text)}</h${level}>`);
+            i++;
+            continue;
+          }
+
+          // Horizontal rule
+          if (/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
+            out.push('<hr />');
+            i++;
+            continue;
+          }
+
+          // Blockquote
+          if (/^\s*>/.test(line)) {
+            const quoteLines = [];
+            while (i < lines.length && (/^\s*>/.test(lines[i]) || (lines[i].trim() !== '' && quoteLines.length > 0 && !/^(#{1,6}\s|```|~~~|[-*+]\s|\d+\.\s)/.test(lines[i])))) {
+              if (!/^\s*>/.test(lines[i])) break;
+              quoteLines.push(lines[i].replace(/^\s*>\s?/, ''));
+              i++;
+            }
+            out.push(`<blockquote>${renderMarkdownToHtml(quoteLines.join('\n'))}</blockquote>`);
+            continue;
+          }
+
+          // Table
+          if (line.includes('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+            const headers = parseTableRow(line);
+            i += 2;
+            const rows = [];
+            while (i < lines.length && lines[i].trim() && lines[i].includes('|')) {
+              rows.push(parseTableRow(lines[i]));
+              i++;
+            }
+            const thead = `<thead><tr>${headers.map((h) => `<th>${renderInlineMarkdown(h)}</th>`).join('')}</tr></thead>`;
+            const tbody = rows.length
+              ? `<tbody>${rows.map((r) => `<tr>${headers.map((_, ci) => `<td>${renderInlineMarkdown(r[ci] || '')}</td>`).join('')}</tr>`).join('')}</tbody>`
+              : '';
+            out.push(`<table>${thead}${tbody}</table>`);
+            continue;
+          }
+
+          // Lists (ul or ol)
+          const ulMatch = line.match(/^\s*[-*+]\s+(.*)$/);
+          const olMatch = line.match(/^\s*\d+\.\s+(.*)$/);
+          if (ulMatch || olMatch) {
+            const isOrdered = Boolean(olMatch);
+            const tag = isOrdered ? 'ol' : 'ul';
+            const items = [];
+            while (i < lines.length) {
+              const cur = lines[i];
+              const m = isOrdered ? cur.match(/^\s*\d+\.\s+(.*)$/) : cur.match(/^\s*[-*+]\s+(.*)$/);
+              if (!m) break;
+              let itemText = m[1];
+              const taskMatch = itemText.match(/^\[( |x|X)\]\s+(.*)$/);
+              if (taskMatch) {
+                const checked = taskMatch[1].toLowerCase() === 'x';
+                itemText = taskMatch[2];
+                items.push(`<li><span class="md-task">${checked ? '☑' : '☐'}</span>${renderInlineMarkdown(itemText)}</li>`);
+              } else {
+                items.push(`<li>${renderInlineMarkdown(itemText)}</li>`);
+              }
+              i++;
+            }
+            out.push(`<${tag}>${items.join('')}</${tag}>`);
+            continue;
+          }
+
+          // Paragraph
+          const paraLines = [];
+          while (
+            i < lines.length &&
+            lines[i].trim() !== '' &&
+            !/^\s*(`{3,}|~{3,})/.test(lines[i]) &&
+            !/^(#{1,6})\s+/.test(lines[i]) &&
+            !/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(lines[i]) &&
+            !/^\s*>/.test(lines[i]) &&
+            !/^\s*[-*+]\s+/.test(lines[i]) &&
+            !/^\s*\d+\.\s+/.test(lines[i])
+          ) {
+            if (lines[i].includes('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1])) break;
+            paraLines.push(lines[i].trimEnd());
+            i++;
+          }
+          const joined = paraLines.map((l) => renderInlineMarkdown(l)).join('<br />');
+          out.push(`<p>${joined}</p>`);
+        }
+
+        return out.join('\n');
+      }
+
+      // Data loaders
+      async function navigateToDir(dirPath, query = appState.browse.query) {
+        const seq = ++appState.browse.seq;
+        appState.browse.loading = true;
+        renderBrowse();
+        try {
+          const res = await callServerTool('list_directory', {
+            dir: dirPath || '',
+            showHidden: Boolean(appState.prefs.showHidden),
+            query: query || ''
+          });
+          if (seq !== appState.browse.seq) return;
+          appState.browse.loading = false;
+          if (res) {
+            appState.browse.ok = res.ok !== false;
+            appState.browse.error = res.error || '';
+            appState.browse.dir = res.dir || dirPath || '';
+            appState.browse.parent = res.parent || '';
+            appState.browse.total = Number(res.total) || 0;
+            appState.browse.truncated = Boolean(res.truncated);
+            appState.browse.entries = Array.isArray(res.entries) ? res.entries : [];
+            if (typeof res.platformLabel === 'string' && res.platformLabel) {
+              appState.platformLabel = res.platformLabel;
+            }
+            if (appState.browse.ok && appState.browse.dir) {
+              appState.prefs.lastPath = appState.browse.dir;
+            }
+          }
+          renderBrowse();
+          renderTopbar();
+        } catch (err) {
+          if (seq !== appState.browse.seq) return;
+          appState.browse.loading = false;
+          appState.browse.ok = false;
+          appState.browse.error = err?.message || '读取目录失败';
+          renderBrowse();
+        }
+      }
+
+      async function loadArtifacts() {
+        appState.artifacts.loading = true;
+        renderArtifacts();
+        try {
+          const res = await callServerTool('list_recent_artifacts', { limit: 60 });
+          appState.artifacts.loading = false;
+          appState.artifacts.loaded = true;
+          if (res) {
+            appState.artifacts.items = Array.isArray(res.items) ? res.items : [];
+            if (res.brainDir) appState.brainDir = res.brainDir;
+            if (res.platformLabel) appState.platformLabel = res.platformLabel;
+          }
+          renderArtifacts();
+        } catch (err) {
+          appState.artifacts.loading = false;
+          renderArtifacts();
+          showToast(err?.message || '读取最近产物失败', true);
+        }
+      }
+
+      async function loadPins() {
+        appState.pins.loading = true;
+        renderPins();
+        try {
+          const res = await callServerTool('get_state', {});
+          appState.pins.loading = false;
+          appState.pins.loaded = true;
+          applyStateResult(res);
+        } catch (err) {
+          appState.pins.loading = false;
+          renderPins();
+          showToast(err?.message || '读取收藏夹失败', true);
+        }
+      }
+
+      function applyStateResult(res) {
+        if (!res || typeof res !== 'object') return;
+        if (res.state) {
+          appState.prefs = {
+            pinnedPaths: Array.isArray(res.state.pinnedPaths) ? res.state.pinnedPaths : [],
+            lastPath: res.state.lastPath || appState.prefs.lastPath,
+            showHidden: Boolean(res.state.showHidden),
+            doubleClickAction: res.state.doubleClickAction === 'open_tab' ? 'open_tab' : 'reveal'
+          };
+        }
+        if (Array.isArray(res.pinnedItems)) {
+          appState.pins.items = res.pinnedItems;
+          appState.pins.loaded = true;
+        }
+        if (res.homeDir) appState.homeDir = res.homeDir;
+        if (res.brainDir) appState.brainDir = res.brainDir;
+        if (res.platformLabel) appState.platformLabel = res.platformLabel;
+        renderTopbar();
+        renderBrowse();
+        renderPins();
+        renderPreviewHeaderOnly();
+      }
+
+      async function persistPrefs(patch) {
+        try {
+          const res = await callServerTool('update_state', patch);
+          applyStateResult(res);
+          return true;
+        } catch (err) {
+          showToast(err?.message || '保存设置失败', true);
+          return false;
+        }
+      }
+
+      async function togglePinPath(targetPath) {
+        if (!targetPath) return;
+        const exists = appState.prefs.pinnedPaths.includes(targetPath);
+        const next = exists
+          ? appState.prefs.pinnedPaths.filter((p) => p !== targetPath)
+          : [targetPath, ...appState.prefs.pinnedPaths].slice(0, 30);
+        const ok = await persistPrefs({ pinnedPaths: next });
+        if (ok) {
+          showToast(exists ? '已从收藏夹移除' : '已添加到收藏夹');
+        }
+      }
+
+      async function loadPreview(filePath, { force = false } = {}) {
+        if (!filePath) return;
+        if (appState.preview.editing && appState.preview.dirty && appState.preview.data?.path !== filePath && !force) {
+          appState.preview.pendingSwitchPath = filePath;
+          renderPreviewBanner();
+          showToast('当前编辑尚未保存，请先保存或放弃修改', true);
+          return;
+        }
+        if (!force && appState.preview.visible && appState.preview.data?.path === filePath && !appState.preview.editing) {
+          if (appState.preview.collapsed) {
+            appState.preview.collapsed = false;
+            renderPreviewDrawer();
+          }
+          return;
+        }
+
+        const seq = ++appState.preview.seq;
+        appState.preview.visible = true;
+        appState.preview.collapsed = false;
+        appState.preview.loading = true;
+        appState.preview.editing = false;
+        appState.preview.dirty = false;
+        appState.preview.conflictMsg = '';
+        appState.preview.pendingSwitchPath = '';
+        renderPreviewDrawer();
+
+        try {
+          const res = await callServerTool('read_file_preview', { path: filePath });
+          if (seq !== appState.preview.seq) return;
+          appState.preview.loading = false;
+          appState.preview.data = res || { ok: false, error: '无法读取文件内容', path: filePath };
+          appState.preview.mdMode = 'preview';
+          appState.preview.draft = typeof res?.text === 'string' ? res.text : '';
+          renderPreviewDrawer();
+        } catch (err) {
+          if (seq !== appState.preview.seq) return;
+          appState.preview.loading = false;
+          appState.preview.data = { ok: false, error: err?.message || '预览加载失败', path: filePath };
+          renderPreviewDrawer();
+        }
+      }
+
+      async function saveEditedFile() {
+        const prev = appState.preview.data;
+        if (!appState.preview.editing || !prev?.path) return;
+        try {
+          const res = await callServerTool('save_file_content', {
+            path: prev.path,
+            content: appState.preview.draft,
+            expectedMtimeMs: prev.mtimeMs,
+            baseHash: prev.baseHash || ''
+          });
+          if (res && res.ok) {
+            prev.text = appState.preview.draft;
+            prev.mtimeMs = res.mtimeMs;
+            if (typeof res.baseHash === 'string') {
+              prev.baseHash = res.baseHash;
+            }
+            prev.size = res.size;
+            prev.sizeText = res.sizeText;
+            appState.preview.dirty = false;
+            appState.preview.conflictMsg = '';
+            showToast(`已保存（${res.sizeText}）`);
+            // Update entry size in current directory listing if present
+            const entry = appState.browse.entries.find((e) => e.path === prev.path);
+            if (entry) {
+              entry.size = res.size;
+              entry.sizeText = res.sizeText;
+              entry.mtimeMs = res.mtimeMs;
+              renderBrowse();
+            }
+            const nextPath = appState.preview.pendingSwitchPath;
+            if (nextPath) {
+              appState.preview.editing = false;
+              appState.preview.pendingSwitchPath = '';
+              await loadPreview(nextPath, { force: true });
+            } else {
+              renderPreviewDrawer();
+            }
+            return true;
+          }
+          if (res?.conflict) {
+            appState.preview.conflictMsg = res.error || '文件已在外部发生变更，请刷新后再保存';
+            renderPreviewBanner();
+            showToast(appState.preview.conflictMsg, true);
+            return false;
+          }
+          showToast(res?.error || '保存失败', true);
+          return false;
+        } catch (err) {
+          showToast(err?.message || '保存失败', true);
+          return false;
+        }
+      }
+
+      function getSelectedPreviewText() {
+        if (appState.preview.editing) {
+          const ta = $('editor-textarea');
+          if (ta && typeof ta.selectionStart === 'number' && ta.selectionEnd > ta.selectionStart) {
+            return ta.value.slice(ta.selectionStart, ta.selectionEnd);
+          }
+          return '';
+        }
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed) return '';
+        const anchorNode = sel.anchorNode;
+        const focusNode = sel.focusNode;
+        if (!anchorNode || !focusNode) return '';
+        if (!previewBody.contains(anchorNode) || !previewBody.contains(focusNode)) return '';
+        return sel.toString();
+      }
+
+      async function handleQuoteSelection() {
+        const prev = appState.preview.data;
+        if (!prev?.path) return;
+        const selected = getSelectedPreviewText().trim();
+        if (selected) {
+          const payload = `来自 @${prev.path} 的选段：\n\`\`\`\n${selected}\n\`\`\``;
+          const ok = await attachContext(payload);
+          if (ok) showToast('已引用选中文本到对话');
+        } else {
+          const ok = await attachContext(`@${prev.path}`);
+          if (ok) showToast('已引用文件路径到对话');
+        }
+      }
+
+      function switchTab(tab) {
+        if (!['browse', 'artifacts', 'pins'].includes(tab)) return;
+        appState.activeTab = tab;
+        for (const btn of tabBtns) {
+          const active = btn.dataset.tab === tab;
+          btn.classList.toggle('is-active', active);
+          btn.setAttribute('aria-selected', active ? 'true' : 'false');
+        }
+        for (const [k, panel] of Object.entries(tabPanels)) {
+          panel.classList.toggle('is-active', k === tab);
+        }
+        if (tab === 'artifacts' && !appState.artifacts.loaded && !appState.artifacts.loading) {
+          loadArtifacts();
+        } else if (tab === 'pins' && !appState.pins.loaded && !appState.pins.loading) {
+          loadPins();
+        }
+      }
+
+      // Renderers
+      function renderTopbar() {
+        const showHidden = Boolean(appState.prefs.showHidden);
+        btnHiddenToggle.classList.toggle('is-active', showHidden);
+        btnHiddenToggle.setAttribute('aria-pressed', showHidden ? 'true' : 'false');
+        btnHiddenToggle.title = showHidden
+          ? '当前：显示隐藏文件（点击隐藏以 . 开头的文件）'
+          : '当前：已隐藏点文件（点击显示）';
+
+        const isOpenTab = appState.prefs.doubleClickAction === 'open_tab';
+        btnDblClickToggle.textContent = isOpenTab ? '双击:打开' : '双击:定位';
+        btnDblClickToggle.classList.toggle('is-active', isOpenTab);
+        btnDblClickToggle.title = isOpenTab
+          ? '双击文件将在 Antigravity 原生标签页打开（点击切换为定位）'
+          : `双击文件将在 ${appState.platformLabel || '系统目录'} 中定位（点击切换为原生打开）`;
+      }
+
+      function renderBrowse() {
+        const b = appState.browse;
+        btnParent.disabled = !b.parent;
+        if (document.activeElement !== pathInput) {
+          pathInput.value = b.dir || '';
+        }
+        const pinned = Boolean(b.dir) && appState.prefs.pinnedPaths.includes(b.dir);
+        btnPinDir.classList.toggle('is-star-active', pinned);
+        btnPinDir.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+        btnPinDir.disabled = !b.dir;
+        btnPinDir.title = pinned ? '取消收藏当前目录' : '收藏当前目录';
+
+        btnClearFilter.hidden = !filterInput.value;
+
+        if (b.loading && b.entries.length === 0) {
+          browseCountEl.textContent = '加载中…';
+          browseNoticeEl.hidden = true;
+          browseListWrap.innerHTML = '<div class="empty-state">正在读取目录内容…</div>';
+          return;
+        }
+
+        if (!b.ok) {
+          browseCountEl.textContent = '0 项';
+          browseNoticeEl.className = 'notice-bar is-error';
+          browseNoticeEl.hidden = false;
+          browseNoticeEl.innerHTML =
+            `<span>${escapeHtml(b.error || '无法读取目录')}</span>` +
+            `<button type="button" class="mini-btn" data-browse-fallback="home">回到家目录</button>`;
+          browseListWrap.innerHTML = '<div class="empty-state">请检查路径或返回家目录</div>';
+          return;
+        }
+
+        if (b.truncated) {
+          browseNoticeEl.className = 'notice-bar';
+          browseNoticeEl.hidden = false;
+          browseNoticeEl.innerHTML = `<span>当前目录共 ${b.total} 项，已显示前 400 项，可输入关键词筛选定位。</span>`;
+        } else {
+          browseNoticeEl.hidden = true;
+        }
+
+        const visibleEntries = b.entries;
+        browseCountEl.textContent = b.truncated
+          ? `${visibleEntries.length} / ${b.total} 项`
+          : `${visibleEntries.length} 项`;
+
+        if (visibleEntries.length === 0) {
+          browseListWrap.innerHTML = b.query
+            ? '<div class="empty-state">未找到匹配的文件或文件夹</div>'
+            : '<div class="empty-state">当前目录为空</div>';
+          return;
+        }
+
+        const canQuote = Boolean(appState.hostCapabilities?.updateModelContext);
+        const rowsHtml = visibleEntries.map((item, idx) => {
+          const kind = KIND_ICONS[item.kind] ? item.kind : 'file';
+          const selected = b.selectedPath === item.path;
+          const showOpen = !item.isDir && Boolean(item.uri) && !appState.nativeTabUnsupported;
+          return (
+            `<li class="list-row${selected ? ' is-selected' : ''}" data-list="browse" data-index="${idx}" title="${escapeHtml(item.path)}">` +
+              `<span class="kind-icon kind-${escapeHtml(kind)}" aria-hidden="true">${KIND_ICONS[kind]}</span>` +
+              `<span class="row-main">` +
+                `<span class="row-title-line"><span class="row-name">${escapeHtml(item.name)}</span></span>` +
+              `</span>` +
+              `<span class="row-size">${escapeHtml(item.isDir ? '文件夹' : (item.sizeText || ''))}</span>` +
+              `<span class="row-actions">` +
+                `<button type="button" class="mini-btn is-primary" data-action="open" data-index="${idx}"${showOpen ? '' : ' hidden'}>原生打开</button>` +
+                `<button type="button" class="mini-btn" data-action="reveal" data-index="${idx}">定位</button>` +
+                `<button type="button" class="mini-btn" data-action="quote" data-index="${idx}"${canQuote ? '' : ' hidden'}>引用</button>` +
+              `</span>` +
+            `</li>`
+          );
+        }).join('');
+
+        browseListWrap.innerHTML = `<ul class="item-list" role="list">${rowsHtml}</ul>`;
+      }
+
+      function renderArtifacts() {
+        const a = appState.artifacts;
+        artifactsDirLabel.textContent = appState.brainDir || '~/.gemini/antigravity/brain';
+        artifactsDirLabel.title = appState.brainDir || '';
+        btnClearArtifactsFilter.hidden = !artifactsFilterInput.value;
+
+        if (a.loading && !a.loaded) {
+          artifactsCountEl.textContent = '加载中…';
+          artifactsListWrap.innerHTML = '<div class="empty-state">正在扫描最近会话产物…</div>';
+          return;
+        }
+
+        const q = a.query.trim().toLowerCase();
+        const filtered = q
+          ? a.items.filter((it) => it.name.toLowerCase().includes(q) || (it.sessionId || '').toLowerCase().includes(q))
+          : a.items;
+
+        artifactsCountEl.textContent = `${filtered.length} 项`;
+        if (filtered.length === 0) {
+          artifactsListWrap.innerHTML = q
+            ? '<div class="empty-state">未找到匹配的产物</div>'
+            : '<div class="empty-state">暂未检测到近期 brain 会话产物</div>';
+          return;
+        }
+
+        const canQuote = Boolean(appState.hostCapabilities?.updateModelContext);
+        const rowsHtml = filtered.map((item) => {
+          const realIdx = a.items.indexOf(item);
+          const kind = KIND_ICONS[item.kind] ? item.kind : 'file';
+          const selected = a.selectedPath === item.path;
+          const showOpen = Boolean(item.uri) && !appState.nativeTabUnsupported;
+          const ago = formatTimeAgo(item.mtimeMs);
+          return (
+            `<li class="list-row${selected ? ' is-selected' : ''}" data-list="artifacts" data-index="${realIdx}" title="${escapeHtml(item.path)}">` +
+              `<span class="kind-icon kind-${escapeHtml(kind)}" aria-hidden="true">${KIND_ICONS[kind]}</span>` +
+              `<span class="row-main">` +
+                `<span class="row-title-line"><span class="row-name">${escapeHtml(item.name)}</span></span>` +
+                `<span class="row-sub">` +
+                  `<span class="pill">会话 ${escapeHtml(item.sessionId || '')}</span>` +
+                  `<span>${escapeHtml(ago)}</span>` +
+                `</span>` +
+              `</span>` +
+              `<span class="row-size">${escapeHtml(item.sizeText || '')}</span>` +
+              `<span class="row-actions">` +
+                `<button type="button" class="mini-btn is-primary" data-action="open" data-index="${realIdx}"${showOpen ? '' : ' hidden'}>原生打开</button>` +
+                `<button type="button" class="mini-btn" data-action="reveal" data-index="${realIdx}">定位</button>` +
+                `<button type="button" class="mini-btn" data-action="quote" data-index="${realIdx}"${canQuote ? '' : ' hidden'}>引用</button>` +
+              `</span>` +
+            `</li>`
+          );
+        }).join('');
+
+        artifactsListWrap.innerHTML = `<ul class="item-list" role="list">${rowsHtml}</ul>`;
+      }
+
+      function renderPins() {
+        const p = appState.pins;
+        const curDir = appState.browse.dir;
+        const curPinned = Boolean(curDir) && appState.prefs.pinnedPaths.includes(curDir);
+        btnPinCurrentFromTab.disabled = !curDir;
+        btnPinCurrentFromTab.textContent = curPinned ? '★ 已收藏当前目录' : '★ 收藏当前目录';
+        btnPinCurrentFromTab.classList.toggle('is-star-active', curPinned);
+
+        pinsSummaryEl.textContent = `已收藏 ${p.items.length} 项`;
+        if (p.loading && !p.loaded) {
+          pinsListWrap.innerHTML = '<div class="empty-state">正在加载收藏夹…</div>';
+          return;
+        }
+        if (p.items.length === 0) {
+          pinsListWrap.innerHTML = '<div class="empty-state">暂无收藏夹项目，可在「目录浏览」或预览栏点 ★ 添加</div>';
+          return;
+        }
+
+        const rowsHtml = p.items.map((item, idx) => {
+          const kind = KIND_ICONS[item.kind] ? item.kind : 'file';
+          const exists = item.exists !== false;
+          const selected = p.selectedPath === item.path;
+          const showOpen = !item.isDir && exists && Boolean(item.uri) && !appState.nativeTabUnsupported;
+          return (
+            `<li class="list-row${selected ? ' is-selected' : ''}${exists ? '' : ' is-missing'}" data-list="pins" data-index="${idx}" title="${escapeHtml(item.path)}">` +
+              `<span class="kind-icon kind-${escapeHtml(kind)}" aria-hidden="true">${KIND_ICONS[kind]}</span>` +
+              `<span class="row-main">` +
+                `<span class="row-title-line">` +
+                  `<span class="row-name">${escapeHtml(item.name || item.path)}</span>` +
+                  (exists ? '' : '<span class="pill pill-danger">已失效</span>') +
+                `</span>` +
+                `<span class="row-sub"><span class="row-sub-mono">${escapeHtml(item.path)}</span></span>` +
+              `</span>` +
+              `<span class="row-size">${escapeHtml(item.sizeText || '')}</span>` +
+              `<span class="row-actions">` +
+                (item.isDir && exists ? `<button type="button" class="mini-btn is-primary" data-action="jump" data-index="${idx}">进入</button>` : '') +
+                `<button type="button" class="mini-btn is-primary" data-action="open" data-index="${idx}"${showOpen ? '' : ' hidden'}>原生打开</button>` +
+                `<button type="button" class="mini-btn" data-action="reveal" data-index="${idx}">定位</button>` +
+                `<button type="button" class="mini-btn" data-action="unpin" data-index="${idx}">移除</button>` +
+              `</span>` +
+            `</li>`
+          );
+        }).join('');
+
+        pinsListWrap.innerHTML = `<ul class="item-list" role="list">${rowsHtml}</ul>`;
+      }
+
+      function renderPreviewBanner() {
+        const pv = appState.preview;
+        if (pv.pendingSwitchPath) {
+          previewBanner.className = 'preview-banner';
+          previewBanner.hidden = false;
+          previewBanner.innerHTML =
+            '<span>当前文件有未保存的编辑内容，是否保存后再切换？</span>' +
+            '<span class="banner-actions">' +
+              '<button type="button" class="mini-btn is-primary" data-banner-action="save-switch">保存并切换</button>' +
+              '<button type="button" class="mini-btn" data-banner-action="discard-switch">放弃修改</button>' +
+              '<button type="button" class="mini-btn" data-banner-action="stay">留在当前</button>' +
+            '</span>';
+          return;
+        }
+        if (pv.conflictMsg) {
+          previewBanner.className = 'preview-banner is-danger';
+          previewBanner.hidden = false;
+          previewBanner.innerHTML =
+            `<span>${escapeHtml(pv.conflictMsg)}</span>` +
+            '<span class="banner-actions">' +
+              '<button type="button" class="mini-btn is-primary" data-banner-action="reload-file">重新加载文件</button>' +
+              '<button type="button" class="mini-btn" data-banner-action="dismiss-conflict">忽略</button>' +
+            '</span>';
+          return;
+        }
+        previewBanner.hidden = true;
+      }
+
+      function renderPreviewHeaderOnly() {
+        const pv = appState.preview;
+        const data = pv.data;
+        if (!pv.visible) return;
+
+        const kind = data?.kind && KIND_ICONS[data.kind] ? data.kind : 'file';
+        previewIcon.className = `kind-icon kind-${kind}`;
+        previewIcon.innerHTML = KIND_ICONS[kind];
+        previewFilename.textContent = data?.name || (pv.loading ? '正在加载…' : '预览');
+        previewFilename.title = data?.path || '';
+        previewSize.textContent = data?.sizeText || '';
+
+        const isText = data?.previewType === 'text' || data?.previewType === 'markdown';
+        const isProtected = data?.previewType === 'protected';
+        previewBadgeRo.textContent = isProtected ? '受保护' : '只读';
+        previewBadgeRo.hidden = !(data?.ok && (isProtected || (isText && !data.editable)));
+        previewBadgeTrunc.hidden = !(data?.ok && data.truncated);
+        previewBadgeDirty.hidden = !(pv.editing && pv.dirty);
+
+        const showMdToggle = Boolean(data?.ok && data.previewType === 'markdown' && !pv.editing);
+        mdModeGroup.hidden = !showMdToggle;
+        btnMdPreview.classList.toggle('is-active', pv.mdMode === 'preview');
+        btnMdSource.classList.toggle('is-active', pv.mdMode === 'source');
+
+        const pinned = Boolean(data?.path) && appState.prefs.pinnedPaths.includes(data.path);
+        btnPreviewPin.hidden = !data?.path;
+        btnPreviewPin.classList.toggle('is-star-active', pinned);
+        btnPreviewPin.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+        btnPreviewPin.title = pinned ? '取消收藏此文件' : '收藏此文件';
+
+        btnPreviewOpen.hidden = !(data?.uri && !isProtected && !appState.nativeTabUnsupported);
+        btnPreviewReveal.hidden = !data?.path;
+        btnPreviewQuote.hidden = !(data?.path && !isProtected && appState.hostCapabilities?.updateModelContext);
+
+        const canEdit = Boolean(data?.ok && data.editable === true);
+        btnPreviewEdit.hidden = !canEdit || pv.editing;
+        btnPreviewSave.hidden = !pv.editing;
+        btnPreviewCancel.hidden = !pv.editing;
+
+        btnPreviewCollapse.textContent = pv.collapsed ? '▴' : '▾';
+        btnPreviewCollapse.title = pv.collapsed ? '展开预览' : '收起预览';
+      }
+
+      function renderPreviewDrawer() {
+        const pv = appState.preview;
+        previewDrawer.hidden = !pv.visible;
+        if (!pv.visible) return;
+
+        previewDrawer.classList.toggle('is-collapsed', pv.collapsed);
+        if (!pv.collapsed) {
+          previewDrawer.style.height = `${pv.height}px`;
+        }
+
+        renderPreviewHeaderOnly();
+        renderPreviewBanner();
+
+        if (pv.loading) {
+          previewBody.innerHTML = '<div class="preview-placeholder">正在读取文件内容…</div>';
+          return;
+        }
+
+        const data = pv.data;
+        if (!data || data.ok === false) {
+          previewBody.innerHTML =
+            `<div class="preview-placeholder">` +
+              `<span>${escapeHtml(data?.error || '无法预览该文件')}</span>` +
+              (data?.path ? `<div class="placeholder-actions"><button type="button" class="ctrl-btn" data-placeholder-action="reveal">定位系统目录</button></div>` : '') +
+            `</div>`;
+          return;
+        }
+
+        if (pv.editing) {
+          previewBody.innerHTML = '';
+          const ta = document.createElement('textarea');
+          ta.id = 'editor-textarea';
+          ta.className = 'editor-textarea';
+          ta.spellcheck = false;
+          ta.value = pv.draft;
+          ta.addEventListener('input', () => {
+            pv.draft = ta.value;
+            const nextDirty = pv.draft !== (data.text || '');
+            if (nextDirty !== pv.dirty) {
+              pv.dirty = nextDirty;
+              renderPreviewHeaderOnly();
+            }
+          });
+          previewBody.appendChild(ta);
+          ta.focus();
+          return;
+        }
+
+        if (data.previewType === 'image') {
+          const validDataUrl = typeof data.dataUrl === 'string' && /^data:image\/[a-z0-9.+-]+;base64,/i.test(data.dataUrl);
+          if (!validDataUrl) {
+            previewBody.innerHTML = '<div class="preview-placeholder">图片数据格式无效，无法渲染</div>';
+            return;
+          }
+          previewBody.innerHTML = '';
+          const stage = document.createElement('div');
+          stage.className = 'image-stage';
+          const img = document.createElement('img');
+          img.alt = data.name || '图片预览';
+          const meta = document.createElement('div');
+          meta.className = 'image-meta';
+          meta.textContent = `${data.mime || 'image'} · ${data.sizeText || ''}`;
+          img.addEventListener('load', () => {
+            meta.textContent = `${img.naturalWidth} × ${img.naturalHeight} px · ${data.mime || 'image'} · ${data.sizeText || ''}`;
+          });
+          img.addEventListener('error', () => {
+            meta.textContent = '图片解码失败';
+          });
+          img.src = data.dataUrl;
+          stage.appendChild(img);
+          stage.appendChild(meta);
+          previewBody.appendChild(stage);
+          return;
+        }
+
+        if (data.previewType === 'protected') {
+          previewBody.innerHTML =
+            '<div class="preview-placeholder">' +
+              '<span>受保护凭据文件，工作台已禁止预览与编辑</span>' +
+              '<div class="placeholder-actions">' +
+                '<button type="button" class="ctrl-btn" data-placeholder-action="reveal">在系统目录中定位</button>' +
+              '</div>' +
+            '</div>';
+          return;
+        }
+
+        if (data.previewType === 'too_large' || data.previewType === 'binary') {
+          const msg = data.previewType === 'too_large'
+            ? `图片或文件过大（${data.sizeText}），超出工作台内联预览上限`
+            : `二进制文件，不支持文本预览（${data.sizeText}）`;
+          const canOpen = Boolean(data.uri && !appState.nativeTabUnsupported);
+          previewBody.innerHTML =
+            `<div class="preview-placeholder">` +
+              `<span>${escapeHtml(msg)}</span>` +
+              `<div class="placeholder-actions">` +
+                (canOpen ? '<button type="button" class="ctrl-btn is-primary" data-placeholder-action="open">在原生标签页打开</button>' : '') +
+                '<button type="button" class="ctrl-btn" data-placeholder-action="reveal">在系统目录中定位</button>' +
+              `</div>` +
+            `</div>`;
+          return;
+        }
+
+        if (data.previewType === 'markdown' && pv.mdMode === 'preview') {
+          previewBody.innerHTML = `<article class="md-view">${renderMarkdownToHtml(data.text || '')}</article>`;
+          return;
+        }
+
+        // Source / plain text view with non-selectable line number gutter
+        const text = String(data.text ?? '');
+        const lineCount = text === '' ? 1 : text.split('\n').length;
+        const nums = [];
+        for (let n = 1; n <= lineCount; n++) nums.push(n);
+        previewBody.innerHTML =
+          `<div class="code-view">` +
+            `<div class="code-gutter" aria-hidden="true">${nums.join('\n')}</div>` +
+            `<pre class="code-content"><code>${escapeHtml(text)}</code></pre>` +
+          `</div>`;
+      }
+
+      function renderAll() {
+        renderTopbar();
+        renderBrowse();
+        renderArtifacts();
+        renderPins();
+        renderPreviewDrawer();
+      }
+
+      // Apply open_prism_files tool result
+      function applyOpenToolResult(sc) {
+        if (!sc || typeof sc !== 'object') return;
+        if (sc.homeDir) appState.homeDir = sc.homeDir;
+        if (sc.brainDir) appState.brainDir = sc.brainDir;
+        if (sc.platformLabel) appState.platformLabel = sc.platformLabel;
+        if (sc.state) {
+          appState.prefs = {
+            pinnedPaths: Array.isArray(sc.state.pinnedPaths) ? sc.state.pinnedPaths : [],
+            lastPath: sc.state.lastPath || '',
+            showHidden: Boolean(sc.state.showHidden),
+            doubleClickAction: sc.state.doubleClickAction === 'open_tab' ? 'open_tab' : 'reveal'
+          };
+        }
+        if (sc.listing) {
+          appState.browse.ok = sc.listing.ok !== false;
+          appState.browse.error = sc.listing.error || '';
+          appState.browse.dir = sc.listing.dir || '';
+          appState.browse.parent = sc.listing.parent || '';
+          appState.browse.total = Number(sc.listing.total) || 0;
+          appState.browse.truncated = Boolean(sc.listing.truncated);
+          appState.browse.entries = Array.isArray(sc.listing.entries) ? sc.listing.entries : [];
+          appState.browse.loading = false;
+        }
+        renderAll();
+        if (sc.tab && ['browse', 'artifacts', 'pins'].includes(sc.tab)) {
+          switchTab(sc.tab);
+        }
+        if (sc.selectFile) {
+          appState.browse.selectedPath = sc.selectFile;
+          renderBrowse();
+          loadPreview(sc.selectFile);
+        }
+      }
+
+      // Register message handler BEFORE calling ui/initialize
+      window.addEventListener('message', (event) => {
+        if (window.parent !== window && event.source && event.source !== window.parent) return;
+        const msg = event.data;
+        if (!msg || typeof msg !== 'object' || msg.jsonrpc !== '2.0') return;
+
+        if (msg.id !== undefined && msg.id !== null && !msg.method) {
+          const pending = pendingRequests.get(msg.id);
+          if (!pending) return;
+          pendingRequests.delete(msg.id);
+          clearTimeout(pending.timer);
+          if (msg.error) {
+            const err = new Error(msg.error.message || 'RPC 调用错误');
+            err.code = msg.error.code;
+            err.data = msg.error.data;
+            pending.reject(err);
+          } else {
+            pending.resolve(msg.result);
+          }
+          return;
+        }
+
+        if (msg.method && msg.id !== undefined && msg.id !== null) {
+          if (msg.method === 'ping') {
+            postToHost({ jsonrpc: '2.0', id: msg.id, result: {} });
+          } else {
+            postToHost({
+              jsonrpc: '2.0',
+              id: msg.id,
+              error: { code: -32601, message: `Method not found: ${msg.method}` }
+            });
+          }
+          return;
+        }
+
+        if (msg.method === 'ui/notifications/host-context-changed') {
+          applyHostContext(msg.params);
+        } else if (msg.method === 'ui/notifications/tool-input') {
+          appState.hasToolInput = true;
+          const args = msg.params?.arguments || msg.params || {};
+          if (args.tab && ['browse', 'artifacts', 'pins'].includes(args.tab)) {
+            switchTab(args.tab);
+          }
+        } else if (msg.method === 'ui/notifications/tool-result') {
+          appState.hasToolResult = true;
+          const sc = msg.params?.structuredContent || msg.params?.result?.structuredContent;
+          applyOpenToolResult(sc);
+        }
+      });
+
+      // Topbar Events
+      for (const btn of tabBtns) {
+        btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+      }
+
+      btnHiddenToggle.addEventListener('click', async () => {
+        const nextHidden = !appState.prefs.showHidden;
+        const ok = await persistPrefs({ showHidden: nextHidden });
+        if (ok) {
+          showToast(nextHidden ? '已显示隐藏文件' : '已隐藏点文件');
+          navigateToDir(appState.browse.dir, appState.browse.query);
+        }
+      });
+
+      btnDblClickToggle.addEventListener('click', async () => {
+        const nextAction = appState.prefs.doubleClickAction === 'open_tab' ? 'reveal' : 'open_tab';
+        const ok = await persistPrefs({ doubleClickAction: nextAction });
+        if (ok) {
+          showToast(nextAction === 'open_tab' ? '双击默认动作：原生标签页打开' : `双击默认动作：在 ${appState.platformLabel || '系统目录'} 中定位`);
+        }
+      });
+
+      btnRefresh.addEventListener('click', () => {
+        if (appState.activeTab === 'browse') {
+          navigateToDir(appState.browse.dir, appState.browse.query);
+          if (appState.preview.visible && appState.preview.data?.path && !appState.preview.dirty) {
+            loadPreview(appState.preview.data.path, { force: true });
+          }
+        } else if (appState.activeTab === 'artifacts') {
+          loadArtifacts();
+        } else if (appState.activeTab === 'pins') {
+          loadPins();
+        }
+      });
+
+      // Browse Toolbar Events
+      btnParent.addEventListener('click', () => {
+        if (appState.browse.parent) {
+          filterInput.value = '';
+          appState.browse.query = '';
+          navigateToDir(appState.browse.parent, '');
+        }
+      });
+
+      btnHome.addEventListener('click', () => {
+        navigateToDir(appState.homeDir || '~', '');
+        filterInput.value = '';
+        appState.browse.query = '';
+      });
+
+      pathInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          const target = pathInput.value.trim();
+          if (target) navigateToDir(target, appState.browse.query);
+        } else if (event.key === 'Escape') {
+          pathInput.value = appState.browse.dir || '';
+          pathInput.blur();
+        }
+      });
+
+      btnPinDir.addEventListener('click', () => {
+        if (appState.browse.dir) togglePinPath(appState.browse.dir);
+      });
+
+      btnPinCurrentFromTab.addEventListener('click', () => {
+        if (appState.browse.dir) togglePinPath(appState.browse.dir);
+      });
+
+      filterInput.addEventListener('input', () => {
+        appState.browse.query = filterInput.value;
+        btnClearFilter.hidden = !filterInput.value;
+        if (filterDebounceTimer) clearTimeout(filterDebounceTimer);
+        filterDebounceTimer = setTimeout(() => {
+          navigateToDir(appState.browse.dir, appState.browse.query);
+        }, 150);
+      });
+
+      btnClearFilter.addEventListener('click', () => {
+        filterInput.value = '';
+        appState.browse.query = '';
+        btnClearFilter.hidden = true;
+        navigateToDir(appState.browse.dir, '');
+        filterInput.focus();
+      });
+
+      browseNoticeEl.addEventListener('click', (event) => {
+        const btn = event.target.closest('[data-browse-fallback="home"]');
+        if (btn) navigateToDir(appState.homeDir || '~', '');
+      });
+
+      // Artifacts Filter Events
+      artifactsFilterInput.addEventListener('input', () => {
+        appState.artifacts.query = artifactsFilterInput.value;
+        renderArtifacts();
+      });
+
+      btnClearArtifactsFilter.addEventListener('click', () => {
+        artifactsFilterInput.value = '';
+        appState.artifacts.query = '';
+        renderArtifacts();
+        artifactsFilterInput.focus();
+      });
+
+      // List Event Delegation (Browse, Artifacts, Pins)
+      function getRowItem(listType, idx) {
+        if (listType === 'browse') return appState.browse.entries[idx];
+        if (listType === 'artifacts') return appState.artifacts.items[idx];
+        if (listType === 'pins') return appState.pins.items[idx];
+        return null;
+      }
+
+      async function handleListClick(event) {
+        const actionBtn = event.target.closest('button[data-action]');
+        const row = event.target.closest('.list-row');
+        if (!row) return;
+        const listType = row.dataset.list;
+        const idx = Number(actionBtn ? actionBtn.dataset.index : row.dataset.index);
+        const item = getRowItem(listType, idx);
+        if (!item) return;
+
+        if (actionBtn) {
+          event.stopPropagation();
+          const act = actionBtn.dataset.action;
+          if (act === 'open') {
+            openInNativeTab(item.uri);
+          } else if (act === 'reveal') {
+            revealPath(item.path);
+          } else if (act === 'quote') {
+            const ok = await attachContext(`@${item.path}`);
+            if (ok) showToast('已引用路径到对话');
+          } else if (act === 'jump') {
+            switchTab('browse');
+            filterInput.value = '';
+            appState.browse.query = '';
+            navigateToDir(item.path, '');
+          } else if (act === 'unpin') {
+            togglePinPath(item.path);
+          }
+          return;
+        }
+
+        // Row single click
+        if (listType === 'browse') {
+          appState.browse.selectedPath = item.path;
+          renderBrowse();
+          if (!item.isDir) loadPreview(item.path);
+        } else if (listType === 'artifacts') {
+          appState.artifacts.selectedPath = item.path;
+          renderArtifacts();
+          loadPreview(item.path);
+        } else if (listType === 'pins') {
+          appState.pins.selectedPath = item.path;
+          renderPins();
+          if (item.exists === false) {
+            showToast('该路径已不存在，可点击移除', true);
+            return;
+          }
+          if (!item.isDir) {
+            loadPreview(item.path);
+          }
+        }
+      }
+
+      function handleListDblClick(event) {
+        if (event.target.closest('button[data-action]')) {
+          event.stopPropagation();
+          return;
+        }
+        const row = event.target.closest('.list-row');
+        if (!row) return;
+        const listType = row.dataset.list;
+        const idx = Number(row.dataset.index);
+        const item = getRowItem(listType, idx);
+        if (!item) return;
+
+        if (listType === 'browse') {
+          if (item.isDir) {
+            filterInput.value = '';
+            appState.browse.query = '';
+            navigateToDir(item.path, '');
+          } else if (appState.prefs.doubleClickAction === 'open_tab') {
+            openInNativeTab(item.uri);
+          } else {
+            revealPath(item.path);
+          }
+        } else if (listType === 'artifacts') {
+          revealPath(item.path);
+        } else if (listType === 'pins') {
+          if (item.exists === false) {
+            showToast('该路径已不存在', true);
+            return;
+          }
+          if (item.isDir) {
+            switchTab('browse');
+            filterInput.value = '';
+            appState.browse.query = '';
+            navigateToDir(item.path, '');
+          } else if (appState.prefs.doubleClickAction === 'open_tab') {
+            openInNativeTab(item.uri);
+          } else {
+            revealPath(item.path);
+          }
+        }
+      }
+
+      for (const wrap of [browseListWrap, artifactsListWrap, pinsListWrap]) {
+        wrap.addEventListener('click', handleListClick);
+        wrap.addEventListener('dblclick', handleListDblClick);
+      }
+
+      // Preview Header & Body Events
+      btnMdPreview.addEventListener('click', () => {
+        appState.preview.mdMode = 'preview';
+        renderPreviewDrawer();
+      });
+
+      btnMdSource.addEventListener('click', () => {
+        appState.preview.mdMode = 'source';
+        renderPreviewDrawer();
+      });
+
+      btnPreviewPin.addEventListener('click', () => {
+        if (appState.preview.data?.path) {
+          togglePinPath(appState.preview.data.path);
+        }
+      });
+
+      btnPreviewOpen.addEventListener('click', () => {
+        if (appState.preview.data?.uri) {
+          openInNativeTab(appState.preview.data.uri);
+        }
+      });
+
+      btnPreviewReveal.addEventListener('click', () => {
+        if (appState.preview.data?.path) {
+          revealPath(appState.preview.data.path);
+        }
+      });
+
+      // Preserve selection on mousedown so clicking "引用选段" keeps the highlighted range
+      btnPreviewQuote.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+      });
+      btnPreviewQuote.addEventListener('click', handleQuoteSelection);
+
+      btnPreviewEdit.addEventListener('click', () => {
+        const data = appState.preview.data;
+        if (!data?.ok || data.editable !== true) return;
+        appState.preview.editing = true;
+        appState.preview.draft = String(data.text ?? '');
+        appState.preview.dirty = false;
+        appState.preview.conflictMsg = '';
+        renderPreviewDrawer();
+      });
+
+      btnPreviewSave.addEventListener('click', saveEditedFile);
+
+      btnPreviewCancel.addEventListener('click', () => {
+        appState.preview.editing = false;
+        appState.preview.dirty = false;
+        appState.preview.conflictMsg = '';
+        appState.preview.pendingSwitchPath = '';
+        appState.preview.draft = String(appState.preview.data?.text ?? '');
+        renderPreviewDrawer();
+      });
+
+      btnPreviewCollapse.addEventListener('click', () => {
+        appState.preview.collapsed = !appState.preview.collapsed;
+        renderPreviewDrawer();
+      });
+
+      btnPreviewClose.addEventListener('click', () => {
+        if (appState.preview.editing && appState.preview.dirty) {
+          showToast('当前仍有未保存修改，请先保存或点击取消', true);
+          return;
+        }
+        appState.preview.visible = false;
+        appState.preview.editing = false;
+        appState.preview.dirty = false;
+        renderPreviewDrawer();
+      });
+
+      previewBanner.addEventListener('click', async (event) => {
+        const btn = event.target.closest('button[data-banner-action]');
+        if (!btn) return;
+        const act = btn.dataset.bannerAction;
+        if (act === 'save-switch') {
+          await saveEditedFile();
+        } else if (act === 'discard-switch') {
+          const nextPath = appState.preview.pendingSwitchPath;
+          appState.preview.editing = false;
+          appState.preview.dirty = false;
+          appState.preview.pendingSwitchPath = '';
+          if (nextPath) await loadPreview(nextPath, { force: true });
+        } else if (act === 'stay') {
+          appState.preview.pendingSwitchPath = '';
+          renderPreviewBanner();
+        } else if (act === 'reload-file') {
+          const path = appState.preview.data?.path;
+          appState.preview.conflictMsg = '';
+          appState.preview.editing = false;
+          appState.preview.dirty = false;
+          if (path) await loadPreview(path, { force: true });
+        } else if (act === 'dismiss-conflict') {
+          appState.preview.conflictMsg = '';
+          renderPreviewBanner();
+        }
+      });
+
+      previewBody.addEventListener('click', (event) => {
+        const btn = event.target.closest('button[data-placeholder-action]');
+        if (!btn) return;
+        const act = btn.dataset.placeholderAction;
+        if (act === 'open' && appState.preview.data?.uri) {
+          openInNativeTab(appState.preview.data.uri);
+        } else if (act === 'reveal' && appState.preview.data?.path) {
+          revealPath(appState.preview.data.path);
+        }
+      });
+
+      // Resizable Split Handle
+      let dragging = false;
+      let dragStartY = 0;
+      let dragStartHeight = 290;
+
+      previewResizer.addEventListener('pointerdown', (event) => {
+        dragging = true;
+        dragStartY = event.clientY;
+        dragStartHeight = appState.preview.collapsed ? 220 : previewDrawer.getBoundingClientRect().height;
+        previewResizer.setPointerCapture(event.pointerId);
+      });
+
+      previewResizer.addEventListener('pointermove', (event) => {
+        if (!dragging) return;
+        const delta = dragStartY - event.clientY;
+        const maxH = Math.max(180, Math.floor(workspaceEl.getBoundingClientRect().height * 0.78));
+        const nextH = Math.max(120, Math.min(maxH, Math.round(dragStartHeight + delta)));
+        appState.preview.collapsed = false;
+        appState.preview.height = nextH;
+        previewDrawer.classList.remove('is-collapsed');
+        previewDrawer.style.height = `${nextH}px`;
+      });
+
+      function stopDrag(event) {
+        if (!dragging) return;
+        dragging = false;
+        try {
+          previewResizer.releasePointerCapture(event.pointerId);
+        } catch {}
+        renderPreviewHeaderOnly();
+      }
+
+      previewResizer.addEventListener('pointerup', stopDrag);
+      previewResizer.addEventListener('pointercancel', stopDrag);
+      previewResizer.addEventListener('dblclick', () => {
+        appState.preview.collapsed = !appState.preview.collapsed;
+        renderPreviewDrawer();
+      });
+
+      // Global Shortcuts: Ctrl/Cmd+L (focus path), Ctrl/Cmd+S (save edit)
+      window.addEventListener('keydown', (event) => {
+        const mod = event.ctrlKey || event.metaKey;
+        if (!mod) return;
+        const key = event.key.toLowerCase();
+        if (key === 'l') {
+          event.preventDefault();
+          if (appState.activeTab !== 'browse') switchTab('browse');
+          pathInput.focus();
+          pathInput.select();
+        } else if (key === 's' && appState.preview.visible && appState.preview.editing) {
+          event.preventDefault();
+          saveEditedFile();
+        }
+      });
+
+      // Bootstrap & Initialize Handshake
+      async function fallbackLoadIfNoToolResult() {
+        if (appState.hasToolResult) return;
+        try {
+          const stateRes = await callServerTool('get_state', {});
+          if (appState.hasToolResult) return;
+          applyStateResult(stateRes);
+          await navigateToDir(appState.prefs.lastPath || appState.homeDir || '', '');
+        } catch {}
+      }
+
+      async function bootstrap() {
+        renderAll();
+        if (!window.parent || window.parent === window) {
+          appState.initialized = true;
+          return;
+        }
+        try {
+          const initRes = await sendRequest('ui/initialize', {
+            protocolVersion: '2026-01-26',
+            appInfo: { name: 'prism-files', version: '0.3.0' },
+            appCapabilities: {}
+          }, 12000);
+          appState.hostCapabilities = initRes?.hostCapabilities || {};
+          applyHostContext(initRes?.hostContext || {});
+          appState.initialized = true;
+          sendNotification('ui/notifications/initialized', {});
+          renderAll();
+
+          // Fallback when mounted directly as sidebar/aux pane without immediate tool-result
+          setTimeout(() => {
+            if (!appState.hasToolResult && !appState.hasToolInput) {
+              fallbackLoadIfNoToolResult();
+            }
+          }, 250);
+          setTimeout(() => {
+            if (!appState.hasToolResult && !appState.browse.dir && !appState.browse.loading) {
+              fallbackLoadIfNoToolResult();
+            }
+          }, 2200);
+        } catch (err) {
+          appState.initialized = true;
+          showToast(err?.message || '初始化通信失败', true);
+        }
+      }
+
+      bootstrap();
+    })();
+  </script>
+</body>
+</html>

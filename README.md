@@ -63,7 +63,11 @@
 
 ---
 
-## 核心特性（v0.2.4）
+## 核心特性（v0.3.0）
+
+一次部署同时获得 **Anti-Claude 界面增强扩展（6 大模块）** + **Antigravity 原生 MCP App「Prism 文件工作台」**：
+
+### A. 顶栏 `✦ 棱镜` 界面增强套件（Anti-Claude 热加载扩展）
 
 点击顶栏 **`✦ 棱镜`** 按钮弹出控制面板（动态贴合按钮下方，支持 `Esc` 关闭与窗口缩放自动重定位）：
 
@@ -87,18 +91,43 @@
 6. **思考过程实时中文转译**
    - 支持 `关闭` / `双语对照` / `沉浸中文` 三态；已完成的思考块展开即译，流式思考结束后再译避免重复请求，按 ≤ 950 字短分片防长文本超限，折叠自动清理不残留，沉浸模式下无框柔灰融入原生流并支持右上角一键 **`查看原文`**。
 
+### B. Prism 文件工作台（原生 Antigravity MCP App 插件，全平台零依赖）
+
+7. **侧边栏 & 全局文件工作台（右侧 `+` → `Prism 文件` / 左侧栏 `Prism 文件`）**
+   - **三合一视图**：`目录浏览`（`Ctrl/Cmd+L` 路径直达、实时筛选、隐藏文件切换）+ `最近产物`（自动扫描隐藏的 `~/.gemini/antigravity/brain` 各会话文档与截图）+ `收藏夹`（持久化保存常用目录）；
+   - **双栏预览、划词引用与安全原位编辑**：支持代码、Markdown（渲染/源码切换）与图片预览；选中任意片段点 **`引用给 AI`** 直接附加上下文；工作区文本支持带 **SHA-256 乐观锁** 的原位保存（自动禁止读写 `.env` / 密钥 / `.ssh` / `.codex` / `.claude` 等敏感路径，`brain/` 目录严格只读）；
+   - **一键原生打开 & 系统目录定位**：支持调用 Antigravity 原生标签页（Monaco / Markdown / Image Viewer）直接打开。
+8. **消息流内联文件卡片 + 跨平台双击定位系统目录**
+   - 产出交付物时自动在消息流中呈现交互卡片，**双击任意文件（或点「定位」）**直接高亮定位到系统文件管理器：
+     - **Windows**：原生 `explorer.exe /select,<path>`
+     - **WSL**：自动通过 `wslpath -w` 桥接拉起 Windows 资源管理器（连 WSL 内的 `brain/` 产物都能一键定位！）
+     - **macOS**：原生 `open -R`（访达高亮选中）
+     - **Linux**：`xdg-open`
+
 ---
 
-## 安装、卸载与测试
+## 一键安装、卸载与测试
+
+### 方式一：Windows 一键安装器 `.exe`（推荐，双击即用、免命令行）
+
+前往 [**GitHub Releases**](https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest) 下载 **`Anti-Claude-Prism-Suite-Setup.exe`**（纯原生 WinForms，零运行库依赖，约 300KB）：
+- 自动识别 Windows Anti-Claude 扩展目录、Windows 插件目录以及 **WSL 发行版内的 Antigravity 插件目录**；
+- 勾选需要的模块后点击 **「一键安装 / 更新」** 或 **「干净卸载」** 即可（也可本地运行 `npm run build:win-exe` 自行编译）。
+
+### 方式二：命令行一键安装（Windows / WSL / macOS / Linux 通用）
 
 ```bash
 git clone https://github.com/wushuai0802/anti-claude-prism-suite.git
 cd anti-claude-prism-suite
 
-# 安装扩展至 Anti-Claude 的 user/extensions/
+# 同时安装 Anti-Claude 扩展 + Antigravity Prism 文件工作台插件
 node install.mjs
 
-# 卸载（仅清理本套件文件，保留其他扩展）
+# 仅安装其中一个组件（可选）：
+# node install.mjs --extensions-only
+# node install.mjs --plugin-only
+
+# 干净卸载（仅清理本套件文件，保留其他扩展与插件）
 node uninstall.mjs
 
 # 运行自动化回归测试

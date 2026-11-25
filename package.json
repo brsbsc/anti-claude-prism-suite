@@ -1,7 +1,7 @@
 {
   "name": "anti-claude-prism-suite",
-  "version": "0.2.4",
-  "description": "Clean-room pluggable extension suite for Anti-Claude: multi-palette themes, conversation outline & turn jump, book yardstick + 12-week heatmap, zero-typing-latency ink fade, 0fps idle pixel mascots, and live thought translation.",
+  "version": "0.3.0",
+  "description": "Clean-room pluggable extension suite & native MCP App file workbench for Anti-Claude (Google Antigravity): 8 themes, outline & turn jump, book yardstick + 12-week heatmap, zero-latency ink fade, interactive pixel mascots, thought translation, side-pane/inline file explorer with OS reveal, and Windows 1-click .exe installer.",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -11,6 +11,7 @@
     "test": "node --test test/prism-suite.test.mjs",
     "install-ext": "node install.mjs",
     "uninstall-ext": "node uninstall.mjs",
+    "build:win-exe": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-win-exe.ps1",
     "check-upstream": "node scripts/check-upstream.mjs"
   }
 }

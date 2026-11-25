@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prism 文件卡片</title>
+  <style>
+    :root {
+      --p-bg: #ffffff;
+      --p-bg-subtle: #f8fafc;
+      --p-bg-hover: #f1f5f9;
+      --p-bg-active: #e2e8f0;
+      --p-text: #0f172a;
+      --p-text-secondary: #475569;
+      --p-text-muted: #64748b;
+      --p-border: rgba(15, 23, 42, 0.1);
+      --p-border-strong: rgba(15, 23, 42, 0.18);
+      --p-accent: #2563eb;
+      --p-accent-soft: rgba(37, 99, 235, 0.1);
+      --p-danger: #dc2626;
+      --p-danger-soft: rgba(220, 38, 38, 0.1);
+      --p-success: #059669;
+      --p-toast-bg: #0f172a;
+      --p-toast-text: #f8fafc;
+      --p-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+      --p-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --p-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color-scheme: light;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --p-bg: #14171c;
+        --p-bg-subtle: #1b1f26;
+        --p-bg-hover: #232831;
+        --p-bg-active: #2c333f;
+        --p-text: #f1f5f9;
+        --p-text-secondary: #cbd5e1;
+        --p-text-muted: #94a3b8;
+        --p-border: rgba(248, 250, 252, 0.1);
+        --p-border-strong: rgba(248, 250, 252, 0.2);
+        --p-accent: #60a5fa;
+        --p-accent-soft: rgba(96, 165, 250, 0.16);
+        --p-danger: #f87171;
+        --p-danger-soft: rgba(248, 113, 113, 0.16);
+        --p-success: #34d399;
+        --p-toast-bg: #e2e8f0;
+        --p-toast-text: #0f172a;
+        --p-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+        color-scheme: dark;
+      }
+    }
+
+    :root[data-theme="dark"] {
+      --p-bg: #14171c;
+      --p-bg-subtle: #1b1f26;
+      --p-bg-hover: #232831;
+      --p-bg-active: #2c333f;
+      --p-text: #f1f5f9;
+      --p-text-secondary: #cbd5e1;
+      --p-text-muted: #94a3b8;
+      --p-border: rgba(248, 250, 252, 0.1);
+      --p-border-strong: rgba(248, 250, 252, 0.2);
+      --p-accent: #60a5fa;
+      --p-accent-soft: rgba(96, 165, 250, 0.16);
+      --p-danger: #f87171;
+      --p-danger-soft: rgba(248, 113, 113, 0.16);
+      --p-success: #34d399;
+      --p-toast-bg: #e2e8f0;
+      --p-toast-text: #0f172a;
+      --p-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      color-scheme: dark;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: auto;
+      min-height: 0;
+      background: transparent;
+      color: var(--color-text-primary, var(--p-text));
+      font-family: var(--font-sans, var(--p-font-sans));
+      font-size: 13px;
+      line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    .card {
+      display: flex;
+      flex-direction: column;
+      max-height: 776px;
+      background: var(--color-background-primary, var(--p-bg));
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 9px 12px;
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      border-bottom: 1px solid var(--color-border-primary, var(--p-border));
+      flex-shrink: 0;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--color-text-primary, var(--p-text));
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .count-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 7px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+      color: var(--color-text-secondary, var(--p-text-secondary));
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+      flex-shrink: 0;
+    }
+
+    .header-hint {
+      font-size: 11px;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .file-list {
+      list-style: none;
+      margin: 0;
+      padding: 4px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      flex: 1 1 auto;
+    }
+
+    .file-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 8px;
+      border-radius: 7px;
+      cursor: default;
+      user-select: none;
+      border: 1px solid transparent;
+      transition: background-color 150ms cubic-bezier(0.22, 1, 0.36, 1),
+                  border-color 150ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .file-row + .file-row {
+      margin-top: 2px;
+    }
+
+    .file-row:hover,
+    .file-row:focus-visible {
+      background: var(--color-background-secondary, var(--p-bg-hover));
+      border-color: var(--color-border-secondary, var(--p-border));
+      outline: none;
+    }
+
+    .file-row.is-missing {
+      opacity: 0.65;
+    }
+
+    .kind-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+    }
+
+    .kind-icon svg {
+      width: 16px;
+      height: 16px;
+      display: block;
+    }
+
+    .kind-dir { color: #d97706; background: rgba(217, 119, 6, 0.1); }
+    .kind-code { color: #2563eb; background: rgba(37, 99, 235, 0.1); }
+    .kind-markdown { color: #0891b2; background: rgba(8, 145, 178, 0.1); }
+    .kind-image { color: #059669; background: rgba(5, 150, 105, 0.1); }
+    .kind-pdf { color: #e11d48; background: rgba(225, 29, 72, 0.1); }
+    .kind-office { color: #4f46e5; background: rgba(79, 70, 229, 0.1); }
+    .kind-archive { color: #b45309; background: rgba(180, 83, 9, 0.1); }
+    .kind-file { color: var(--color-text-secondary, var(--p-text-muted)); }
+
+    .file-meta {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+
+    .file-name-line {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .file-name {
+      font-weight: 550;
+      color: var(--color-text-primary, var(--p-text));
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .missing-tag {
+      font-size: 10px;
+      padding: 0 5px;
+      border-radius: 4px;
+      color: var(--p-danger);
+      background: var(--p-danger-soft);
+      flex-shrink: 0;
+    }
+
+    .file-path {
+      font-size: 11px;
+      font-family: var(--font-mono, var(--p-font-mono));
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .file-size {
+      font-size: 11.5px;
+      font-variant-numeric: tabular-nums;
+      color: var(--color-text-secondary, var(--p-text-muted));
+      white-space: nowrap;
+      flex-shrink: 0;
+      min-width: 54px;
+      text-align: right;
+    }
+
+    .row-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+      opacity: 0.78;
+      transition: opacity 150ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .file-row:hover .row-actions,
+    .file-row:focus-within .row-actions {
+      opacity: 1;
+    }
+
+    .btn {
+      appearance: none;
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-primary, var(--p-bg));
+      color: var(--color-text-secondary, var(--p-text-secondary));
+      font-family: inherit;
+      font-size: 11.5px;
+      font-weight: 500;
+      line-height: 1;
+      padding: 5px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background-color 150ms cubic-bezier(0.22, 1, 0.36, 1),
+                  border-color 150ms cubic-bezier(0.22, 1, 0.36, 1),
+                  color 150ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .btn:hover:not(:disabled) {
+      background: var(--color-background-tertiary, var(--p-bg-active));
+      border-color: var(--p-border-strong);
+      color: var(--color-text-primary, var(--p-text));
+    }
+
+    .btn:active:not(:disabled) {
+      transform: translateY(0.5px);
+    }
+
+    .btn:focus-visible {
+      outline: 2px solid var(--color-accent, var(--p-accent));
+      outline-offset: 1px;
+    }
+
+    .btn-primary {
+      color: var(--color-accent, var(--p-accent));
+      background: var(--p-accent-soft);
+      border-color: transparent;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: var(--p-accent-soft);
+      border-color: var(--color-accent, var(--p-accent));
+      color: var(--color-accent, var(--p-accent));
+    }
+
+    .btn[hidden] {
+      display: none;
+    }
+
+    .empty-state {
+      padding: 20px 14px;
+      text-align: center;
+      font-size: 12.5px;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+    }
+
+    .toast {
+      position: fixed;
+      right: 10px;
+      bottom: 10px;
+      z-index: 20;
+      max-width: calc(100vw - 20px);
+      padding: 6px 11px;
+      border-radius: 7px;
+      background: var(--p-toast-bg);
+      color: var(--p-toast-text);
+      font-size: 12px;
+      box-shadow: var(--p-shadow);
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 160ms cubic-bezier(0.22, 1, 0.36, 1),
+                  transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .toast.is-visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .toast.is-error {
+      background: var(--p-danger);
+      color: #ffffff;
+    }
+
+    @media (max-width: 440px) {
+      .header-hint {
+        display: none;
+      }
+      .file-size {
+        display: none;
+      }
+      .file-row {
+        gap: 7px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .file-row, .row-actions, .btn, .toast {
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main id="card-root" class="card" aria-label="Prism 内联文件卡片">
+    <header class="card-header">
+      <div class="header-left">
+        <span id="card-title" class="card-title">文件卡片</span>
+        <span id="file-count" class="count-badge">0 项</span>
+      </div>
+      <span id="header-hint" class="header-hint">双击定位系统目录</span>
+    </header>
+    <div id="list-container">
+      <div class="empty-state">正在加载文件列表…</div>
+    </div>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    (() => {
+      'use strict';
+
+      const KIND_ICONS = {
+        dir: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5A1.5 1.5 0 0 1 4 4h3.4c.5 0 .97.25 1.25.67l.75 1.08c.28.42.75.67 1.25.67H16A1.5 1.5 0 0 1 17.5 7.92v6.58A1.5 1.5 0 0 1 16 16H4a1.5 1.5 0 0 1-1.5-1.5v-9Z"/></svg>',
+        code: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 6.5 3.5 10 7 13.5M13 6.5 16.5 10 13 13.5M11 4.5 9 15.5"/></svg>',
+        markdown: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M5.5 12.5v-5l2 2.4 2-2.4v5M13.5 7.5v5m0 0-1.7-1.7m1.7 1.7 1.7-1.7"/></svg>',
+        image: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3.5" width="14" height="13" rx="2"/><circle cx="7.5" cy="7.5" r="1.2" fill="currentColor" stroke="none"/><path d="m4.5 14 3.7-3.6a1 1 0 0 1 1.4 0l2.4 2.3 1.7-1.6a1 1 0 0 1 1.4 0l1.9 1.9"/></svg>',
+        pdf: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2.8h6.5L15.5 6.8V16a1.2 1.2 0 0 1-1.2 1.2H5A1.2 1.2 0 0 1 3.8 16V4A1.2 1.2 0 0 1 5 2.8Z"/><path d="M11.5 2.8v4h4"/><path d="M6.8 12.5h6.4"/></svg>',
+        office: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2.8h6.5L15.5 6.8V16a1.2 1.2 0 0 1-1.2 1.2H5A1.2 1.2 0 0 1 3.8 16V4A1.2 1.2 0 0 1 5 2.8Z"/><path d="M7 10h6M7 13h4"/></svg>',
+        archive: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4" width="13" height="12" rx="1.8"/><path d="M3.5 8h13M10 8v8M8.8 10.5h2.4"/></svg>',
+        file: '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.2 2.8h6.3L15.5 6.8V16a1.2 1.2 0 0 1-1.2 1.2H5.2A1.2 1.2 0 0 1 4 16V4a1.2 1.2 0 0 1 1.2-1.2Z"/><path d="M11.5 2.8v4h4"/></svg>'
+      };
+
+      const state = {
+        initialized: false,
+        hostCapabilities: {},
+        hostContext: {},
+        title: '文件卡片',
+        items: [],
+        platformLabel: 'Windows 资源管理器',
+        nativeTabUnsupported: false,
+        loading: true
+      };
+
+      const cardRoot = document.getElementById('card-root');
+      const cardTitleEl = document.getElementById('card-title');
+      const fileCountEl = document.getElementById('file-count');
+      const headerHintEl = document.getElementById('header-hint');
+      const listContainer = document.getElementById('list-container');
+      const toastEl = document.getElementById('toast');
+
+      let rpcCounter = 1;
+      const pendingRequests = new Map();
+      let toastTimer = null;
+      let resizeTimer = null;
+      let lastSentHeight = 0;
+
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function showToast(message, isError = false) {
+        if (toastTimer) clearTimeout(toastTimer);
+        toastEl.textContent = String(message || '');
+        toastEl.classList.toggle('is-error', Boolean(isError));
+        toastEl.classList.add('is-visible');
+        toastTimer = setTimeout(() => {
+          toastEl.classList.remove('is-visible');
+        }, 2600);
+      }
+
+      function applyHostContext(ctx) {
+        if (!ctx || typeof ctx !== 'object') return;
+        state.hostContext = { ...state.hostContext, ...ctx };
+        const themeRaw = typeof ctx.theme === 'string' ? ctx.theme : ctx.theme?.colorScheme;
+        if (themeRaw === 'dark' || themeRaw === 'light') {
+          document.documentElement.dataset.theme = themeRaw;
+          document.documentElement.style.colorScheme = themeRaw;
+        }
+        const vars = ctx.styles && ctx.styles.variables;
+        if (vars && typeof vars === 'object') {
+          for (const [k, v] of Object.entries(vars)) {
+            if (typeof k === 'string' && k.startsWith('--') && typeof v === 'string' && v.trim()) {
+              document.documentElement.style.setProperty(k, v);
+            }
+          }
+        }
+      }
+
+      function postToHost(payload) {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage(payload, '*');
+        }
+      }
+
+      function sendNotification(method, params = {}) {
+        postToHost({ jsonrpc: '2.0', method, params });
+      }
+
+      function sendRequest(method, params = {}, timeoutMs = 15000) {
+        const id = rpcCounter++;
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            pendingRequests.delete(id);
+            reject(new Error('请求宿主超时'));
+          }, timeoutMs);
+          pendingRequests.set(id, { resolve, reject, timer });
+          postToHost({ jsonrpc: '2.0', id, method, params });
+        });
+      }
+
+      async function callServerTool(name, args = {}) {
+        const res = await sendRequest('tools/call', { name, arguments: args }, 20000);
+        if (res && res.isError) {
+          const errText = res.structuredContent?.error || res.content?.find?.((c) => c.type === 'text')?.text || '工具调用失败';
+          throw new Error(errText);
+        }
+        return res?.structuredContent ?? res;
+      }
+
+      async function openInNativeTab(uri) {
+        if (!uri) {
+          showToast('缺少有效的文件 URI', true);
+          return false;
+        }
+        try {
+          const res = await sendRequest('com.google.antigravity/toggle-aux-pane', {
+            tabType: 'fileView',
+            uri
+          }, 12000);
+          if (res && res.isError) {
+            throw Object.assign(new Error(res.message || '宿主不支持原生标签页'), { code: -32601 });
+          }
+          return true;
+        } catch (err) {
+          if (err && err.code === -32601) {
+            state.nativeTabUnsupported = true;
+            render();
+            showToast('当前宿主暂不支持原生标签页打开', true);
+          } else {
+            showToast(err?.message || '打开原生标签页失败', true);
+          }
+          return false;
+        }
+      }
+
+      async function attachContext(text) {
+        if (!state.hostCapabilities?.updateModelContext) {
+          showToast('当前宿主暂不支持引用到对话上下文', true);
+          return false;
+        }
+        try {
+          await sendRequest('ui/update-model-context', {
+            content: [{ type: 'text', text }]
+          }, 10000);
+          showToast('已引用到当前对话');
+          return true;
+        } catch (err) {
+          showToast(err?.message || '引用上下文失败', true);
+          return false;
+        }
+      }
+
+      async function handleReveal(item) {
+        if (!item?.path) return;
+        try {
+          const res = await callServerTool('reveal_in_explorer', { path: item.path });
+          if (res && res.ok === false) {
+            showToast(res.error || '定位失败', true);
+            return;
+          }
+          const targetLabel = state.platformLabel || 'Windows 资源管理器';
+          showToast(`已在 ${targetLabel} 中定位`);
+        } catch (err) {
+          showToast(err?.message || '定位失败', true);
+        }
+      }
+
+      function scheduleSizeSync() {
+        if (!state.initialized) return;
+        if (resizeTimer) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          const rect = cardRoot.getBoundingClientRect();
+          const h = Math.min(780, Math.max(48, Math.ceil(rect.height)));
+          if (h !== lastSentHeight) {
+            lastSentHeight = h;
+            sendNotification('ui/notifications/size-changed', { height: h });
+          }
+        }, 40);
+      }
+
+      function render() {
+        cardTitleEl.textContent = state.title || '文件卡片';
+        fileCountEl.textContent = `${state.items.length} 项`;
+        if (state.platformLabel) {
+          headerHintEl.textContent = `双击在 ${state.platformLabel} 中定位`;
+        } else {
+          headerHintEl.textContent = '双击定位系统目录';
+        }
+
+        if (state.loading && state.items.length === 0) {
+          listContainer.innerHTML = '<div class="empty-state">正在读取文件列表…</div>';
+          scheduleSizeSync();
+          return;
+        }
+
+        if (!state.items.length) {
+          listContainer.innerHTML = '<div class="empty-state">暂无可展示的文件</div>';
+          scheduleSizeSync();
+          return;
+        }
+
+        const canQuote = Boolean(state.hostCapabilities?.updateModelContext);
+        const rowsHtml = state.items.map((item, idx) => {
+          const kind = KIND_ICONS[item.kind] ? item.kind : 'file';
+          const iconSvg = KIND_ICONS[kind];
+          const exists = item.exists !== false;
+          const showOpen = !item.isDir && exists && Boolean(item.uri) && !state.nativeTabUnsupported;
+          const displayPath = item.relPath && item.relPath !== item.name ? item.relPath : item.path;
+          return (
+            `<li class="file-row${exists ? '' : ' is-missing'}" data-index="${idx}" tabindex="0" title="${escapeHtml(item.path)}">` +
+              `<span class="kind-icon kind-${escapeHtml(kind)}" aria-hidden="true">${iconSvg}</span>` +
+              `<span class="file-meta">` +
+                `<span class="file-name-line">` +
+                  `<span class="file-name">${escapeHtml(item.name || item.path)}</span>` +
+                  (exists ? '' : '<span class="missing-tag">不存在</span>') +
+                `</span>` +
+                `<span class="file-path">${escapeHtml(displayPath || '')}</span>` +
+              `</span>` +
+              `<span class="file-size">${escapeHtml(item.sizeText || '')}</span>` +
+              `<span class="row-actions">` +
+                `<button type="button" class="btn btn-primary" data-action="open" data-index="${idx}"${showOpen ? '' : ' hidden'}>打开</button>` +
+                `<button type="button" class="btn" data-action="reveal" data-index="${idx}">定位</button>` +
+                `<button type="button" class="btn" data-action="quote" data-index="${idx}"${canQuote ? '' : ' hidden'}>引用</button>` +
+              `</span>` +
+            `</li>`
+          );
+        }).join('');
+
+        listContainer.innerHTML = `<ul class="file-list" role="list">${rowsHtml}</ul>`;
+        scheduleSizeSync();
+      }
+
+      function applyToolInput(params) {
+        const args = params?.arguments || params || {};
+        if (typeof args.title === 'string' && args.title.trim()) {
+          state.title = args.title.trim();
+        }
+        render();
+      }
+
+      function applyToolResult(params) {
+        const sc = params?.structuredContent || params?.result?.structuredContent;
+        state.loading = false;
+        if (sc && typeof sc === 'object') {
+          if (typeof sc.title === 'string' && sc.title.trim()) {
+            state.title = sc.title.trim();
+          }
+          if (Array.isArray(sc.items)) {
+            state.items = sc.items;
+          }
+          if (typeof sc.platformLabel === 'string' && sc.platformLabel) {
+            state.platformLabel = sc.platformLabel;
+          }
+        }
+        render();
+      }
+
+      // Register message handler BEFORE calling ui/initialize
+      window.addEventListener('message', (event) => {
+        if (window.parent !== window && event.source && event.source !== window.parent) return;
+        const msg = event.data;
+        if (!msg || typeof msg !== 'object' || msg.jsonrpc !== '2.0') return;
+
+        // Response to our outgoing request
+        if (msg.id !== undefined && msg.id !== null && !msg.method) {
+          const pending = pendingRequests.get(msg.id);
+          if (!pending) return;
+          pendingRequests.delete(msg.id);
+          clearTimeout(pending.timer);
+          if (msg.error) {
+            const err = new Error(msg.error.message || 'RPC 调用错误');
+            err.code = msg.error.code;
+            err.data = msg.error.data;
+            pending.reject(err);
+          } else {
+            pending.resolve(msg.result);
+          }
+          return;
+        }
+
+        // Incoming JSON-RPC request from host
+        if (msg.method && msg.id !== undefined && msg.id !== null) {
+          if (msg.method === 'ping') {
+            postToHost({ jsonrpc: '2.0', id: msg.id, result: {} });
+          } else {
+            postToHost({
+              jsonrpc: '2.0',
+              id: msg.id,
+              error: { code: -32601, message: `Method not found: ${msg.method}` }
+            });
+          }
+          return;
+        }
+
+        // Incoming notifications
+        if (msg.method === 'ui/notifications/host-context-changed') {
+          applyHostContext(msg.params);
+        } else if (msg.method === 'ui/notifications/tool-input') {
+          applyToolInput(msg.params);
+        } else if (msg.method === 'ui/notifications/tool-result') {
+          applyToolResult(msg.params);
+        }
+      });
+
+      listContainer.addEventListener('click', (event) => {
+        const btn = event.target.closest('button[data-action]');
+        if (!btn) return;
+        event.stopPropagation();
+        const idx = Number(btn.dataset.index);
+        const item = state.items[idx];
+        if (!item) return;
+        const action = btn.dataset.action;
+        if (action === 'open') {
+          openInNativeTab(item.uri);
+        } else if (action === 'reveal') {
+          handleReveal(item);
+        } else if (action === 'quote') {
+          attachContext(`@${item.path}`);
+        }
+      });
+
+      listContainer.addEventListener('dblclick', (event) => {
+        if (event.target.closest('button[data-action]')) {
+          event.stopPropagation();
+          return;
+        }
+        const row = event.target.closest('.file-row');
+        if (!row) return;
+        const idx = Number(row.dataset.index);
+        const item = state.items[idx];
+        if (item) handleReveal(item);
+      });
+
+      listContainer.addEventListener('keydown', (event) => {
+        const row = event.target.closest('.file-row');
+        if (!row) return;
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          const idx = Number(row.dataset.index);
+          const item = state.items[idx];
+          if (item) handleReveal(item);
+        } else if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          row.nextElementSibling?.focus();
+        } else if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          row.previousElementSibling?.focus();
+        }
+      });
+
+      if (typeof ResizeObserver === 'function') {
+        const observer = new ResizeObserver(() => {
+          scheduleSizeSync();
+        });
+        observer.observe(cardRoot);
+      }
+
+      async function bootstrap() {
+        render();
+        if (!window.parent || window.parent === window) {
+          state.initialized = true;
+          return;
+        }
+        try {
+          const initRes = await sendRequest('ui/initialize', {
+            protocolVersion: '2026-01-26',
+            appInfo: { name: 'prism-files', version: '0.3.0' },
+            appCapabilities: {}
+          }, 12000);
+          state.hostCapabilities = initRes?.hostCapabilities || {};
+          applyHostContext(initRes?.hostContext || {});
+          state.initialized = true;
+          sendNotification('ui/notifications/initialized', {});
+          render();
+          scheduleSizeSync();
+        } catch (err) {
+          state.initialized = true;
+          state.loading = false;
+          render();
+          showToast(err?.message || '初始化通信失败', true);
+        }
+      }
+
+      bootstrap();
+    })();
+  </script>
+</body>
+</html>

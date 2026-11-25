@@ -1,0 +1,10 @@
+{
+  "name": "prism-files",
+  "version": "0.3.0",
+  "description": "Prism 文件工作台（Anti-Claude Prism Suite）：侧边栏文件树、代码/Markdown/图片预览与安全原位编辑、划词引用给 AI、最近 brain 产物速查、消息流内联文件卡片，以及 Windows/WSL/macOS/Linux 双击高亮定位系统目录。",
+  "icon": "assets/logo.svg",
+  "suggested_prompts": [
+    "打开 Prism 文件工作台浏览当前目录和最近产物",
+    "用内联文件卡片展示本目录的关键文件"
+  ]
+}

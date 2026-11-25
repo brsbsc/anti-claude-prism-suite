@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 - 2026-11-25
+
+- **全新融合 · Prism 文件工作台（原生 Antigravity MCP App 插件，零外部依赖）**：
+  - **侧边栏 & 全局三合一工作台（`open_prism_files`）**：支持工作区文件树浏览、`Ctrl/Cmd+L` 路径直达、实时检索、隐藏文件切换、代码/Markdown（渲染预览 + 带 SHA-256 乐观锁的安全原位编辑）/图片双栏分屏预览、**划词引用给 AI**（`ui/update-model-context`）、一键在 Antigravity 原生标签页打开（`com.google.antigravity/toggle-aux-pane`）、**`~/.gemini/antigravity/brain` 最近产物速查**与持久化收藏夹；
+  - **消息流内联文件卡片（`show_files_inline`）**：产出文件时直接在对话中渲染交互卡片，支持一键原生打开、引用上下文，以及 **全平台双击高亮定位系统文件管理器**（Windows `explorer.exe /select,`、WSL 自动 `wslpath -w` 桥接 Windows 资源管理器、macOS `open -R`、Linux `xdg-open`）；
+  - **严格安全与零上下文膨胀**：模型仅见 2 个轻量工具，其余 7 个交互工具均设为 `visibility: ["app"]`；预览与写入均前置拦截 `.env`/密钥/`.codex`/`.claude`/`.ssh` 等凭据路径，且 `brain/` 产物目录强制只读。
+- **Windows 一键图形化安装器 `.exe`（零运行库依赖）**：
+  - 新增纯 C# WinForms 安装器源码（`installer/win/PrismSuiteInstaller.cs`）与一键打包脚本（`scripts/build-win-exe.ps1`），内置全量扩展与插件资源，双击自动探测 Windows Anti-Claude 目录、Windows 插件目录与 **WSL 真实 `$HOME` 插件目录**，支持「一键安装 / 更新」与「干净卸载」；
+  - 新增 GitHub Actions Release 工作流（`.github/workflows/release.yml`），打 Tag 自动构建并发布 `Anti-Claude-Prism-Suite-Setup.exe` 与 SHA-256 校验文件。
+- **一体化 CLI 安装/卸载**：`node install.mjs` 与 `node uninstall.mjs` 现默认同步部署/清理 Anti-Claude 扩展与 `prism-files` MCP App 插件（支持 `--extensions-only` / `--plugin-only`）。
+
 ## 0.2.4 - 2026-11-25
 
 - **控制面板与大纲视觉精修**：
