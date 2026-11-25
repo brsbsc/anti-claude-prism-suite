@@ -41,7 +41,11 @@ test('extension JS syntax is valid and enforces zero-body-observer performance g
   assert.match(jsSrc, /mascotVibe/);
   assert.doesNotMatch(jsSrc, /streamObserver\.observe\(document\.body/, 'Must never permanently observe document.body');
   assert.match(cssSrc, /data-ag-ps-light="crystal"/);
+  assert.match(cssSrc, /data-ag-ps-light="sage"/);
   assert.match(cssSrc, /data-ag-ps-dark="obsidian"/);
+  assert.match(cssSrc, /data-ag-ps-dark="marine"/);
+  assert.match(cssSrc, /agPsPopIn/);
+  assert.match(cssSrc, /\.ag-ps-subpanel/);
   assert.match(cssSrc, /color-mix\(in srgb, var\(--foreground/);
   assert.match(cssSrc, /agPsLeap/);
   assert.match(cssSrc, /agPsFlipR/);

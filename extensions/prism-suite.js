@@ -121,8 +121,8 @@
   /* ==========================================================================
    * 1. Multi-Palette Theme Application
    * ========================================================================== */
-  const LIGHT_NAMES = { default: '纯白默认', crystal: '白昼冷晶', alabaster: '暖白画册' };
-  const DARK_NAMES = { default: '暖炭默认', obsidian: '深空黑曜', basalt: '暖炭玄岩' };
+  const LIGHT_NAMES = { default: '纯白默认', crystal: '白昼冷晶', alabaster: '暖白画册', sage: '松雾青岚' };
+  const DARK_NAMES = { default: '暖炭默认', obsidian: '深空黑曜', basalt: '暖炭玄岩', marine: '深海墨蓝' };
 
   function isCurrentlyDark() {
     return (
@@ -368,8 +368,8 @@
     drawer.setAttribute('data-ag-i18n-ignore', '1');
     drawer.innerHTML = `
       <div class="ag-ps-outline-hdr">
-        <span style="font-weight:600;font-size:12.5px">会话大纲</span>
-        <span class="ag-ps-outline-count ag-ps-pop-badge">0 轮</span>
+        <span style="font-weight:600;font-size:12.5px;letter-spacing:-0.015em">会话大纲</span>
+        <span class="ag-ps-outline-count ag-ps-pop-meta">0 轮</span>
       </div>
       <input type="text" class="ag-ps-outline-search" placeholder="筛选提问关键词… (Alt+↑/↓ 跳轮 · Esc 关)" />
       <div class="ag-ps-outline-list"></div>
@@ -1738,24 +1738,27 @@
     const darkNow = isCurrentlyDark();
     pop.innerHTML = `
       <div class="ag-ps-pop-hdr">
-        <span class="ag-ps-pop-title">✦ 棱镜扩展套件 <span class="ag-ps-pop-badge">${darkNow ? '当前深色' : '当前浅色'}</span></span>
+        <span class="ag-ps-pop-title">✦ 棱镜扩展套件</span>
+        <span class="ag-ps-pop-meta">${darkNow ? '深色模式' : '浅色模式'} · v0.2.4</span>
       </div>
 
-      <div class="ag-ps-sec-lbl"><span>浅色主题配色</span><span class="ag-ps-sec-tag">${!darkNow ? '即时生效' : '浅色首选'}</span></div>
+      <div class="ag-ps-sec-lbl"><span>浅色配色</span><span class="ag-ps-sec-tag">${!darkNow ? '当前生效' : '浅色首选'}</span></div>
       <div class="ag-ps-palette-row">
-        <button type="button" class="ag-ps-pal-btn" data-set-light="default" data-selected="${prefs.lightPalette === 'default' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:#FFFFFF"></span>纯白默认</button>
-        <button type="button" class="ag-ps-pal-btn" data-set-light="crystal" data-selected="${prefs.lightPalette === 'crystal' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:#E8EEF6"></span>白昼冷晶</button>
-        <button type="button" class="ag-ps-pal-btn" data-set-light="alabaster" data-selected="${prefs.lightPalette === 'alabaster' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:#EBE6DC"></span>暖白画册</button>
+        <button type="button" class="ag-ps-pal-btn" data-set-light="default" data-selected="${prefs.lightPalette === 'default' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#FFFFFF 52%,#2F75C3 52%)"></span>纯白默认</button>
+        <button type="button" class="ag-ps-pal-btn" data-set-light="crystal" data-selected="${prefs.lightPalette === 'crystal' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#E8EEF6 52%,#2563EB 52%)"></span>白昼冷晶</button>
+        <button type="button" class="ag-ps-pal-btn" data-set-light="alabaster" data-selected="${prefs.lightPalette === 'alabaster' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#F1ECE2 52%,#B45309 52%)"></span>暖白画册</button>
+        <button type="button" class="ag-ps-pal-btn" data-set-light="sage" data-selected="${prefs.lightPalette === 'sage' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#E6EFE9 52%,#15803D 52%)"></span>松雾青岚</button>
       </div>
 
-      <div class="ag-ps-sec-lbl"><span>深色主题配色</span><span class="ag-ps-sec-tag">${darkNow ? '即时生效' : '深色首选'}</span></div>
+      <div class="ag-ps-sec-lbl"><span>深色配色</span><span class="ag-ps-sec-tag">${darkNow ? '当前生效' : '深色首选'}</span></div>
       <div class="ag-ps-palette-row">
-        <button type="button" class="ag-ps-pal-btn" data-set-dark="default" data-selected="${prefs.darkPalette === 'default' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:#212120"></span>暖炭默认</button>
-        <button type="button" class="ag-ps-pal-btn" data-set-dark="obsidian" data-selected="${prefs.darkPalette === 'obsidian' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:#09090B"></span>深空黑曜</button>
-        <button type="button" class="ag-ps-pal-btn" data-set-dark="basalt" data-selected="${prefs.darkPalette === 'basalt' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:#141312"></span>暖炭玄岩</button>
+        <button type="button" class="ag-ps-pal-btn" data-set-dark="default" data-selected="${prefs.darkPalette === 'default' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#212120 52%,#60A5FA 52%)"></span>暖炭默认</button>
+        <button type="button" class="ag-ps-pal-btn" data-set-dark="obsidian" data-selected="${prefs.darkPalette === 'obsidian' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#09090B 52%,#3B82F6 52%)"></span>深空黑曜</button>
+        <button type="button" class="ag-ps-pal-btn" data-set-dark="basalt" data-selected="${prefs.darkPalette === 'basalt' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#141312 52%,#D97706 52%)"></span>暖炭玄岩</button>
+        <button type="button" class="ag-ps-pal-btn" data-set-dark="marine" data-selected="${prefs.darkPalette === 'marine' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:linear-gradient(135deg,#0B1220 52%,#38BDF8 52%)"></span>深海墨蓝</button>
       </div>
 
-      <div class="ag-ps-sec-lbl"><span>增强功能开关</span><span class="ag-ps-sec-tag">v0.2.3</span></div>
+      <div class="ag-ps-sec-lbl"><span>增强功能</span></div>
       <div class="ag-ps-toggle-list">
         <div class="ag-ps-toggle-row">
           <div class="ag-ps-toggle-label"><span>会话大纲 &amp; 跳轮</span><span class="ag-ps-toggle-sub">Alt+↑/↓ 跳轮 · Alt+O 大纲</span></div>
@@ -1775,49 +1778,51 @@
         </div>
         ${
           prefs.mascot
-            ? `<div class="ag-ps-toggle-row">
-                <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">伙伴数量${prefs.mascotCountMode === 'agents' ? `（当前 1 主控 + ${getLiveSubagents().length} 活跃）` : ''}</span></div>
-                <div class="ag-ps-seg-group">
-                  <button type="button" class="ag-ps-seg-btn" data-mascot-count-mode="fixed" data-selected="${prefs.mascotCountMode === 'fixed' ? '1' : '0'}">固定</button>
-                  <button type="button" class="ag-ps-seg-btn" data-mascot-count-mode="agents" data-selected="${prefs.mascotCountMode === 'agents' ? '1' : '0'}">跟随 Agent</button>
+            ? `<div class="ag-ps-subpanel">
+                <div class="ag-ps-toggle-row">
+                  <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">数量${prefs.mascotCountMode === 'agents' ? `（1 主控 + ${getLiveSubagents().length} 活跃）` : ''}</span></div>
+                  <div class="ag-ps-seg-group">
+                    <button type="button" class="ag-ps-seg-btn" data-mascot-count-mode="fixed" data-selected="${prefs.mascotCountMode === 'fixed' ? '1' : '0'}">固定</button>
+                    <button type="button" class="ag-ps-seg-btn" data-mascot-count-mode="agents" data-selected="${prefs.mascotCountMode === 'agents' ? '1' : '0'}">跟随 Agent</button>
+                  </div>
                 </div>
-              </div>
-              ${
-                prefs.mascotCountMode === 'fixed'
-                  ? `<div class="ag-ps-toggle-row">
-                      <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">伙伴样式</span></div>
-                      <div class="ag-ps-seg-group">
-                        <button type="button" class="ag-ps-seg-btn" data-mascot-style="trio" data-selected="${prefs.mascotStyle === 'trio' ? '1' : '0'}">三萌</button>
-                        <button type="button" class="ag-ps-seg-btn" data-mascot-style="crab" data-selected="${prefs.mascotStyle === 'crab' ? '1' : '0'}">橘蟹</button>
-                        <button type="button" class="ag-ps-seg-btn" data-mascot-style="cat" data-selected="${prefs.mascotStyle === 'cat' ? '1' : '0'}">紫猫</button>
-                      </div>
-                    </div>`
-                  : `<div class="ag-ps-toggle-row">
-                      <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">保底数量（无子 Agent 时常驻）</span></div>
-                      <div class="ag-ps-seg-group">
-                        <button type="button" class="ag-ps-seg-btn" data-mascot-min-count="1" data-selected="${clampMascotMinCount(prefs.mascotMinCount) === 1 ? '1' : '0'}">1只</button>
-                        <button type="button" class="ag-ps-seg-btn" data-mascot-min-count="2" data-selected="${clampMascotMinCount(prefs.mascotMinCount) === 2 ? '1' : '0'}">2只</button>
-                        <button type="button" class="ag-ps-seg-btn" data-mascot-min-count="3" data-selected="${clampMascotMinCount(prefs.mascotMinCount) === 3 ? '1' : '0'}">3只</button>
-                      </div>
-                    </div>`
-              }
-              <div class="ag-ps-toggle-row">
-                <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">工作态漫游跑跳（闲时自动归位）</span></div>
-                <button type="button" class="ag-ps-switch" data-toggle="mascotRoam" data-on="${prefs.mascotRoam ? '1' : '0'}"></button>
-              </div>
-              <div class="ag-ps-toggle-row">
-                <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">伙伴性格</span></div>
-                <div class="ag-ps-seg-group">
-                  <button type="button" class="ag-ps-seg-btn" data-mascot-vibe="calm" data-selected="${prefs.mascotVibe === 'calm' ? '1' : '0'}">温顺</button>
-                  <button type="button" class="ag-ps-seg-btn" data-mascot-vibe="lively" data-selected="${prefs.mascotVibe !== 'calm' ? '1' : '0'}">活泼</button>
+                ${
+                  prefs.mascotCountMode === 'fixed'
+                    ? `<div class="ag-ps-toggle-row">
+                        <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">样式</span></div>
+                        <div class="ag-ps-seg-group">
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="trio" data-selected="${prefs.mascotStyle === 'trio' ? '1' : '0'}">三萌</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="crab" data-selected="${prefs.mascotStyle === 'crab' ? '1' : '0'}">橘蟹</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="cat" data-selected="${prefs.mascotStyle === 'cat' ? '1' : '0'}">紫猫</button>
+                        </div>
+                      </div>`
+                    : `<div class="ag-ps-toggle-row">
+                        <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">保底数量</span></div>
+                        <div class="ag-ps-seg-group">
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-min-count="1" data-selected="${clampMascotMinCount(prefs.mascotMinCount) === 1 ? '1' : '0'}">1只</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-min-count="2" data-selected="${clampMascotMinCount(prefs.mascotMinCount) === 2 ? '1' : '0'}">2只</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-min-count="3" data-selected="${clampMascotMinCount(prefs.mascotMinCount) === 3 ? '1' : '0'}">3只</button>
+                        </div>
+                      </div>`
+                }
+                <div class="ag-ps-toggle-row">
+                  <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">工作态漫游跑跳</span></div>
+                  <button type="button" class="ag-ps-switch" data-toggle="mascotRoam" data-on="${prefs.mascotRoam ? '1' : '0'}"></button>
                 </div>
-              </div>
-              <div class="ag-ps-toggle-row">
-                <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">伙伴大小</span></div>
-                <div class="ag-ps-range-wrap">
-                  <input type="range" class="ag-ps-range" data-mascot-size="1" min="${MASCOT_SIZE_MIN}" max="${MASCOT_SIZE_MAX}" step="2" value="${clampMascotSize(prefs.mascotSize)}" aria-label="像素伙伴大小" />
-                  <span class="ag-ps-range-val" data-mascot-size-val="1">${clampMascotSize(prefs.mascotSize)}px</span>
-                  <button type="button" class="ag-ps-mini-reset" data-mascot-size-reset="1" ${clampMascotSize(prefs.mascotSize) === MASCOT_SIZE_DEFAULT ? 'disabled' : ''}>复位</button>
+                <div class="ag-ps-toggle-row">
+                  <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">性格</span></div>
+                  <div class="ag-ps-seg-group">
+                    <button type="button" class="ag-ps-seg-btn" data-mascot-vibe="calm" data-selected="${prefs.mascotVibe === 'calm' ? '1' : '0'}">温顺</button>
+                    <button type="button" class="ag-ps-seg-btn" data-mascot-vibe="lively" data-selected="${prefs.mascotVibe !== 'calm' ? '1' : '0'}">活泼</button>
+                  </div>
+                </div>
+                <div class="ag-ps-toggle-row">
+                  <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">大小</span></div>
+                  <div class="ag-ps-range-wrap">
+                    <input type="range" class="ag-ps-range" data-mascot-size="1" min="${MASCOT_SIZE_MIN}" max="${MASCOT_SIZE_MAX}" step="2" value="${clampMascotSize(prefs.mascotSize)}" aria-label="像素伙伴大小" />
+                    <span class="ag-ps-range-val" data-mascot-size-val="1">${clampMascotSize(prefs.mascotSize)}px</span>
+                    <button type="button" class="ag-ps-mini-reset" data-mascot-size-reset="1" ${clampMascotSize(prefs.mascotSize) === MASCOT_SIZE_DEFAULT ? 'disabled' : ''}>复位</button>
+                  </div>
                 </div>
               </div>`
             : ''
