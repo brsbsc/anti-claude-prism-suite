@@ -6,7 +6,30 @@
 
 ---
 
-## 核心特性（v0.2.0）
+## 实机预览
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="./assets/screenshots/prism-popover.png" alt="棱镜扩展套件控制面板" width="320" /><br />
+      <sub>顶栏 <code>✦ 棱镜</code> 控制面板（多套主题 + 6 项独立开关）</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="./assets/screenshots/usage-heatmap.png" alt="用量统计、名著换算与12周热力图" width="300" /><br />
+      <sub>右侧「用量统计」卡片（14 天柱图 + 名著换算 + 周一对齐 12 周热力图）</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2">
+      <img src="./assets/screenshots/mascot-composer.png" alt="输入框上方三萌像素伙伴" width="680" /><br />
+      <sub>输入框顶部三萌像素伙伴（生成弹跳 / 完成庆祝 / 空闲 5s 自动 0fps 休眠）</sub>
+    </td>
+  </tr>
+</table>
+
+---
+
+## 核心特性（v0.2.1）
 
 点击顶栏 **`✦ 棱镜`** 按钮弹出控制面板（动态贴合按钮下方，支持 `Esc` 关闭与窗口缩放自动重定位）：
 

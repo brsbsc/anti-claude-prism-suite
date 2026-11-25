@@ -873,11 +873,11 @@
       bodyEl.parentElement.insertBefore(box, bodyEl.nextSibling);
     }
     const effectiveImmersive = mode === 'immersive' && !peeking;
-    const label = mode === 'immersive' ? (peeking ? '中文思考（对照中）' : '中文思考（沉浸）') : '中文思考（双语）';
-    const peekBtn = mode === 'immersive'
-      ? `<button type="button" class="ag-ps-thought-peek">${peeking ? '隐藏原文' : '看原文'}</button>`
-      : '';
-    box.innerHTML = `<div class="ag-ps-thought-zh-hdr"><span>${label}</span>${peekBtn}</div><div>${escapeHtml(zhText)}</div>`;
+    box.setAttribute('data-mode', effectiveImmersive ? 'immersive' : 'bilingual');
+    const hdrHtml = mode === 'immersive'
+      ? `<div class="ag-ps-thought-zh-hdr"><button type="button" class="ag-ps-thought-peek">${peeking ? '隐藏原文' : '查看原文'}</button></div>`
+      : `<div class="ag-ps-thought-zh-hdr"><span>译文</span></div>`;
+    box.innerHTML = `${hdrHtml}<div>${escapeHtml(zhText)}</div>`;
     if (effectiveImmersive) {
       bodyEl.classList.add('ag-ps-thought-src-hidden');
       bodyEl.classList.remove('ag-ps-thought-src-dim');
@@ -976,7 +976,7 @@
         <button type="button" class="ag-ps-pal-btn" data-set-dark="basalt" data-selected="${prefs.darkPalette === 'basalt' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:#141312"></span>暖炭玄岩</button>
       </div>
 
-      <div class="ag-ps-sec-lbl"><span>增强功能开关</span><span class="ag-ps-sec-tag">v0.2.0</span></div>
+      <div class="ag-ps-sec-lbl"><span>增强功能开关</span><span class="ag-ps-sec-tag">v0.2.1</span></div>
       <div class="ag-ps-toggle-list">
         <div class="ag-ps-toggle-row">
           <div class="ag-ps-toggle-label"><span>会话大纲 &amp; 跳轮</span><span class="ag-ps-toggle-sub">Alt+↑/↓ 跳轮 · Alt+O 大纲</span></div>
