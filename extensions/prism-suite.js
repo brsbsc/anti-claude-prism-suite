@@ -887,6 +887,17 @@
     }
   }
 
+  function extractCleanThoughtText(bodyEl) {
+    if (!bodyEl) return '';
+    try {
+      const clone = bodyEl.cloneNode(true);
+      clone.querySelectorAll('style, script, noscript').forEach((n) => n.remove());
+      return (clone.textContent || '').replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    } catch {
+      return (bodyEl.innerText || '').trim();
+    }
+  }
+
   function translateThoughtContainer(bodyEl) {
     if (!bodyEl || typeof window.__agProjectCall !== 'function') return;
     const mode = prefs.thoughtMode;
@@ -894,7 +905,7 @@
       applyThoughtDisplay(bodyEl, '', 'off');
       return;
     }
-    const srcText = (bodyEl.innerText || bodyEl.textContent || '').trim();
+    const srcText = extractCleanThoughtText(bodyEl);
     if (!looksMostlyEnglish(srcText)) return;
     const clipped = srcText.slice(0, 9800);
     const memo = thoughtTextMemo.get(bodyEl);
@@ -924,7 +935,8 @@
 
   function syncThoughtBlocks(isBusy) {
     const triggers = document.querySelectorAll('[data-testid="thinking-collapsible-trigger"]');
-    for (const trig of triggers) {
+    for (let i = 0; i < triggers.length; i++) {
+      const trig = triggers[i];
       const expanded = trig.getAttribute('aria-expanded') === 'true';
       if (!expanded) {
         removeThoughtBoxNear(trig);
@@ -936,8 +948,10 @@
         applyThoughtDisplay(bodyEl, '', 'off');
         continue;
       }
-      // Wait for active streaming turn to finish before firing translation RPC (no 1.4s spam)
-      if (isBusy) {
+      // Only defer the actively streaming last thinking block (which has no completed duration yet)
+      const trigTxt = (trig.textContent || '').trim();
+      const isCompleted = /\d+\s*s\b|\d+\s*秒|已思考|Thought\s+for/i.test(trigTxt);
+      if (isBusy && i === triggers.length - 1 && !isCompleted) {
         const memo = thoughtTextMemo.get(bodyEl);
         if (memo && memo.zh) applyThoughtDisplay(bodyEl, memo.zh, prefs.thoughtMode);
         continue;
