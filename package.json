@@ -1,6 +1,6 @@
 {
   "name": "anti-claude-prism-suite",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Clean-room pluggable extension suite for Anti-Claude: multi-palette themes, conversation outline & turn jump, book yardstick + 12-week heatmap, zero-typing-latency ink fade, 0fps idle pixel mascots, and live thought translation.",
   "type": "module",
   "license": "MIT",

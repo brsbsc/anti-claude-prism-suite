@@ -26,10 +26,19 @@ test('extension JS syntax is valid and enforces zero-body-observer performance g
   assert.match(jsSrc, /isUserActivelyTyping/);
   assert.match(jsSrc, /detectViewportTurnIndex/);
   assert.match(jsSrc, /ag-ps-thought-peek/);
+  assert.match(jsSrc, /clampMascotSize/);
+  assert.match(jsSrc, /clampMascotMinCount/);
+  assert.match(jsSrc, /mascotRoam/);
+  assert.match(jsSrc, /mascotCountMode/);
+  assert.match(jsSrc, /mascotMinCount/);
+  assert.match(jsSrc, /buildMascotRoster/);
+  assert.match(jsSrc, /syncMascotRoaming/);
   assert.doesNotMatch(jsSrc, /streamObserver\.observe\(document\.body/, 'Must never permanently observe document.body');
   assert.match(cssSrc, /data-ag-ps-light="crystal"/);
   assert.match(cssSrc, /data-ag-ps-dark="obsidian"/);
   assert.match(cssSrc, /color-mix\(in srgb, var\(--foreground/);
+  assert.match(cssSrc, /agPsLeap/);
+  assert.match(cssSrc, /--ag-ps-sprite-w/);
 });
 
 test('installExtensions and uninstallExtensions round-trip cleanly without touching other files', () => {

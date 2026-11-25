@@ -355,6 +355,51 @@ html[data-ag-ps-dark="basalt"] body.dark {
   font-weight: 600;
 }
 
+.ag-ps-range-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.ag-ps-range {
+  width: 92px;
+  height: 4px;
+  margin: 0;
+  accent-color: var(--primary, #2F75C3);
+  cursor: pointer;
+}
+
+.ag-ps-range-val {
+  min-width: 30px;
+  text-align: right;
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  color: var(--foreground, #141413);
+}
+
+.ag-ps-mini-reset {
+  border: 1px solid var(--sidebar-border, rgba(0, 0, 0, 0.12));
+  background: var(--muted, #F6F6F4);
+  color: var(--muted-foreground, #6B6964);
+  border-radius: 5px;
+  padding: 1px 5px;
+  font-size: 10px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.ag-ps-mini-reset:hover:not(:disabled) {
+  color: var(--foreground, #141413);
+  border-color: var(--primary, #2F75C3);
+}
+
+.ag-ps-mini-reset:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
 /* ---- 3. Conversation Outline Drawer & Jump Toast ---- */
 #ag-ps-outline {
   position: fixed;
@@ -609,65 +654,127 @@ html[data-ag-ps-dark="basalt"] body.dark {
 ::highlight(ag-ps-ink-4) { color: rgba(20, 20, 19, 0.82); color: color-mix(in srgb, var(--foreground, #141413) 82%, transparent); }
 ::highlight(ag-ps-ink-5) { color: rgba(20, 20, 19, 0.94); color: color-mix(in srgb, var(--foreground, #141413) 94%, transparent); }
 
-/* ---- 6. Composer Pixel Mascots (idle 0fps + narrow guard) ---- */
+/* ---- 6. Composer Pixel Mascots (GPU-composited roam + continuous size + 0fps idle) ---- */
 #antigravity\.agentSidePanelInputBox {
   position: relative;
 }
 
 #ag-ps-mascot-dock {
+  --ag-ps-sprite-w: 24px;
+  --ag-ps-sprite-h: 22px;
   position: absolute;
-  top: -24px;
-  right: 16px;
-  z-index: 30;
-  display: inline-flex;
-  align-items: flex-end;
-  gap: 5px;
-  pointer-events: auto;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 2px);
+  height: var(--ag-ps-sprite-h);
+  z-index: 18;
+  pointer-events: none;
   user-select: none;
-  cursor: pointer;
 }
 
 #ag-ps-mascot-dock[data-compact-hide="1"] {
   display: none;
 }
 
-.ag-ps-sprite {
-  width: 24px;
-  height: 22px;
-  image-rendering: pixelated;
+.ag-ps-actor {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: var(--ag-ps-sprite-w);
+  height: var(--ag-ps-sprite-h);
+  pointer-events: auto;
+  cursor: pointer;
+  transform: translate3d(var(--ag-ps-x, 0px), 0, 0);
+  transition: transform var(--ag-ps-dur, 0.45s) cubic-bezier(0.25, 0.85, 0.35, 1);
+  will-change: transform;
+}
+
+#ag-ps-mascot-dock[data-snap="1"] .ag-ps-actor {
+  transition: none !important;
+}
+
+.ag-ps-actor-body {
   display: block;
+  width: 100%;
+  height: 100%;
   transform-origin: bottom center;
 }
 
-#ag-ps-mascot-dock[data-mood="busy"] .ag-ps-sprite {
+.ag-ps-sprite {
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  display: block;
+  transform: scaleX(var(--ag-ps-flip, 1));
+  transform-origin: center center;
+}
+
+/* Stationary busy hop (when roam is disabled or container is narrow) */
+#ag-ps-mascot-dock[data-mood="busy"]:not([data-roaming="1"]) .ag-ps-actor[data-busy="1"] .ag-ps-actor-body {
   animation: agPsHop 0.72s ease-in-out infinite;
 }
-#ag-ps-mascot-dock[data-mood="busy"] .ag-ps-sprite:nth-child(2) {
+#ag-ps-mascot-dock[data-mood="busy"]:not([data-roaming="1"]) .ag-ps-actor[data-busy="1"]:nth-of-type(2) .ag-ps-actor-body {
   animation-delay: 0.14s;
 }
-#ag-ps-mascot-dock[data-mood="busy"] .ag-ps-sprite:nth-child(3) {
+#ag-ps-mascot-dock[data-mood="busy"]:not([data-roaming="1"]) .ag-ps-actor[data-busy="1"]:nth-of-type(3) .ag-ps-actor-body {
   animation-delay: 0.28s;
 }
 
-#ag-ps-mascot-dock[data-mood="cheer"] .ag-ps-sprite {
+/* Active roaming animations (pure GPU transform on inner body) */
+#ag-ps-mascot-dock[data-roaming="1"] .ag-ps-actor[data-act="run"] .ag-ps-actor-body {
+  animation: agPsTrot 0.28s ease-in-out infinite;
+}
+
+#ag-ps-mascot-dock[data-roaming="1"] .ag-ps-actor[data-act="leap"] .ag-ps-actor-body {
+  animation: agPsLeap 0.62s cubic-bezier(0.28, 0.84, 0.42, 1) 1;
+}
+
+#ag-ps-mascot-dock .ag-ps-actor[data-act="cheer"] .ag-ps-actor-body,
+#ag-ps-mascot-dock[data-mood="cheer"] .ag-ps-actor-body {
   animation: agPsCheer 0.45s ease-in-out 4;
 }
 
-#ag-ps-mascot-dock[data-mood="sleep"] .ag-ps-sprite {
+#ag-ps-mascot-dock[data-mood="sleep"] .ag-ps-actor,
+#ag-ps-mascot-dock .ag-ps-actor[data-sleep="1"] {
+  will-change: auto;
+}
+
+#ag-ps-mascot-dock[data-mood="sleep"] .ag-ps-actor-body,
+#ag-ps-mascot-dock .ag-ps-actor[data-sleep="1"] .ag-ps-actor-body {
   opacity: 0.78;
   animation: none !important;
 }
 
+.ag-ps-more-badge {
+  position: absolute;
+  right: 12px;
+  bottom: 2px;
+  padding: 0 5px;
+  height: 15px;
+  line-height: 15px;
+  border-radius: 999px;
+  background: var(--secondary, rgba(128, 128, 128, 0.16));
+  color: var(--muted-foreground, #6B6964);
+  font-family: var(--font-mono, monospace);
+  font-size: 9.5px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  #ag-ps-mascot-dock .ag-ps-sprite {
+  #ag-ps-mascot-dock .ag-ps-actor {
+    transition: none !important;
+    will-change: auto;
+  }
+  #ag-ps-mascot-dock .ag-ps-actor-body {
     animation: none !important;
   }
 }
 
 .ag-ps-mascot-bubble {
   position: absolute;
-  bottom: 25px;
-  right: 0;
+  bottom: calc(var(--ag-ps-sprite-h) + 5px);
+  right: 16px;
   padding: 2px 7px;
   border-radius: 8px;
   background-color: var(--background, #FFFFFF);
@@ -691,6 +798,18 @@ html[data-ag-ps-dark="basalt"] body.dark {
 @keyframes agPsHop {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-4px); }
+}
+
+@keyframes agPsTrot {
+  0%, 100% { transform: translateY(0) scaleY(1); }
+  50% { transform: translateY(-3px) scaleY(0.95); }
+}
+
+@keyframes agPsLeap {
+  0% { transform: translateY(0) scale(1.08, 0.90); }
+  35% { transform: translateY(-11px) scale(0.94, 1.07); }
+  75% { transform: translateY(-1px) scale(1.06, 0.93); }
+  100% { transform: translateY(0) scale(1, 1); }
 }
 
 @keyframes agPsCheer {

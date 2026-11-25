@@ -13,6 +13,24 @@
   }
 
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';
+  const MASCOT_SIZE_MIN = 16;
+  const MASCOT_SIZE_MAX = 36;
+  const MASCOT_SIZE_DEFAULT = 24;
+  const MASCOT_MIN_COUNT_DEFAULT = 1;
+
+  function clampMascotSize(val) {
+    const n = Number(val);
+    if (!Number.isFinite(n)) return MASCOT_SIZE_DEFAULT;
+    const stepped = Math.round(n / 2) * 2;
+    return Math.max(MASCOT_SIZE_MIN, Math.min(MASCOT_SIZE_MAX, stepped));
+  }
+
+  function clampMascotMinCount(val) {
+    const n = Math.round(Number(val));
+    if (!Number.isFinite(n)) return MASCOT_MIN_COUNT_DEFAULT;
+    return Math.max(1, Math.min(3, n));
+  }
+
   const DEFAULT_PREFS = {
     lightPalette: 'default',   // 'default' | 'crystal' | 'alabaster'
     darkPalette: 'default',    // 'default' | 'obsidian' | 'basalt'
@@ -20,14 +38,25 @@
     usageExtra: true,          // Book yardstick + weekday-aligned 12-week heatmap
     inkStream: true,           // 5-stage CSS.highlights stream fade-in
     mascot: true,              // Composer pixel mascots (0fps idle)
-    mascotStyle: 'trio',       // 'trio' | 'crab' | 'cat'
+    mascotCountMode: 'fixed',  // 'fixed' | 'agents' (follow live swarm / subagent count)
+    mascotMinCount: MASCOT_MIN_COUNT_DEFAULT, // 1..3 floor count in 'agents' mode
+    mascotStyle: 'trio',       // 'trio' | 'crab' | 'cat' (used in fixed mode)
+    mascotRoam: true,          // Random run & leap along composer top while busy
+    mascotSize: MASCOT_SIZE_DEFAULT, // 16..36 px (step 2)
     thoughtMode: 'bilingual'   // 'off' | 'bilingual' | 'immersive'
   };
 
   let prefs = (() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) return Object.assign({}, DEFAULT_PREFS, JSON.parse(raw));
+      if (raw) {
+        const merged = Object.assign({}, DEFAULT_PREFS, JSON.parse(raw));
+        merged.mascotSize = clampMascotSize(merged.mascotSize);
+        merged.mascotRoam = merged.mascotRoam !== false;
+        merged.mascotCountMode = merged.mascotCountMode === 'agents' ? 'agents' : 'fixed';
+        merged.mascotMinCount = clampMascotMinCount(merged.mascotMinCount);
+        return merged;
+      }
     } catch {}
     return Object.assign({}, DEFAULT_PREFS);
   })();
@@ -728,11 +757,146 @@
     <rect x="4" y="6" width="1" height="1" fill="#FFFFFF"/><rect x="7" y="6" width="1" height="1" fill="#FFFFFF"/>
   </svg>`;
 
+  const SVG_FROG = `<svg class="ag-ps-sprite" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true">
+    <rect x="2" y="2" width="2" height="2" fill="#22C55E"/><rect x="8" y="2" width="2" height="2" fill="#22C55E"/>
+    <rect x="3" y="2" width="1" height="1" fill="#18181B"/><rect x="8" y="2" width="1" height="1" fill="#18181B"/>
+    <rect x="2" y="4" width="8" height="4" fill="#4ADE80"/>
+    <rect x="4" y="6" width="4" height="2" fill="#BBF7D0"/>
+    <rect x="2" y="8" width="2" height="2" fill="#16A34A"/><rect x="8" y="8" width="2" height="2" fill="#16A34A"/>
+  </svg>`;
+
+  const SVG_CHICK = `<svg class="ag-ps-sprite" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true">
+    <rect x="5" y="1" width="2" height="1" fill="#EA580C"/>
+    <rect x="3" y="2" width="6" height="6" fill="#FBBF24"/>
+    <rect x="2" y="4" width="8" height="3" fill="#F59E0B"/>
+    <rect x="4" y="4" width="1" height="1" fill="#18181B"/><rect x="7" y="4" width="1" height="1" fill="#18181B"/>
+    <rect x="5" y="5" width="2" height="1" fill="#EA580C"/>
+    <rect x="4" y="8" width="1" height="2" fill="#D97706"/><rect x="7" y="8" width="1" height="2" fill="#D97706"/>
+  </svg>`;
+
+  const SVG_BUNNY = `<svg class="ag-ps-sprite" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true">
+    <rect x="3" y="0" width="2" height="3" fill="#F472B6"/><rect x="7" y="0" width="2" height="3" fill="#F472B6"/>
+    <rect x="3" y="3" width="6" height="5" fill="#F9A8D4"/>
+    <rect x="2" y="4" width="8" height="3" fill="#F472B6"/>
+    <rect x="4" y="5" width="1" height="1" fill="#18181B"/><rect x="7" y="5" width="1" height="1" fill="#18181B"/>
+    <rect x="3" y="8" width="2" height="2" fill="#DB2777"/><rect x="7" y="8" width="2" height="2" fill="#DB2777"/>
+  </svg>`;
+
+  const SPRITE_POOL = [SVG_CRAB, SVG_CAT, SVG_SLIME, SVG_FROG, SVG_CHICK, SVG_BUNNY];
+  const MAX_DYNAMIC_ACTORS = 8;
+
+  function hashString(str) {
+    let h = 2166136261;
+    const s = String(str || '');
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  function getCurrentCascadeIdFromUrl() {
+    const m = String(window.location.pathname || '').match(/\/c\/([0-9a-f-]{36})/i);
+    return m ? m[1] : (window.__ag_watched_cascade_id || '');
+  }
+
+  function getLiveSubagents() {
+    const metrics = window.__ag_last_metrics;
+    const curId = getCurrentCascadeIdFromUrl();
+    if (!metrics || !metrics.stats || !Array.isArray(metrics.stats.children)) return [];
+    if (curId && metrics.cascadeId && metrics.cascadeId !== curId) return [];
+    return metrics.stats.children
+      .filter((c) => c && !c.killed)
+      .sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
+  }
+
+  function buildMascotRoster(busy) {
+    if (prefs.mascotCountMode === 'agents') {
+      const subs = getLiveSubagents();
+      // If overflow (> 7), prioritize running workers in selection, then sort stably by id so DOM never churns mid-roam
+      const selectedSubs =
+        subs.length > MAX_DYNAMIC_ACTORS - 1
+          ? subs
+              .slice()
+              .sort((a, b) => {
+                if (Boolean(b.running) !== Boolean(a.running)) return b.running ? 1 : -1;
+                return String(a.id || '').localeCompare(String(b.id || ''));
+              })
+              .slice(0, MAX_DYNAMIC_ACTORS - 1)
+              .sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')))
+          : subs;
+      const visibleSubs = selectedSubs;
+      const overflow = Math.max(0, subs.length - visibleSubs.length);
+      const roster = [
+        {
+          key: 'coordinator',
+          label: '主控 Agent',
+          svg: SVG_CRAB,
+          busy: Boolean(busy)
+        }
+      ];
+      for (let i = 0; i < visibleSubs.length; i++) {
+        const sub = visibleSubs[i];
+        const name = sub.agentName || sub.title || `子 Agent #${i + 1}`;
+        // Pick stable distinct sprite from non-crab pool first so coordinator stands out
+        const poolIdx = 1 + (hashString(sub.id || name) % (SPRITE_POOL.length - 1));
+        roster.push({
+          key: `sub:${sub.id || i}`,
+          label: name,
+          svg: SPRITE_POOL[poolIdx],
+          busy: Boolean(sub.running)
+        });
+      }
+      // Guarantee user-selected floor count (1..3) so composer is never empty when no subagents are active
+      const floorCount = clampMascotMinCount(prefs.mascotMinCount);
+      const fillerSpecs = [
+        { key: 'floor:cat', label: '保底伙伴 · 紫猫', svg: SVG_CAT },
+        { key: 'floor:slime', label: '保底伙伴 · 蓝萌', svg: SVG_SLIME }
+      ];
+      let fi = 0;
+      while (roster.length < floorCount && fi < fillerSpecs.length) {
+        const f = fillerSpecs[fi++];
+        roster.push({
+          key: f.key,
+          label: f.label,
+          svg: f.svg,
+          busy: Boolean(busy)
+        });
+      }
+      return { roster, overflow, liveSubCount: subs.length };
+    }
+    const styleKey = prefs.mascotStyle || 'trio';
+    const fixedItems =
+      styleKey === 'crab'
+        ? [{ key: 'fixed:crab', label: '橘蟹伙伴', svg: SVG_CRAB, busy: Boolean(busy) }]
+        : styleKey === 'cat'
+          ? [{ key: 'fixed:cat', label: '紫猫伙伴', svg: SVG_CAT, busy: Boolean(busy) }]
+          : [
+              { key: 'fixed:crab', label: '橘蟹伙伴', svg: SVG_CRAB, busy: Boolean(busy) },
+              { key: 'fixed:cat', label: '紫猫伙伴', svg: SVG_CAT, busy: Boolean(busy) },
+              { key: 'fixed:slime', label: '蓝萌伙伴', svg: SVG_SLIME, busy: Boolean(busy) }
+            ];
+    return { roster: fixedItems, overflow: 0, liveSubCount: 0 };
+  }
+
   const CHEER_LINES = ['代码一遍过 ✨', '缓存命中稳稳的', '摸摸头，继续冲！', '0fps 节能待机中', '今天效率拉满 🚀'];
   let wasMascotBusy = false;
   let mascotCheerUntil = 0;
   let mascotIdleSince = Date.now();
   let mascotBubbleTimer = 0;
+  let mascotRoamingActive = false;
+  let mascotActors = []; // [{ key, label, busy, el, x, facing, moveTimer, settleTimer, clickTimer, roaming }]
+  let lastTrackWidth = 0;
+  let lastRosterSig = '';
+  let mascotSnapRaf = 0;
+
+  function cancelSnapRaf() {
+    if (mascotSnapRaf) {
+      cancelAnimationFrame(mascotSnapRaf);
+      mascotSnapRaf = 0;
+    }
+  }
+  onCleanup(cancelSnapRaf);
 
   function showMascotBubble(text, ms = 2000) {
     const dock = document.getElementById('ag-ps-mascot-dock');
@@ -745,51 +909,342 @@
   }
   onCleanup(() => clearTimeout(mascotBubbleTimer));
 
+  function getMascotDims() {
+    const w = clampMascotSize(prefs.mascotSize);
+    const h = Math.max(14, Math.round((w * 11) / 12));
+    const gap = Math.max(4, Math.round(w * 0.22));
+    return { w, h, gap };
+  }
+
+  function clearActorTimers(actor) {
+    if (!actor) return;
+    if (actor.moveTimer) { clearTimeout(actor.moveTimer); actor.moveTimer = 0; }
+    if (actor.settleTimer) { clearTimeout(actor.settleTimer); actor.settleTimer = 0; }
+    if (actor.clickTimer) { clearTimeout(actor.clickTimer); actor.clickTimer = 0; }
+  }
+
+  function getMascotRunwayBounds(dock) {
+    const trackW = dock ? (dock.clientWidth || dock.parentElement?.getBoundingClientRect().width || 0) : 0;
+    const { w } = getMascotDims();
+    const hasBadge = Boolean(dock && dock.querySelector('.ag-ps-more-badge'));
+    const minX = Math.min(92, Math.max(12, Math.round(trackW * 0.16)));
+    const maxX = Math.max(minX, Math.round(trackW - (hasBadge ? 44 : 16) - w));
+    return { trackW, w, minX, maxX, hasBadge };
+  }
+
+  function clampRoamingActorsInBounds(dock) {
+    if (!dock || !mascotRoamingActive) return;
+    const { trackW, minX, maxX } = getMascotRunwayBounds(dock);
+    if (trackW <= 0) return;
+    for (const actor of mascotActors) {
+      if (!actor.roaming || !actor.el) continue;
+      const clamped = Math.max(minX, Math.min(maxX, actor.x));
+      if (Math.abs(clamped - actor.x) >= 1) {
+        applyActorTransform(actor, clamped, actor.facing, 0.25);
+      }
+    }
+  }
+
+  function stopMascotRoaming(parkHome = true) {
+    mascotRoamingActive = false;
+    const dock = document.getElementById('ag-ps-mascot-dock');
+    if (dock) dock.removeAttribute('data-roaming');
+    for (const actor of mascotActors) {
+      clearActorTimers(actor);
+      actor.roaming = false;
+      if (actor.el) actor.el.removeAttribute('data-act');
+    }
+    if (parkHome && dock) {
+      parkActorsHome(dock, false);
+    }
+  }
+  onCleanup(() => stopMascotRoaming(false));
+
+  function computeHomePositions(trackW, count, hasOverflowBadge) {
+    const { w, gap } = getMascotDims();
+    const rightPad = hasOverflowBadge ? 44 : 16;
+    const totalW = count * w + Math.max(0, count - 1) * gap;
+    const startX = Math.max(12, Math.round(trackW - rightPad - totalW));
+    const xs = [];
+    for (let i = 0; i < count; i++) {
+      xs.push(startX + i * (w + gap));
+    }
+    return xs;
+  }
+
+  function applyActorTransform(actor, x, facing, durSec) {
+    if (!actor || !actor.el) return;
+    actor.x = x;
+    actor.facing = facing;
+    actor.el.style.setProperty('--ag-ps-x', `${Math.round(x)}px`);
+    actor.el.style.setProperty('--ag-ps-flip', String(facing));
+    if (typeof durSec === 'number') {
+      actor.el.style.setProperty('--ag-ps-dur', `${durSec.toFixed(2)}s`);
+    }
+  }
+
+  function parkActorsHome(dock, instant, onlyIdleActors = false) {
+    if (!dock || !mascotActors.length) return;
+    const trackW = dock.clientWidth || dock.parentElement?.getBoundingClientRect().width || 0;
+    if (trackW <= 0) return;
+    lastTrackWidth = trackW;
+    const hasBadge = Boolean(dock.querySelector('.ag-ps-more-badge'));
+    const xs = computeHomePositions(trackW, mascotActors.length, hasBadge);
+    cancelSnapRaf();
+    if (instant) dock.setAttribute('data-snap', '1');
+    else dock.removeAttribute('data-snap');
+    mascotActors.forEach((actor, idx) => {
+      if (onlyIdleActors && actor.roaming) return;
+      if (actor.el) actor.el.removeAttribute('data-act');
+      applyActorTransform(actor, xs[idx], 1, instant ? 0 : 0.55);
+    });
+    if (instant) {
+      mascotSnapRaf = requestAnimationFrame(() => {
+        mascotSnapRaf = 0;
+        if (!disposed && dock.isConnected) dock.removeAttribute('data-snap');
+      });
+    }
+  }
+
+  function scheduleActorRoamStep(idx, initialDelayMs) {
+    const actor = mascotActors[idx];
+    if (!actor || !actor.roaming || !mascotRoamingActive || disposed || document.hidden) return;
+    clearActorTimers(actor);
+    const delay = typeof initialDelayMs === 'number'
+      ? initialDelayMs
+      : 900 + Math.floor(Math.random() * 1900);
+
+    actor.moveTimer = setTimeout(() => {
+      actor.moveTimer = 0;
+      if (!actor.roaming || !mascotRoamingActive || disposed || document.hidden) return;
+      const dock = document.getElementById('ag-ps-mascot-dock');
+      if (!dock || !actor.el?.isConnected) return;
+      const trackW = dock.clientWidth || 0;
+      if (trackW < 480) {
+        stopMascotRoaming(true);
+        return;
+      }
+      const { w } = getMascotDims();
+      const hasBadge = Boolean(dock.querySelector('.ag-ps-more-badge'));
+      const minX = Math.min(92, Math.max(12, Math.round(trackW * 0.16)));
+      const maxX = Math.max(minX, Math.round(trackW - (hasBadge ? 44 : 16) - w));
+      const span = maxX - minX;
+
+      const roll = Math.random();
+      if (span >= w * 2 && roll < 0.64) {
+        let targetX = actor.x;
+        const minStep = Math.min(48, span * 0.25);
+        for (let attempt = 0; attempt < 6; attempt++) {
+          const cand = minX + Math.random() * span;
+          if (Math.abs(cand - actor.x) < minStep) continue;
+          const crowded = mascotActors.some((o, oi) => oi !== idx && Math.abs(o.x - cand) < w + 8);
+          targetX = cand;
+          if (!crowded) break;
+        }
+        const dist = Math.abs(targetX - actor.x);
+        if (dist >= 10) {
+          const speed = 88 + Math.random() * 48;
+          const dur = Math.max(0.45, Math.min(2.4, dist / speed));
+          const dir = targetX < actor.x ? -1 : 1;
+          actor.el.setAttribute('data-act', 'run');
+          applyActorTransform(actor, targetX, dir, dur);
+          actor.settleTimer = setTimeout(() => {
+            actor.settleTimer = 0;
+            if (!actor.roaming || !mascotRoamingActive || disposed || !actor.el?.isConnected) return;
+            if (Math.random() < 0.32) {
+              actor.el.setAttribute('data-act', 'leap');
+              actor.settleTimer = setTimeout(() => {
+                actor.settleTimer = 0;
+                actor.el?.removeAttribute('data-act');
+                scheduleActorRoamStep(idx);
+              }, 640);
+            } else {
+              actor.el.removeAttribute('data-act');
+              scheduleActorRoamStep(idx);
+            }
+          }, Math.round(dur * 1000) + 40);
+          return;
+        }
+      }
+
+      if (roll < 0.88) {
+        actor.el.setAttribute('data-act', 'leap');
+        actor.settleTimer = setTimeout(() => {
+          actor.settleTimer = 0;
+          actor.el?.removeAttribute('data-act');
+          scheduleActorRoamStep(idx);
+        }, 640);
+      } else {
+        applyActorTransform(actor, actor.x, actor.facing * -1, 0.2);
+        scheduleActorRoamStep(idx, 1000 + Math.floor(Math.random() * 1400));
+      }
+    }, delay);
+  }
+
+  function syncMascotRoaming(dock) {
+    if (!dock || !prefs.mascotRoam || REDUCED_MOTION || document.hidden || (dock.clientWidth || 0) < 480) {
+      if (mascotRoamingActive) stopMascotRoaming(true);
+      return;
+    }
+    const anyBusy = mascotActors.some((a) => a.busy);
+    if (!anyBusy) {
+      if (mascotRoamingActive) stopMascotRoaming(true);
+      return;
+    }
+    mascotRoamingActive = true;
+    dock.setAttribute('data-roaming', '1');
+    const hasBadge = Boolean(dock.querySelector('.ag-ps-more-badge'));
+    const homeXs = computeHomePositions(dock.clientWidth || 0, mascotActors.length, hasBadge);
+    mascotActors.forEach((actor, idx) => {
+      if (actor.busy) {
+        if (!actor.roaming) {
+          actor.roaming = true;
+          scheduleActorRoamStep(idx, 200 + idx * 280 + Math.floor(Math.random() * 260));
+        }
+      } else if (actor.roaming) {
+        clearActorTimers(actor);
+        actor.roaming = false;
+        actor.el?.removeAttribute('data-act');
+        applyActorTransform(actor, homeXs[idx], 1, 0.55);
+      }
+    });
+  }
+
+  function applyMascotSizeVars(dock, repositionHome) {
+    if (!dock) return;
+    const { w, h } = getMascotDims();
+    dock.style.setProperty('--ag-ps-sprite-w', `${w}px`);
+    dock.style.setProperty('--ag-ps-sprite-h', `${h}px`);
+    if (repositionHome) {
+      parkActorsHome(dock, true, mascotRoamingActive);
+      clampRoamingActorsInBounds(dock);
+    }
+  }
+
   function syncMascotCompactGuard() {
     const box = document.getElementById('antigravity.agentSidePanelInputBox');
     const dock = document.getElementById('ag-ps-mascot-dock');
     if (!box || !dock) return;
     const w = box.getBoundingClientRect().width;
-    if (w > 0 && w < 420) dock.setAttribute('data-compact-hide', '1');
-    else dock.removeAttribute('data-compact-hide');
+    if (w > 0 && w < 420) {
+      dock.setAttribute('data-compact-hide', '1');
+      if (mascotRoamingActive) stopMascotRoaming(false);
+      return;
+    }
+    dock.removeAttribute('data-compact-hide');
+    if (w < 480 && mascotRoamingActive) {
+      stopMascotRoaming(true);
+    } else if (w > 0 && Math.abs(w - lastTrackWidth) > 2) {
+      parkActorsHome(dock, true, mascotRoamingActive);
+      clampRoamingActorsInBounds(dock);
+    }
   }
 
   function syncMascotDock(busy) {
     const box = document.getElementById('antigravity.agentSidePanelInputBox');
     let dock = document.getElementById('ag-ps-mascot-dock');
     if (!prefs.mascot || !box) {
+      stopMascotRoaming(false);
+      mascotActors = [];
+      lastRosterSig = '';
       if (dock) dock.remove();
       return;
     }
-    const styleKey = prefs.mascotStyle || 'trio';
+    const { roster, overflow } = buildMascotRoster(busy);
+    const rosterSig = `${prefs.mascotCountMode}|${overflow}|${roster.map((r) => r.key).join(',')}`;
+    let rebuilt = false;
     if (!dock || dock.parentElement !== box) {
+      stopMascotRoaming(false);
       if (dock) dock.remove();
       dock = document.createElement('div');
       dock.id = 'ag-ps-mascot-dock';
       dock.setAttribute('data-ag-i18n-ignore', '1');
-      dock.title = '像素伙伴（点击互动 · 空闲自动 0fps 休眠）';
       dock.addEventListener('click', (e) => {
+        const actorEl = e.target.closest('.ag-ps-actor');
+        if (!actorEl) return;
         e.stopPropagation();
+        const idx = Number(actorEl.getAttribute('data-actor-idx'));
+        const actor = mascotActors[idx];
         mascotCheerUntil = Date.now() + 2000;
-        dock.setAttribute('data-mood', 'cheer');
-        const msg = CHEER_LINES[Math.floor(Math.random() * CHEER_LINES.length)];
+        if (mascotRoamingActive && actor) {
+          if (actorEl.getAttribute('data-act') !== 'run') {
+            actorEl.setAttribute('data-act', 'leap');
+            if (actor.clickTimer) clearTimeout(actor.clickTimer);
+            actor.clickTimer = setTimeout(() => {
+              actor.clickTimer = 0;
+              if (actorEl.getAttribute('data-act') === 'leap') actorEl.removeAttribute('data-act');
+            }, 640);
+          }
+        } else {
+          dock.setAttribute('data-mood', 'cheer');
+        }
+        const line = CHEER_LINES[Math.floor(Math.random() * CHEER_LINES.length)];
+        const msg = prefs.mascotCountMode === 'agents' && actor?.label ? `${actor.label}：${line}` : line;
         showMascotBubble(msg, 2200);
       });
       box.appendChild(dock);
+      rebuilt = true;
     }
-    if (dock.getAttribute('data-style') !== styleKey) {
-      dock.setAttribute('data-style', styleKey);
-      const sprites = styleKey === 'crab' ? SVG_CRAB : styleKey === 'cat' ? SVG_CAT : `${SVG_CRAB}${SVG_CAT}${SVG_SLIME}`;
-      dock.innerHTML = `<span class="ag-ps-mascot-bubble"></span>${sprites}`;
+    if (rebuilt || rosterSig !== lastRosterSig) {
+      stopMascotRoaming(false);
+      lastRosterSig = rosterSig;
+      dock.setAttribute('data-mode', prefs.mascotCountMode);
+      const actorsHtml = roster
+        .map(
+          (item, idx) =>
+            `<span class="ag-ps-actor" data-actor-idx="${idx}" data-busy="${item.busy ? '1' : '0'}" title="${escapeHtml(item.label)}（${item.busy ? '运行中' : '待命 · 0fps'}）"><span class="ag-ps-actor-body">${item.svg}</span></span>`
+        )
+        .join('');
+      const badgeHtml = overflow > 0 ? `<span class="ag-ps-more-badge" title="还有 ${overflow} 个活跃 Agent">+${overflow}</span>` : '';
+      dock.innerHTML = `<span class="ag-ps-mascot-bubble"></span>${actorsHtml}${badgeHtml}`;
+      mascotActors = Array.from(dock.querySelectorAll('.ag-ps-actor')).map((el, idx) => ({
+        key: roster[idx].key,
+        label: roster[idx].label,
+        busy: roster[idx].busy,
+        el,
+        x: 0,
+        facing: 1,
+        moveTimer: 0,
+        settleTimer: 0,
+        clickTimer: 0,
+        roaming: false
+      }));
+      applyMascotSizeVars(dock, false);
+      parkActorsHome(dock, true, false);
+    } else {
+      // Update per-actor live busy status & hover title without rebuilding DOM
+      mascotActors.forEach((actor, idx) => {
+        const item = roster[idx];
+        if (!item) return;
+        actor.busy = item.busy;
+        actor.label = item.label;
+        if (actor.el) {
+          actor.el.setAttribute('data-busy', item.busy ? '1' : '0');
+          actor.el.title = `${item.label}（${item.busy ? '运行中' : '待命 · 0fps'}）`;
+        }
+      });
+      applyMascotSizeVars(dock, false);
     }
     syncMascotCompactGuard();
 
+    const anyBusy = mascotActors.some((a) => a.busy);
     const now = Date.now();
-    if (busy) {
+    if (anyBusy) {
       mascotIdleSince = now;
-      if (!wasMascotBusy) showMascotBubble('思考中… ⚡', 1800);
+      if (!wasMascotBusy) showMascotBubble(prefs.mascotRoam ? '开工啦！出发巡逻 ⚡' : '思考中… ⚡', 1800);
       dock.setAttribute('data-mood', 'busy');
+      mascotActors.forEach((a) => {
+        if (a.el) {
+          if (!a.busy) a.el.setAttribute('data-sleep', '1');
+          else a.el.removeAttribute('data-sleep');
+        }
+      });
+      syncMascotRoaming(dock);
     } else {
+      if (mascotRoamingActive) {
+        stopMascotRoaming(true);
+      }
+      mascotActors.forEach((a) => a.el?.removeAttribute('data-sleep'));
       if (wasMascotBusy) {
         mascotCheerUntil = now + 2400;
         showMascotBubble('完成啦 ✨', 2200);
@@ -802,9 +1257,14 @@
         dock.setAttribute('data-mood', 'calm');
       }
     }
-    wasMascotBusy = busy;
+    wasMascotBusy = anyBusy;
   }
-  onCleanup(() => document.getElementById('ag-ps-mascot-dock')?.remove());
+  onCleanup(() => {
+    stopMascotRoaming(false);
+    mascotActors = [];
+    lastRosterSig = '';
+    document.getElementById('ag-ps-mascot-dock')?.remove();
+  });
 
   /* ==========================================================================
    * 6. Thought Process Live Chinese Translation
@@ -990,7 +1450,7 @@
         <button type="button" class="ag-ps-pal-btn" data-set-dark="basalt" data-selected="${prefs.darkPalette === 'basalt' ? '1' : '0'}"><span class="ag-ps-swatch" style="background:#141312"></span>暖炭玄岩</button>
       </div>
 
-      <div class="ag-ps-sec-lbl"><span>增强功能开关</span><span class="ag-ps-sec-tag">v0.2.1</span></div>
+      <div class="ag-ps-sec-lbl"><span>增强功能开关</span><span class="ag-ps-sec-tag">v0.2.2</span></div>
       <div class="ag-ps-toggle-list">
         <div class="ag-ps-toggle-row">
           <div class="ag-ps-toggle-label"><span>会话大纲 &amp; 跳轮</span><span class="ag-ps-toggle-sub">Alt+↑/↓ 跳轮 · Alt+O 大纲</span></div>
@@ -1011,11 +1471,41 @@
         ${
           prefs.mascot
             ? `<div class="ag-ps-toggle-row">
-                <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">伙伴样式</span></div>
+                <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">伙伴数量${prefs.mascotCountMode === 'agents' ? `（当前 1 主控 + ${getLiveSubagents().length} 活跃）` : ''}</span></div>
                 <div class="ag-ps-seg-group">
-                  <button type="button" class="ag-ps-seg-btn" data-mascot-style="trio" data-selected="${prefs.mascotStyle === 'trio' ? '1' : '0'}">三萌</button>
-                  <button type="button" class="ag-ps-seg-btn" data-mascot-style="crab" data-selected="${prefs.mascotStyle === 'crab' ? '1' : '0'}">橘蟹</button>
-                  <button type="button" class="ag-ps-seg-btn" data-mascot-style="cat" data-selected="${prefs.mascotStyle === 'cat' ? '1' : '0'}">紫猫</button>
+                  <button type="button" class="ag-ps-seg-btn" data-mascot-count-mode="fixed" data-selected="${prefs.mascotCountMode === 'fixed' ? '1' : '0'}">固定</button>
+                  <button type="button" class="ag-ps-seg-btn" data-mascot-count-mode="agents" data-selected="${prefs.mascotCountMode === 'agents' ? '1' : '0'}">跟随 Agent</button>
+                </div>
+              </div>
+              ${
+                prefs.mascotCountMode === 'fixed'
+                  ? `<div class="ag-ps-toggle-row">
+                      <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">伙伴样式</span></div>
+                      <div class="ag-ps-seg-group">
+                        <button type="button" class="ag-ps-seg-btn" data-mascot-style="trio" data-selected="${prefs.mascotStyle === 'trio' ? '1' : '0'}">三萌</button>
+                        <button type="button" class="ag-ps-seg-btn" data-mascot-style="crab" data-selected="${prefs.mascotStyle === 'crab' ? '1' : '0'}">橘蟹</button>
+                        <button type="button" class="ag-ps-seg-btn" data-mascot-style="cat" data-selected="${prefs.mascotStyle === 'cat' ? '1' : '0'}">紫猫</button>
+                      </div>
+                    </div>`
+                  : `<div class="ag-ps-toggle-row">
+                      <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">保底数量（无子 Agent 时常驻）</span></div>
+                      <div class="ag-ps-seg-group">
+                        <button type="button" class="ag-ps-seg-btn" data-mascot-min-count="1" data-selected="${clampMascotMinCount(prefs.mascotMinCount) === 1 ? '1' : '0'}">1只</button>
+                        <button type="button" class="ag-ps-seg-btn" data-mascot-min-count="2" data-selected="${clampMascotMinCount(prefs.mascotMinCount) === 2 ? '1' : '0'}">2只</button>
+                        <button type="button" class="ag-ps-seg-btn" data-mascot-min-count="3" data-selected="${clampMascotMinCount(prefs.mascotMinCount) === 3 ? '1' : '0'}">3只</button>
+                      </div>
+                    </div>`
+              }
+              <div class="ag-ps-toggle-row">
+                <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">工作态漫游跑跳（闲时自动归位）</span></div>
+                <button type="button" class="ag-ps-switch" data-toggle="mascotRoam" data-on="${prefs.mascotRoam ? '1' : '0'}"></button>
+              </div>
+              <div class="ag-ps-toggle-row">
+                <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">伙伴大小</span></div>
+                <div class="ag-ps-range-wrap">
+                  <input type="range" class="ag-ps-range" data-mascot-size="1" min="${MASCOT_SIZE_MIN}" max="${MASCOT_SIZE_MAX}" step="2" value="${clampMascotSize(prefs.mascotSize)}" aria-label="像素伙伴大小" />
+                  <span class="ag-ps-range-val" data-mascot-size-val="1">${clampMascotSize(prefs.mascotSize)}px</span>
+                  <button type="button" class="ag-ps-mini-reset" data-mascot-size-reset="1" ${clampMascotSize(prefs.mascotSize) === MASCOT_SIZE_DEFAULT ? 'disabled' : ''}>复位</button>
                 </div>
               </div>`
             : ''
@@ -1099,11 +1589,35 @@
         renderPopoverContent(pop);
         return;
       }
+      const mcm = e.target.closest('[data-mascot-count-mode]');
+      if (mcm) {
+        prefs.mascotCountMode = mcm.getAttribute('data-mascot-count-mode') === 'agents' ? 'agents' : 'fixed';
+        savePrefs();
+        syncMascotDock(isAgentGenerating());
+        renderPopoverContent(pop);
+        return;
+      }
+      const mmc = e.target.closest('[data-mascot-min-count]');
+      if (mmc) {
+        prefs.mascotMinCount = clampMascotMinCount(mmc.getAttribute('data-mascot-min-count'));
+        savePrefs();
+        syncMascotDock(isAgentGenerating());
+        renderPopoverContent(pop);
+        return;
+      }
       const ms = e.target.closest('[data-mascot-style]');
       if (ms) {
         prefs.mascotStyle = ms.getAttribute('data-mascot-style');
         savePrefs();
         syncMascotDock(isAgentGenerating());
+        renderPopoverContent(pop);
+        return;
+      }
+      const mReset = e.target.closest('[data-mascot-size-reset]');
+      if (mReset) {
+        prefs.mascotSize = MASCOT_SIZE_DEFAULT;
+        savePrefs();
+        applyMascotSizeVars(document.getElementById('ag-ps-mascot-dock'), true);
         renderPopoverContent(pop);
         return;
       }
@@ -1114,6 +1628,24 @@
         syncThoughtBlocks(isAgentGenerating());
         renderPopoverContent(pop);
       }
+    });
+    pop.addEventListener('input', (e) => {
+      const slider = e.target.closest('[data-mascot-size]');
+      if (!slider) return;
+      const sz = clampMascotSize(slider.value);
+      prefs.mascotSize = sz;
+      applyMascotSizeVars(document.getElementById('ag-ps-mascot-dock'), true);
+      const valEl = pop.querySelector('[data-mascot-size-val]');
+      if (valEl) valEl.textContent = `${sz}px`;
+      const resetBtn = pop.querySelector('[data-mascot-size-reset]');
+      if (resetBtn) resetBtn.disabled = sz === MASCOT_SIZE_DEFAULT;
+    });
+    pop.addEventListener('change', (e) => {
+      const slider = e.target.closest('[data-mascot-size]');
+      if (!slider) return;
+      prefs.mascotSize = clampMascotSize(slider.value);
+      savePrefs();
+      applyMascotSizeVars(document.getElementById('ag-ps-mascot-dock'), true);
     });
     document.body.appendChild(pop);
     onCleanup(() => pop.remove());
@@ -1263,6 +1795,7 @@
     if (document.hidden) {
       detachStreamObserver();
       clearInkHighlights();
+      stopMascotRoaming(false);
     } else {
       tickAll();
     }
