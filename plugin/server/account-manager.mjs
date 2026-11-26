@@ -194,6 +194,7 @@ function classifyQuotaWindow(quota = {}, nowMs = Date.now()) {
     reset7dAt: normalizeIso(merged.reset7dAt, merged.reset7dInHours),
     resetsAt: merged.resetsAt ? String(merged.resetsAt).slice(0, 64) : '',
     modelFamily: merged.modelFamily ? String(merged.modelFamily).slice(0, 48).toLowerCase() : '',
+    tierName: merged.tierName ? String(merged.tierName).trim().slice(0, 24) : '',
     families: normalizeFamilyQuotaMap(merged.families),
     updatedAt: new Date(nowMs).toISOString()
   };
@@ -650,13 +651,31 @@ export function createAccountManager(options = {}) {
 
   function syncActiveAccountQuota(quotaInput = {}) {
     const state = loadState();
+    const expectedEmail = typeof quotaInput?.expectedEmail === 'string'
+      ? quotaInput.expectedEmail.trim().toLowerCase()
+      : '';
+    let activeEmail = '';
     let target = null;
     try {
       const active = vault.inspectActive();
       if (active.exists && active.email) {
-        target = state.accounts.find((a) => a.email === active.email) || null;
+        activeEmail = active.email.trim().toLowerCase();
+        target = state.accounts.find((a) => a.email === activeEmail) || null;
       }
     } catch {}
+    // Guard against writing stale quota cache from a previous account right after switching before restart
+    if (expectedEmail && activeEmail && expectedEmail !== activeEmail) {
+      return {
+        ok: true,
+        skipped: true,
+        reason: 'EMAIL_MISMATCH_SKIPPED',
+        expectedEmail,
+        activeEmail
+      };
+    }
+    if (!target && expectedEmail) {
+      target = state.accounts.find((a) => a.email === expectedEmail) || null;
+    }
     if (!target && state.activeAccountId) {
       target = state.accounts.find((a) => a.id === state.activeAccountId) || null;
     }
@@ -702,6 +721,7 @@ export function createAccountManager(options = {}) {
       reset7dAt: incoming.reset7dAt || (prevR7Valid ? prev.reset7dAt : ''),
       resetsAt: incoming.resetsAt || '',
       modelFamily: incoming.modelFamily || prev.modelFamily || '',
+      tierName: incoming.tierName || prev.tierName || '',
       families: incoming.families || prev.families || undefined
     };
 

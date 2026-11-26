@@ -38,7 +38,7 @@ const PLUGIN_ROOT = path.resolve(__dirname, '..');
 export const APP_URI = 'ui://prism-files/app.html';
 export const INLINE_URI = 'ui://prism-files/inline.html';
 export const APP_MIME_TYPE = 'text/html;profile=mcp-app';
-const SERVER_INFO = { name: 'prism-files', version: '0.5.0' };
+const SERVER_INFO = { name: 'prism-files', version: '0.5.1' };
 const MAX_TEXT_PREVIEW_BYTES = 256 * 1024;
 const MAX_IMAGE_PREVIEW_BYTES = 4 * 1024 * 1024;
 const MAX_SAVE_BYTES = 512 * 1024;
@@ -2505,6 +2505,8 @@ export function createPrismFilesServer({
           reset5hAt: { type: 'string', description: '5h reset ISO timestamp or relative duration like 3h20m' },
           reset7dAt: { type: 'string', description: '7d reset ISO timestamp or relative duration like 4d' },
           rawText: { type: 'string', description: 'Optional raw quota summary text to parse automatically' },
+          expectedEmail: { type: 'string', description: 'Optional expected account email to prevent cross-account stale writes' },
+          tierName: { type: 'string', description: 'Optional subscription tier label e.g. Pro / Ultra' },
           families: { type: 'object', description: 'Optional per-family summary e.g. { gemini: { pct5h, pct7d }, claude: { pct5h, pct7d } }' }
         }
       }

@@ -1119,13 +1119,27 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     mgr.setEnabled(true);
     const mainCap = mgr.captureCurrentAccount({ role: 'primary', alias: '主号' });
 
-    // 1. Incremental quota sync preserves existing window when partial telemetry arrives
-    const q1 = mgr.syncActiveAccountQuota({ window5hPct: 72, window7dPct: 88, reset7dAt: new Date(Date.now() + 86400000).toISOString() });
+    // 1. Incremental quota sync preserves existing window when partial telemetry arrives + expectedEmail mismatch guard
+    const q1 = mgr.syncActiveAccountQuota({
+      window5hPct: 72,
+      window7dPct: 88,
+      reset7dAt: new Date(Date.now() + 86400000).toISOString(),
+      expectedEmail: 'main@example.com',
+      tierName: 'Pro',
+      families: { gemini: { pct5h: 72, pct7d: 88 }, claude: { pct5h: 95, pct7d: 90 } }
+    });
     assert.equal(q1.ok, true);
+    assert.equal(q1.effectiveQuota.tierName, 'Pro');
+    assert.equal(q1.effectiveQuota.families.claude.pct5h, 95);
+    const qWrongEmail = mgr.syncActiveAccountQuota({ window5hPct: 10, expectedEmail: 'other@example.com' });
+    assert.equal(qWrongEmail.ok, true);
+    assert.equal(qWrongEmail.skipped, true);
+    assert.equal(qWrongEmail.reason, 'EMAIL_MISMATCH_SKIPPED', 'Stale quota from another email must be skipped');
     const q2 = mgr.syncActiveAccountQuota({ window5hPct: 65 });
     assert.equal(q2.ok, true);
     assert.equal(q2.effectiveQuota.effective5hPct, 65);
     assert.equal(q2.effectiveQuota.effective7dPct, 88, 'Partial 5h live sync must preserve existing 7d quota');
+    assert.equal(q2.effectiveQuota.tierName, 'Pro');
     const qEmpty = mgr.syncActiveAccountQuota({});
     assert.equal(qEmpty.ok, true);
     assert.equal(qEmpty.skipped, true);
@@ -1168,11 +1182,13 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.5.0');
-    assert.equal(pluginJson.version, '0.5.0');
+    assert.equal(pkgJson.version, '0.5.1');
+    assert.equal(pluginJson.version, '0.5.1');
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.5\.0'/);
-    assert.match(inlineHtml, /version: '0\.5\.0'/);
+    assert.match(jsSrc, /SUITE_VERSION = '0\.5\.1'/);
+    assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
+    assert.match(jsSrc, /readAntiClaudeQuotaCache/);
+    assert.match(inlineHtml, /version: '0\.5\.1'/);
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1192,9 +1208,10 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(appHtml, /navigateFromExternalBridge/);
     assert.match(appHtml, /isExternalNavLocked/);
     assert.match(appHtml, /is-focus-flash/);
+    assert.match(appHtml, /expectedEmail/);
     assert.match(csSrc, /PruneObsoletePluginEntries/);
     assert.match(csSrc, /CheckDebugPortShortcutStatus/);
-    assert.match(csSrc, /v0\.5\.0/);
+    assert.match(csSrc, /v0\.5\.1/);
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
   } finally {

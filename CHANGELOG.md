@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1 - 2026-11-26
+
+- **全自动精准实时额度同步（免手动填写 · 防串号 · 分模型家族）**：
+  - [extensions/prism-suite.js](extensions/prism-suite.js) 优先直读 Anti-Claude 结构化额度缓存 `localStorage['ag_claude_ux_quota_cache_v1']`（零延迟、无需打开右侧概览面板，DOM 正则降级兜底），直接提取精确的 `5h` / `weekly` 剩余百分比、秒级 `resetTime.seconds`、订阅等级 `tierName`、Gemini/Claude 分家族池与 `accountKey` 绑定邮箱，同时一并增强输入框额度光环（`quotaRing`）与 5h/7d 低额度交接提醒；
+  - [plugin/server/account-manager.mjs](plugin/server/account-manager.mjs) 与 [plugin/server/index.mjs](plugin/server/index.mjs) 新增 `expectedEmail` 防串号核验（切号未重启期间若旧缓存邮箱与当前活跃账号不一致则自动安全跳过，绝不串写）及 `tierName` / `families` 持久化；
+  - [plugin/ui/app.html](plugin/ui/app.html) 自动在卡片展示订阅等级徽章、精确 5h/7d 进度条与分家族剩余额度，并清晰区分在线自动同步与离线回血推算说明。
+
 ## 0.5.0 - 2026-11-26
 
 - **切号后自动安全重启 Antigravity + Windows 凭据库防 `exit 1` 加固与 `0ms` 多级缓存**：

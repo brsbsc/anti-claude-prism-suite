@@ -2102,6 +2102,7 @@
       let bridgeSwitchApplied = false;
       let lastSyncedLiveQuotaSig = '';
       let lastSyncedLiveQuotaAt = 0;
+      let latestBridgeQuota = null;
       const appInstanceId = `pf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
       const processedIntentIds = new Set();
       let focusFlashTimer = 0;
@@ -2210,8 +2211,9 @@
         });
       }
 
-      async function syncLiveQuotaFromMain(quota) {
+      async function syncLiveQuotaFromMain(quota, { force = false } = {}) {
         if (!quota || typeof quota !== 'object') return;
+        latestBridgeQuota = quota;
         const normPct = (v) => {
           if (v === null || v === undefined || v === '') return null;
           const n = Number(v);
@@ -2219,12 +2221,30 @@
         };
         const p5 = normPct(quota.pct5h);
         const p7 = normPct(quota.pct7d);
-        if (p5 === null && p7 === null) return;
+        let families = null;
+        if (quota.families && typeof quota.families === 'object') {
+          const outFam = {};
+          for (const fk of ['gemini', 'claude', 'gpt']) {
+            const item = quota.families[fk];
+            if (!item || typeof item !== 'object') continue;
+            const rec = {};
+            const f5 = normPct(item.pct5h);
+            const f7 = normPct(item.pct7d);
+            if (f5 !== null) rec.pct5h = f5;
+            if (f7 !== null) rec.pct7d = f7;
+            if (Object.keys(rec).length) outFam[fk] = rec;
+          }
+          if (Object.keys(outFam).length) families = outFam;
+        }
+        if (p5 === null && p7 === null && !families) return;
         const r5 = typeof quota.reset5hAt === 'string' && !Number.isNaN(Date.parse(quota.reset5hAt)) ? quota.reset5hAt : '';
         const r7 = typeof quota.reset7dAt === 'string' && !Number.isNaN(Date.parse(quota.reset7dAt)) ? quota.reset7dAt : '';
-        const sig = `${p5 ?? ''}|${p7 ?? ''}|${r5.slice(0, 16)}|${r7.slice(0, 16)}`;
+        const expectedEmail = typeof quota.accountEmail === 'string' && quota.accountEmail.includes('@') ? quota.accountEmail.trim().toLowerCase() : '';
+        const tierName = typeof quota.tierName === 'string' ? quota.tierName.trim().slice(0, 24) : '';
+        const famSig = families ? Object.entries(families).map(([k, v]) => `${k}:${v.pct5h ?? ''}/${v.pct7d ?? ''}`).join(',') : '';
+        const sig = `${expectedEmail}|${p5 ?? ''}|${p7 ?? ''}|${r5.slice(0, 16)}|${r7.slice(0, 16)}|${famSig}`;
         const now = Date.now();
-        if (sig === lastSyncedLiveQuotaSig && now - lastSyncedLiveQuotaAt < 45000) return;
+        if (!force && sig === lastSyncedLiveQuotaSig && now - lastSyncedLiveQuotaAt < 45000) return;
         lastSyncedLiveQuotaSig = sig;
         lastSyncedLiveQuotaAt = now;
 
@@ -2233,6 +2253,9 @@
         if (p7 !== null) args.window7dPct = p7;
         if (r5) args.reset5hAt = r5;
         if (r7) args.reset7dAt = r7;
+        if (families) args.families = families;
+        if (expectedEmail) args.expectedEmail = expectedEmail;
+        if (tierName) args.tierName = tierName;
         try {
           const res = await callServerTool('prism_quota_sync', args);
           if (res && res.ok && !res.skipped && appState.accounts.data) {
@@ -3796,6 +3819,12 @@
           }
           broadcastAccountSummary(st);
           setTopProgress(false);
+          if (latestBridgeQuota) {
+            const curOnline = (st?.accounts || []).find((a) => a.isCurrentActive);
+            if (curOnline && !curOnline.effectiveQuota) {
+              syncLiveQuotaFromMain(latestBridgeQuota, { force: true });
+            }
+          }
         } catch (err) {
           if (seq !== appState.accounts.seq) return;
           appState.accounts.loading = false;
@@ -3937,7 +3966,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.5.0，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.5.1，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -4096,9 +4125,10 @@
               const famBits = [];
               if (eff?.families?.gemini) famBits.push(`Gemini 5h:${eff.families.gemini.pct5h ?? '-'}% / 7d:${eff.families.gemini.pct7d ?? '-'}%`);
               if (eff?.families?.claude) famBits.push(`Claude 5h:${eff.families.claude.pct5h ?? '-'}% / 7d:${eff.families.claude.pct7d ?? '-'}%`);
+              const tierBadge = eff?.tierName ? `<span class="pill">${escapeHtml(eff.tierName)}</span>` : '';
               const quotaBlock = (q5Html || q7Html)
                 ? `<div class="quota-bars">${q5Html}${q7Html}${famBits.length ? `<div class="relay-sub" style="font-size:10.5px;">${escapeHtml(famBits.join(' ｜ '))}</div>` : ''}</div>`
-                : `<p class="relay-sub">尚未记录额度 · 可点左下角「录入额度」或让 AI 自动同步</p>`;
+                : `<p class="relay-sub">${a.isCurrentActive ? '正在同步当前在线额度（若宿主未加载 Anti-Claude 额度缓存，可点「录入额度」手动补充）' : '切过去登录一次即自动记录实时额度与秒级重置倒计时（也可点左下角手动录入）'}</p>`;
               const isEditingQuota = st.editingQuotaId === a.id;
               const editorHtml = isEditingQuota
                 ? `<div class="quota-editor" data-quota-editor="${escapeHtml(a.id)}">` +
@@ -4117,7 +4147,7 @@
               parts.push(
                 `<article class="relay-card${a.isCurrentActive ? ' is-online' : ''}">` +
                   `<div class="relay-card-head">` +
-                    `<div class="search-card-meta">${roleBadge}${activeBadge}${backupBadge}<span class="relay-title">${escapeHtml(a.alias || a.email)}</span></div>` +
+                    `<div class="search-card-meta">${roleBadge}${activeBadge}${tierBadge}${backupBadge}<span class="relay-title">${escapeHtml(a.alias || a.email)}</span></div>` +
                     `<div class="search-card-actions">` +
                       (!a.isCurrentActive ? `<button type="button" class="mini-btn is-primary" data-acc-action="countdown" data-id="${escapeHtml(a.id)}">${switchCtaText}</button>` : '') +
                     `</div>` +
@@ -5336,7 +5366,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.5.0' },
+            appInfo: { name: 'prism-files', version: '0.5.1' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};

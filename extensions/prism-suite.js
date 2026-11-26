@@ -12,12 +12,13 @@
     try { window.__agPrismSuiteDispose(); } catch {}
   }
 
-  const SUITE_VERSION = '0.5.0';
+  const SUITE_VERSION = '0.5.1';
   const REPO_RELEASES_API = 'https://api.github.com/repos/wushuai0802/anti-claude-prism-suite/releases/latest';
   const REPO_RELEASES_URL = 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest';
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';
   const LIVE_QUOTA_STORAGE_KEY = 'ag_prism_live_quota_v1';
   const ACCOUNT_SUMMARY_STORAGE_KEY = 'ag_prism_account_summary_v1';
+  const ANTI_CLAUDE_QUOTA_CACHE_KEY = 'ag_claude_ux_quota_cache_v1';
   const MASCOT_SIZE_MIN = 16;
   const MASCOT_SIZE_MAX = 36;
   const MASCOT_SIZE_DEFAULT = 24;
@@ -2190,7 +2191,118 @@
     return '';
   }
 
+  function readAntiClaudeQuotaCache() {
+    try {
+      const raw = typeof localStorage === 'object' && localStorage ? localStorage.getItem(ANTI_CLAUDE_QUOTA_CACHE_KEY) : null;
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.groups) || parsed.groups.length === 0) return null;
+
+      const rawKey = String(parsed.accountKey || '').trim();
+      const firstSeg = rawKey.split('|')[0].trim().toLowerCase();
+      const accountEmail = firstSeg.includes('@') && firstSeg.length <= 254 ? firstSeg : '';
+      const tierName = String(parsed.tierName || '').trim().slice(0, 24);
+      const nowMs = Date.now();
+
+      const detectActiveFamily = () => {
+        try {
+          const trig = document.querySelector('#antigravity\\.agentSidePanelInputBox button[data-testid="model-selector-trigger"], button[data-testid="model-selector-trigger"]');
+          const txt = String(trig?.textContent || '').toLowerCase();
+          if (/claude|sonnet|opus/i.test(txt)) return 'claude';
+          if (/gpt/i.test(txt)) return 'gpt';
+          if (/gemini/i.test(txt)) return 'gemini';
+        } catch {}
+        return '';
+      };
+
+      const families = {};
+      const parsedGroups = [];
+      for (const g of parsed.groups) {
+        if (!g || !Array.isArray(g.buckets) || g.buckets.length === 0) continue;
+        const dn = String(g.displayName || '').trim();
+        let famKey = 'other';
+        if (/gemini/i.test(dn)) famKey = 'gemini';
+        else if (/claude/i.test(dn)) famKey = 'claude';
+        else if (/gpt/i.test(dn)) famKey = 'gpt';
+
+        let g5 = null;
+        let g7 = null;
+        let r5 = '';
+        let r7 = '';
+        for (const b of g.buckets) {
+          if (!b || typeof b !== 'object') continue;
+          const frac = typeof b.remainingFraction === 'number'
+            ? b.remainingFraction
+            : (b.remaining && typeof b.remaining.value === 'number' ? b.remaining.value : null);
+          if (frac === null || !Number.isFinite(frac)) continue;
+          const pct = Math.max(0, Math.min(100, Math.round(frac * 1000) / 10));
+          const secRaw = b.resetTime && b.resetTime.seconds !== undefined ? Number(b.resetTime.seconds) : NaN;
+          const resetMs = Number.isFinite(secRaw) && secRaw > 0 ? secRaw * 1000 : NaN;
+          const resetIso = Number.isFinite(resetMs) ? new Date(resetMs).toISOString() : '';
+
+          const win = String(b.window || b.displayName || '').trim().toLowerCase();
+          let isWeekly = /week|7d|每周|周/.test(win);
+          let is5h = /5h|5\s*hour|5\s*小时|short/.test(win);
+          if (!isWeekly && !is5h && Number.isFinite(resetMs)) {
+            if ((resetMs - nowMs) / 3600000 > 6) isWeekly = true;
+            else is5h = true;
+          }
+          if (isWeekly) {
+            if (g7 === null || pct < g7) {
+              g7 = pct;
+              if (resetIso) r7 = resetIso;
+            }
+          } else {
+            if (g5 === null || pct < g5) {
+              g5 = pct;
+              if (resetIso) r5 = resetIso;
+            }
+          }
+        }
+
+        if (g5 !== null || g7 !== null) {
+          parsedGroups.push({ famKey, g5, g7, r5, r7 });
+          if (famKey !== 'other') {
+            const cur = families[famKey] || {};
+            if (g5 !== null && (cur.pct5h === undefined || g5 < cur.pct5h)) cur.pct5h = g5;
+            if (g7 !== null && (cur.pct7d === undefined || g7 < cur.pct7d)) cur.pct7d = g7;
+            families[famKey] = cur;
+          }
+        }
+      }
+
+      if (!parsedGroups.length) return null;
+      const activeFam = detectActiveFamily();
+      const preferred = (activeFam && parsedGroups.find((g) => g.famKey === activeFam)) || parsedGroups[0];
+      const all5 = parsedGroups.map((g) => g.g5).filter((n) => typeof n === 'number');
+      const all7 = parsedGroups.map((g) => g.g7).filter((n) => typeof n === 'number');
+      const pct5h = preferred.g5 !== null ? preferred.g5 : (all5.length ? Math.min(...all5) : null);
+      const pct7d = preferred.g7 !== null ? preferred.g7 : (all7.length ? Math.min(...all7) : null);
+      const reset5hAt = preferred.r5 || (parsedGroups.find((g) => g.r5)?.r5 || '');
+      const reset7dAt = preferred.r7 || (parsedGroups.find((g) => g.r7)?.r7 || '');
+      const vals = [pct5h, pct7d].filter((n) => typeof n === 'number');
+      const minPct = vals.length ? Math.min(...vals) : null;
+      return {
+        pct5h,
+        pct7d,
+        minPct,
+        reset5hAt,
+        reset7dAt,
+        families: Object.keys(families).length ? families : null,
+        accountEmail,
+        tierName,
+        observedAt: Number(parsed.ts) || nowMs
+      };
+    } catch {
+      return null;
+    }
+  }
+
   function getQuotaState() {
+    const cached = readAntiClaudeQuotaCache();
+    if (cached && (typeof cached.pct5h === 'number' || typeof cached.pct7d === 'number')) {
+      return cached;
+    }
     let pct5h = null;
     let pct7d = null;
     let reset5hAt = '';
@@ -2220,7 +2332,7 @@
     } catch {}
     const vals = [pct5h, pct7d].filter((n) => typeof n === 'number');
     const minPct = vals.length ? Math.min(...vals) : null;
-    return { pct5h, pct7d, minPct, reset5hAt, reset7dAt };
+    return { pct5h, pct7d, minPct, reset5hAt, reset7dAt, families: null, accountEmail: '', tierName: '' };
   }
 
   /* ---- Sanitized Workbench Bridge (Main Window <-> Prism Files MCP App iframe) ---- */
@@ -2387,13 +2499,33 @@
     };
     const pct5h = normPct(q.pct5h);
     const pct7d = normPct(q.pct7d);
-    if (pct5h === null && pct7d === null) return null;
+    let families = null;
+    if (q.families && typeof q.families === 'object') {
+      const cleanFam = {};
+      for (const fk of ['gemini', 'claude', 'gpt']) {
+        const src = q.families[fk];
+        if (!src || typeof src !== 'object') continue;
+        const rec = {};
+        const f5 = normPct(src.pct5h);
+        const f7 = normPct(src.pct7d);
+        if (f5 !== null) rec.pct5h = f5;
+        if (f7 !== null) rec.pct7d = f7;
+        if (Object.keys(rec).length) cleanFam[fk] = rec;
+      }
+      if (Object.keys(cleanFam).length) families = cleanFam;
+    }
+    if (pct5h === null && pct7d === null && !families) return null;
+    const rawEmail = typeof q.accountEmail === 'string' ? q.accountEmail.trim().toLowerCase() : '';
+    const accountEmail = rawEmail.includes('@') && rawEmail.length <= 254 ? rawEmail : '';
     return {
       pct5h,
       pct7d,
       reset5hAt: typeof q.reset5hAt === 'string' ? q.reset5hAt.slice(0, 40) : '',
       reset7dAt: typeof q.reset7dAt === 'string' ? q.reset7dAt.slice(0, 40) : '',
-      observedAt: Date.now()
+      families,
+      accountEmail,
+      tierName: typeof q.tierName === 'string' ? q.tierName.trim().slice(0, 24) : '',
+      observedAt: Number(q.observedAt) || Date.now()
     };
   }
 
@@ -2421,7 +2553,10 @@
     cachedLiveQuota = live;
     try { localStorage.setItem(LIVE_QUOTA_STORAGE_KEY, JSON.stringify(live)); } catch {}
     syncWorkbenchTooltip();
-    const sig = `${live.pct5h ?? ''}|${live.pct7d ?? ''}|${live.reset5hAt.slice(0, 16)}|${live.reset7dAt.slice(0, 16)}`;
+    const famSig = live.families
+      ? Object.entries(live.families).map(([k, v]) => `${k}:${v.pct5h ?? ''}/${v.pct7d ?? ''}`).join(',')
+      : '';
+    const sig = `${live.accountEmail || ''}|${live.pct5h ?? ''}|${live.pct7d ?? ''}|${live.reset5hAt.slice(0, 16)}|${live.reset7dAt.slice(0, 16)}|${famSig}`;
     const now = Date.now();
     if (!force && sig === lastPushedQuotaSig && now - lastPushedQuotaAt < 60000) return;
     lastPushedQuotaSig = sig;
