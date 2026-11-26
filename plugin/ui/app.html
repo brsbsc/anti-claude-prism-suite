@@ -1417,6 +1417,21 @@
       background: color-mix(in srgb, var(--color-accent, var(--p-accent)) 4%, var(--color-background-primary, var(--p-bg)));
     }
 
+    .relay-card.is-account-slot {
+      background: color-mix(in srgb, var(--color-background-secondary, var(--p-bg-subtle)) 76%, var(--color-background-primary, var(--p-bg)));
+      border-color: color-mix(in srgb, var(--color-border-primary, var(--p-border-strong)) 95%, transparent);
+      box-shadow: 3px 0 0 0 color-mix(in srgb, var(--color-text-tertiary, var(--p-text-muted)) 42%, transparent) inset,
+                  0 1px 2px rgba(0, 0, 0, 0.045);
+    }
+
+    .relay-card.is-account-slot:hover {
+      border-color: color-mix(in srgb, var(--color-accent, var(--p-accent)) 35%, var(--color-border-primary, var(--p-border-strong)));
+    }
+
+    .relay-card.is-account-slot .mini-btn:not(.is-primary):not(.is-danger-subtle) {
+      background: var(--color-background-primary, var(--p-bg));
+    }
+
     .relay-card.is-warn {
       background: var(--p-warn-soft);
       border-color: rgba(217, 119, 6, 0.35);
@@ -3999,7 +4014,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.5.2，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.5.3，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -4200,7 +4215,7 @@
                   `</div>`
                 : '';
               parts.push(
-                `<article class="relay-card${a.isCurrentActive ? ' is-online' : ''}">` +
+                `<article class="relay-card${a.isCurrentActive ? ' is-online' : ' is-account-slot'}">` +
                   `<div class="relay-card-head">` +
                     `<div class="search-card-meta">${roleBadge}${activeBadge}${tierBadge}${backupBadge}<span class="relay-title">${escapeHtml(a.alias || a.email)}</span></div>` +
                     `<div class="search-card-actions">` +
@@ -5421,7 +5436,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.5.2' },
+            appInfo: { name: 'prism-files', version: '0.5.3' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};

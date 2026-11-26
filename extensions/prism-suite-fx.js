@@ -27,6 +27,7 @@
 
   const FX_DEFAULTS = {
     borderBeam: false,
+    borderBeamMode: 'always',     // 'always' | 'busy'
     borderBeamPalette: 'theme',   // 'theme' | 'gemini' | 'aurora' | 'prism' | 'neon' | 'quota'
     quotaRing: false,
     quotaRingPeriod: 'auto',      // 'auto' | 'weekly' | '5h'
@@ -622,13 +623,18 @@
     function isBeamTargetActive(prefs, nowMs) {
       const preview = isBeamPreviewActive(nowMs);
       if (preview) return windowFocused;
-      return Boolean(prefs.borderBeam) && lastBusy;
+      if (!prefs.borderBeam) return false;
+      if ((prefs.borderBeamMode || 'always') === 'always') {
+        return windowFocused;
+      }
+      return lastBusy;
     }
 
     function renderBorderBeamFrame(dt, nowMs, prefs) {
       const targetActive = isBeamTargetActive(prefs, nowMs);
       const rate = targetActive ? 5.5 : 4.5;
-      const targetAlpha = targetActive ? 1 : 0;
+      const isAmbientIdle = targetActive && !lastBusy && !isBeamPreviewActive(nowMs) && (prefs.borderBeamMode || 'always') === 'always';
+      const targetAlpha = targetActive ? (isAmbientIdle ? 0.78 : 1) : 0;
       beamAlpha += (targetAlpha - beamAlpha) * Math.min(1, dt * rate);
       if (Math.abs(targetAlpha - beamAlpha) < 0.004) beamAlpha = targetAlpha;
 
@@ -640,7 +646,7 @@
       if (!beamCanvas || !beamCtx || geo.perim <= 0) return false;
 
       setAttr(beamCanvas, 'data-active', '1');
-      beamPhase = (beamPhase + dt * 0.25) % 1;
+      beamPhase = (beamPhase + dt * (isAmbientIdle ? 0.16 : 0.27)) % 1;
 
       const ctx = beamCtx;
       const scaleX = beamCanvas.width / Math.max(1, geo.cssW);
@@ -774,7 +780,7 @@
     function syncQuotaRingSuppression(nowMs) {
       if (!qRingWrap) return;
       const prefs = getPrefs();
-      const beamActive = (Boolean(prefs.borderBeam) && lastBusy) || isBeamPreviewActive(nowMs);
+      const beamActive = isBeamTargetActive(prefs, nowMs);
       setAttr(qRingWrap, 'data-suppressed', beamActive ? '1' : '');
     }
 
@@ -1617,24 +1623,38 @@
       }
     }
 
+    let railVpRO = null;
+    let railPosRaf = 0;
+
     function positionOutlineRail() {
       if (!railEl) return;
       const vp = safeGetViewportEl();
       if (vp) {
         const rect = vp.getBoundingClientRect();
         if (rect.width > 120) {
-          const rightPx = Math.max(10, Math.round(window.innerWidth - rect.right + 14));
+          // Leave clear gutter to the left of both the vertical scrollbar track and any adjacent split-pane divider
+          const scrollbarW = Math.max(14, Math.round((vp.offsetWidth || 0) - (vp.clientWidth || 0)));
+          const gutter = rect.width < 420 ? 10 : 16;
+          const rightPx = Math.max(28, Math.round(window.innerWidth - rect.right + scrollbarW + gutter));
           railEl.style.right = `${rightPx}px`;
           return;
         }
       }
-      railEl.style.right = '14px';
+      railEl.style.right = '28px';
     }
 
     function detachRailScroll() {
       if (railScrollRaf) {
         cancelAnimationFrame(railScrollRaf);
         railScrollRaf = 0;
+      }
+      if (railPosRaf) {
+        cancelAnimationFrame(railPosRaf);
+        railPosRaf = 0;
+      }
+      if (railVpRO) {
+        try { railVpRO.disconnect(); } catch {}
+        railVpRO = null;
       }
       if (railScrollAc) {
         railScrollAc.abort();
@@ -1656,6 +1676,16 @@
           if (!disposed) updateRailActiveDot();
         });
       }, { passive: true, signal: railScrollAc.signal });
+      if (typeof ResizeObserver === 'function') {
+        railVpRO = new ResizeObserver(() => {
+          if (disposed || railPosRaf || document.hidden) return;
+          railPosRaf = requestAnimationFrame(() => {
+            railPosRaf = 0;
+            if (!disposed && railEl) positionOutlineRail();
+          });
+        });
+        railVpRO.observe(vp);
+      }
     }
 
     function removeOutlineRail() {
@@ -2495,9 +2525,9 @@
         return `
           <div class="ag-ps-toggle-list">
             <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="模型生成时在输入框边缘流动彗星光带，空闲自动 0fps">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="在输入框边缘流动彗星光带；支持常驻流光（失焦自动 0fps 休眠）或仅生成时激活">
                 <span>输入框流光边框</span>
-                <span class="ag-ps-toggle-sub">工作态流光 · 与额度光环互斥</span>
+                <span class="ag-ps-toggle-sub">${(p.borderBeamMode || 'always') === 'always' ? '常驻流光 · 失焦自动 0fps' : '仅生成态流光 · 闲置 0fps'}</span>
               </div>
               <div class="ag-ps-fx-inline">
                 <button type="button" class="ag-ps-fx-preview-btn" data-fx-beam-preview="1" data-active="${previewing ? '1' : '0'}">试用 3s</button>
@@ -2507,6 +2537,13 @@
             ${
               p.borderBeam
                 ? `<div class="ag-ps-subpanel">
+                    <div class="ag-ps-toggle-row">
+                      <span class="ag-ps-toggle-sub">显示模式</span>
+                      <div class="ag-ps-seg-group">
+                        <button type="button" class="ag-ps-seg-btn" data-fx-beam-mode="always" data-selected="${(p.borderBeamMode || 'always') === 'always' ? '1' : '0'}">常驻流光</button>
+                        <button type="button" class="ag-ps-seg-btn" data-fx-beam-mode="busy" data-selected="${p.borderBeamMode === 'busy' ? '1' : '0'}">仅生成时</button>
+                      </div>
+                    </div>
                     <div class="ag-ps-toggle-sub">流光色系</div>
                     <div class="ag-ps-fx-chip-grid">${beamChips}</div>
                   </div>`
@@ -2679,6 +2716,13 @@
             return true;
           }
           return false;
+        }
+
+        const beamModeBtn = target.closest('[data-fx-beam-mode]');
+        if (beamModeBtn) {
+          const val = beamModeBtn.getAttribute('data-fx-beam-mode') === 'busy' ? 'busy' : 'always';
+          bus.setPref('borderBeamMode', val);
+          return true;
         }
 
         const beamPalBtn = target.closest('[data-fx-beam-palette]');
