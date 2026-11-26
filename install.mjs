@@ -52,12 +52,20 @@ export function resolvePluginsDir(argv = process.argv.slice(2)) {
   return path.join(os.homedir(), '.gemini', 'config', 'plugins');
 }
 
+export const EXTENSION_FILES = [
+  'prism-suite.css',
+  'prism-suite.js',
+  'prism-suite-fx.css',
+  'prism-suite-fx.js',
+  'prism-suite-workflow.css',
+  'prism-suite-workflow.js'
+];
+
 export function installExtensions({ userDir = resolveUserDir(), srcDir = path.join(__dirname, 'extensions') } = {}) {
   const targetDir = path.join(path.resolve(userDir), 'extensions');
   fs.mkdirSync(targetDir, { recursive: true });
-  const files = ['prism-suite.css', 'prism-suite.js'];
   const installed = [];
-  for (const name of files) {
+  for (const name of EXTENSION_FILES) {
     const src = path.join(srcDir, name);
     const dest = path.join(targetDir, name);
     if (!fs.existsSync(src)) {
@@ -69,20 +77,68 @@ export function installExtensions({ userDir = resolveUserDir(), srcDir = path.jo
   return { targetDir, installed };
 }
 
-function copyDirRecursive(srcDir, destDir, installed) {
+function copyFileInPlace(srcPath, destPath) {
+  const dir = path.dirname(destPath);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmpPath = path.join(dir, `.prism-inst-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
+  try {
+    fs.copyFileSync(srcPath, tmpPath);
+    fs.renameSync(tmpPath, destPath);
+  } catch (err) {
+    try { fs.rmSync(tmpPath, { force: true }); } catch {}
+    if (err && (err.code === 'EXDEV' || err.code === 'EPERM' || err.code === 'EBUSY')) {
+      fs.copyFileSync(srcPath, destPath);
+      return;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Sync srcDir into destDir in-place WITHOUT deleting destDir itself,
+ * preserving directory inodes so running MCP Server processes never lose cwd.
+ */
+function syncDirInPlace(srcDir, destDir, installed) {
   fs.mkdirSync(destDir, { recursive: true });
-  const entries = fs.readdirSync(srcDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
-  for (const entry of entries) {
+  const srcEntries = fs.readdirSync(srcDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+  const wantedNames = new Set();
+  for (const entry of srcEntries) {
+    if (!IGNORED_NAMES.has(entry.name)) {
+      wantedNames.add(entry.name);
+    }
+  }
+
+  for (const existing of fs.readdirSync(destDir, { withFileTypes: true })) {
+    if (!wantedNames.has(existing.name)) {
+      fs.rmSync(path.join(destDir, existing.name), { recursive: true, force: true });
+    }
+  }
+
+  for (const entry of srcEntries) {
     if (IGNORED_NAMES.has(entry.name)) continue;
     const srcPath = path.join(srcDir, entry.name);
     const destPath = path.join(destDir, entry.name);
     if (entry.isDirectory()) {
-      copyDirRecursive(srcPath, destPath, installed);
+      if (fs.existsSync(destPath) && !fs.statSync(destPath).isDirectory()) {
+        fs.rmSync(destPath, { force: true });
+      }
+      syncDirInPlace(srcPath, destPath, installed);
     } else if (entry.isFile()) {
-      fs.copyFileSync(srcPath, destPath);
+      if (fs.existsSync(destPath) && fs.statSync(destPath).isDirectory()) {
+        fs.rmSync(destPath, { recursive: true, force: true });
+      }
+      copyFileInPlace(srcPath, destPath);
       installed.push(destPath);
     }
   }
+}
+
+export function resolvePrismFilesTargetDir(pluginsDir) {
+  const resolvedPluginsDir = path.resolve(pluginsDir);
+  if (path.basename(resolvedPluginsDir).toLowerCase() === 'prism-files') {
+    return resolvedPluginsDir;
+  }
+  return path.join(resolvedPluginsDir, 'prism-files');
 }
 
 export function installPlugin({ pluginsDir = resolvePluginsDir(), srcDir = path.join(__dirname, 'plugin') } = {}) {
@@ -91,23 +147,17 @@ export function installPlugin({ pluginsDir = resolvePluginsDir(), srcDir = path.
     throw new Error(`Missing source plugin directory: ${resolvedSrc}`);
   }
 
-  const resolvedPluginsDir = path.resolve(pluginsDir);
-  const targetDir = path.join(resolvedPluginsDir, 'prism-files');
-  if (path.basename(targetDir) !== 'prism-files') {
+  const targetDir = resolvePrismFilesTargetDir(pluginsDir);
+  if (path.basename(targetDir).toLowerCase() !== 'prism-files') {
     throw new Error(`Unsafe plugin target directory: ${targetDir}`);
   }
   if (resolvedSrc === path.resolve(targetDir)) {
     throw new Error(`Source and target plugin directories are identical: ${targetDir}`);
   }
 
-  fs.mkdirSync(resolvedPluginsDir, { recursive: true });
-  // Clean stale files inside prism-files/ only; never touch sibling plugins.
-  if (fs.existsSync(targetDir)) {
-    fs.rmSync(targetDir, { recursive: true, force: true });
-  }
-
+  fs.mkdirSync(path.dirname(targetDir), { recursive: true });
   const installed = [];
-  copyDirRecursive(resolvedSrc, targetDir, installed);
+  syncDirInPlace(resolvedSrc, targetDir, installed);
   return { targetDir, installed };
 }
 
@@ -141,7 +191,7 @@ function printHelp() {
     'Usage: node install.mjs [options]',
     '',
     'Options:',
-    '  --extensions-only    Install only Anti-Claude user extensions (prism-suite.css, prism-suite.js)',
+    '  --extensions-only    Install only Anti-Claude user extensions (prism-suite*.{css,js}: prism-suite.css, prism-suite.js, prism-suite-fx.css, prism-suite-fx.js, prism-suite-workflow.css, prism-suite-workflow.js)',
     '  --plugin-only        Install only Antigravity prism-files MCP App plugin',
     '  --user-dir <dir>     Override Anti-Claude user dir (default: ~/.gemini/antigravity/anti-claude/user)',
     '  --plugin-dir <dir>   Override Antigravity plugins dir (default: ~/.gemini/config/plugins)',

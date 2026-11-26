@@ -21,10 +21,11 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Verify syntax and run tests
+      - name: Verify syntax, zero dependencies, and run tests
         run: |
           node --check install.mjs
           node --check uninstall.mjs
+          node -e "const p=require('./package.json'); if(p.dependencies && Object.keys(p.dependencies).length) throw new Error('Must keep zero runtime npm dependencies');"
           npm test
 
       - name: Build Windows 1-Click GUI Installer (.exe)
@@ -32,19 +33,26 @@ jobs:
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-win-exe.ps1 -OutDir dist
 
-      - name: Smoke test Windows installer CLI (--silent-install / --silent-uninstall)
+      - name: Smoke test Windows installer CLI (install / in-place update / uninstall)
         shell: powershell
         run: |
           $tmp = Join-Path $env:RUNNER_TEMP ("prism-exe-smoke-" + [Guid]::NewGuid().ToString("N"))
           $userDir = Join-Path $tmp "user"
           $pluginsDir = Join-Path $tmp "plugins"
           $exe = "dist\Anti-Claude-Prism-Suite-Setup.exe"
-          $p1 = Start-Process -FilePath $exe -ArgumentList @("--silent-install", "--test-user-dir=$userDir", "--test-plugins-dir=$pluginsDir") -Wait -PassThru
+          $p1 = Start-Process -FilePath $exe -ArgumentList @("--silent-install", "--no-wsl", "--test-user-dir=$userDir", "--test-plugins-dir=$pluginsDir") -Wait -PassThru
           if ($p1.ExitCode -ne 0) { throw "Silent install failed: $($p1.ExitCode)" }
           if (-not (Test-Path (Join-Path $userDir "extensions\prism-suite.js"))) { throw "Missing prism-suite.js" }
           if (-not (Test-Path (Join-Path $userDir "extensions\prism-suite.css"))) { throw "Missing prism-suite.css" }
           if (-not (Test-Path (Join-Path $pluginsDir "prism-files\plugin.json"))) { throw "Missing plugin.json" }
-          $p2 = Start-Process -FilePath $exe -ArgumentList @("--silent-uninstall", "--test-user-dir=$userDir", "--test-plugins-dir=$pluginsDir") -Wait -PassThru
+          # Verify second in-place update prunes stale leftover files cleanly
+          $stalePath = Join-Path $pluginsDir "prism-files\obsolete-stale-check.tmp"
+          New-Item -ItemType File -Path $stalePath -Force | Out-Null
+          $pUpdate = Start-Process -FilePath $exe -ArgumentList @("--silent-install", "--no-wsl", "--test-user-dir=$userDir", "--test-plugins-dir=$pluginsDir") -Wait -PassThru
+          if ($pUpdate.ExitCode -ne 0) { throw "Silent in-place update failed: $($pUpdate.ExitCode)" }
+          if (Test-Path $stalePath) { throw "In-place update failed to prune stale file" }
+          if (-not (Test-Path (Join-Path $pluginsDir "prism-files\server\relaunch-client.mjs"))) { throw "Missing relaunch-client.mjs after update" }
+          $p2 = Start-Process -FilePath $exe -ArgumentList @("--silent-uninstall", "--no-wsl", "--test-user-dir=$userDir", "--test-plugins-dir=$pluginsDir") -Wait -PassThru
           if ($p2.ExitCode -ne 0) { throw "Silent uninstall failed: $($p2.ExitCode)" }
           if (Test-Path (Join-Path $userDir "extensions\prism-suite.js")) { throw "prism-suite.js was not removed" }
           if (Test-Path (Join-Path $pluginsDir "prism-files")) { throw "prism-files was not removed" }

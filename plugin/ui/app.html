@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Prism 文件工作台</title>
+  <title>Prism 工作台</title>
   <style>
     :root {
       --p-bg: #ffffff;
@@ -94,6 +94,10 @@
       box-sizing: border-box;
     }
 
+    [hidden] {
+      display: none !important;
+    }
+
     html, body {
       margin: 0;
       padding: 0;
@@ -117,18 +121,68 @@
       min-width: 0;
     }
 
-    /* Top Bar */
+    /* Top Bar & SWR Progress */
     .topbar {
+      position: relative;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 8px;
-      padding: 7px 10px;
+      gap: 6px;
+      padding: 6px 10px;
       background: var(--color-background-secondary, var(--p-bg-subtle));
       border-bottom: 1px solid var(--color-border-primary, var(--p-border));
       flex-shrink: 0;
       min-width: 0;
       flex-wrap: wrap;
+    }
+
+    .topbar.is-compact-controls {
+      flex-wrap: nowrap;
+    }
+
+    @keyframes pShimmer {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(260%); }
+    }
+
+    .top-progress {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: -1px;
+      height: 2px;
+      overflow: hidden;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 150ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .top-progress[data-active="1"] {
+      opacity: 1;
+    }
+
+    .top-progress::after {
+      content: "";
+      display: block;
+      width: 38%;
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, transparent, var(--color-accent, var(--p-accent)), transparent);
+      animation: pShimmer 950ms cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    }
+
+    @keyframes pSpin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .ctrl-btn.is-spinning {
+      animation: pSpin 520ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+    }
+
+    .ctrl-btn:active:not(:disabled),
+    .mini-btn:active:not(:disabled) {
+      transform: scale(0.97);
     }
 
     .tab-group {
@@ -138,7 +192,15 @@
       border-radius: 8px;
       background: var(--color-background-tertiary, var(--p-bg-hover));
       border: 1px solid var(--color-border-secondary, var(--p-border));
+      flex: 0 1 auto;
       min-width: 0;
+      max-width: 100%;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .tab-group::-webkit-scrollbar {
+      display: none;
     }
 
     .tab-btn {
@@ -149,10 +211,11 @@
       font-family: inherit;
       font-size: 12px;
       font-weight: 500;
-      padding: 5px 10px;
+      padding: 5px 9px;
       border-radius: 6px;
       cursor: pointer;
       white-space: nowrap;
+      flex-shrink: 0;
       transition: background-color 150ms cubic-bezier(0.22, 1, 0.36, 1),
                   color 150ms cubic-bezier(0.22, 1, 0.36, 1);
     }
@@ -269,6 +332,17 @@
       overflow: hidden;
     }
 
+    @keyframes pPanelIn {
+      from {
+        opacity: 0;
+        transform: translateY(3px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
     .tab-panel {
       display: none;
       flex-direction: column;
@@ -280,9 +354,102 @@
 
     .tab-panel.is-active {
       display: flex;
+      animation: pPanelIn 150ms cubic-bezier(0.22, 1, 0.36, 1) 1;
     }
 
-    /* Browse Toolbar */
+    /* Browse Toolbar & Clickable Breadcrumbs */
+    .path-bar-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      flex: 1 1 auto;
+      min-width: 0;
+      height: 28px;
+    }
+
+    .path-breadcrumbs {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      width: 100%;
+      height: 28px;
+      padding: 0 26px 0 6px;
+      border-radius: 6px;
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      overflow-x: auto;
+      scrollbar-width: none;
+      cursor: text;
+      position: relative;
+      transition: border-color 140ms cubic-bezier(0.22, 1, 0.36, 1), background-color 140ms ease;
+    }
+
+    .path-breadcrumbs::-webkit-scrollbar {
+      display: none;
+    }
+
+    .path-breadcrumbs:hover {
+      border-color: var(--p-border-strong);
+      background: var(--color-background-primary, var(--p-bg));
+    }
+
+    .crumb-btn {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--color-text-secondary, var(--p-text-secondary));
+      font-family: var(--font-mono, var(--p-font-mono));
+      font-size: 11px;
+      padding: 2px 5px;
+      border-radius: 4px;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: background-color 120ms ease, color 120ms ease;
+    }
+
+    .crumb-btn:hover {
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+      color: var(--color-text-primary, var(--p-text));
+    }
+
+    .crumb-btn.is-last {
+      color: var(--color-text-primary, var(--p-text));
+      font-weight: 600;
+    }
+
+    .crumb-sep {
+      font-size: 11px;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      opacity: 0.6;
+      user-select: none;
+      flex-shrink: 0;
+    }
+
+    .path-edit-trigger {
+      position: absolute;
+      right: 4px;
+      top: 50%;
+      transform: translateY(-50%);
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 120ms ease, color 120ms ease;
+    }
+
+    .path-edit-trigger:hover {
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+      color: var(--color-text-primary, var(--p-text));
+    }
     .toolbar {
       display: flex;
       flex-direction: column;
@@ -452,6 +619,8 @@
       cursor: default;
       user-select: none;
       min-width: 0;
+      content-visibility: auto;
+      contain-intrinsic-size: auto 38px;
       transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
                   border-color 140ms cubic-bezier(0.22, 1, 0.36, 1);
     }
@@ -642,6 +811,11 @@
       background: var(--color-background-primary, var(--p-bg));
       min-width: 0;
       overflow: hidden;
+      transition: height 190ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .preview-drawer.is-resizing {
+      transition: none !important;
     }
 
     .preview-drawer[hidden] {
@@ -802,15 +976,36 @@
     }
 
     .code-gutter {
-      padding: 10px 8px;
+      padding: 10px 0;
       text-align: right;
       user-select: none;
       color: var(--color-text-tertiary, var(--p-text-muted));
       border-right: 1px solid var(--color-border-secondary, var(--p-border));
       font-variant-numeric: tabular-nums;
-      white-space: pre;
       flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .code-ln {
+      display: block;
+      padding: 0 8px;
+      cursor: pointer;
       opacity: 0.72;
+      transition: background-color 110ms ease, color 110ms ease, opacity 110ms ease;
+    }
+
+    .code-ln:hover {
+      opacity: 1;
+      color: var(--color-text-primary, var(--p-text));
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+    }
+
+    .code-ln.is-selected {
+      opacity: 1;
+      color: var(--color-accent, var(--p-accent));
+      background: var(--p-accent-soft);
+      font-weight: 600;
     }
 
     .code-content {
@@ -998,6 +1193,491 @@
       justify-content: center;
     }
 
+    /* Open-With Dropdown Menu */
+    .open-with-wrap {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .open-with-menu {
+      position: fixed;
+      z-index: 35;
+      min-width: 176px;
+      max-width: 240px;
+      max-height: 260px;
+      overflow-y: auto;
+      padding: 4px;
+      border-radius: 8px;
+      background: var(--color-background-primary, var(--p-bg));
+      border: 1px solid var(--color-border-primary, var(--p-border-strong));
+      box-shadow: var(--p-shadow);
+    }
+
+    .open-with-group-label {
+      padding: 4px 8px 2px;
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      user-select: none;
+    }
+
+    .open-with-item {
+      appearance: none;
+      width: 100%;
+      border: 0;
+      background: transparent;
+      color: var(--color-text-primary, var(--p-text));
+      font-family: inherit;
+      font-size: 12px;
+      text-align: left;
+      padding: 6px 8px;
+      border-radius: 5px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .open-with-item:hover,
+    .open-with-item:focus-visible {
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+      outline: none;
+    }
+
+    .open-with-item-tag {
+      font-size: 10px;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      flex-shrink: 0;
+    }
+
+    .open-with-empty {
+      padding: 8px 10px;
+      font-size: 11.5px;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      text-align: center;
+    }
+
+    /* Tab 4: Cross-Session Search */
+    .search-filter-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .filter-pills {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+
+    .filter-pill {
+      appearance: none;
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      color: var(--color-text-secondary, var(--p-text-secondary));
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 3px 8px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+                  color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+                  border-color 140ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .filter-pill:hover {
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+      color: var(--color-text-primary, var(--p-text));
+    }
+
+    .filter-pill.is-active {
+      background: var(--p-accent-soft);
+      color: var(--color-accent, var(--p-accent));
+      border-color: transparent;
+    }
+
+    .search-results {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 2px;
+    }
+
+    .search-card {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-primary, var(--p-bg));
+      content-visibility: auto;
+      contain-intrinsic-size: auto 96px;
+      transition: border-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+                  background-color 140ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .search-card:hover {
+      border-color: var(--p-border-strong);
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+    }
+
+    .search-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .search-card-meta {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      flex-wrap: wrap;
+      font-size: 11px;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+    }
+
+    .search-card-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .search-snippet {
+      margin: 0;
+      padding: 7px 9px;
+      border-radius: 6px;
+      background: var(--p-code-bg);
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+      font-family: var(--font-mono, var(--p-font-mono));
+      font-size: 11.5px;
+      line-height: 1.5;
+      color: var(--color-text-primary, var(--p-text));
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 120px;
+      overflow-y: auto;
+    }
+
+    mark.search-hl {
+      background: var(--p-warn-soft);
+      color: var(--color-text-primary, var(--p-text));
+      border-radius: 3px;
+      padding: 0 2px;
+      font-weight: 600;
+    }
+
+    /* Tab 5: Account Relay, Handoff Memory & Upstream Radar */
+    @keyframes pFocusFlash {
+      0% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent, var(--p-accent)) 68%, transparent) inset; }
+      100% { box-shadow: 0 0 0 0 transparent inset; }
+    }
+
+    .relay-scroll {
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .relay-scroll.is-focus-flash {
+      animation: pFocusFlash 1500ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+    }
+
+    #panel-accounts:focus {
+      outline: none;
+    }
+
+    .relay-card {
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      border-radius: 10px;
+      background: var(--color-background-primary, var(--p-bg));
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      transition: border-color 150ms cubic-bezier(0.22, 1, 0.36, 1),
+                  background-color 150ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .relay-card.is-online {
+      border-color: color-mix(in srgb, var(--color-accent, var(--p-accent)) 42%, transparent);
+      box-shadow: 3px 0 0 0 var(--color-accent, var(--p-accent)) inset;
+      background: color-mix(in srgb, var(--color-accent, var(--p-accent)) 4%, var(--color-background-primary, var(--p-bg)));
+    }
+
+    .relay-card.is-warn {
+      background: var(--p-warn-soft);
+      border-color: rgba(217, 119, 6, 0.35);
+    }
+
+    .relay-card.is-accent {
+      background: var(--p-accent-soft);
+      border-color: rgba(37, 99, 235, 0.3);
+    }
+
+    .relay-card-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      flex-wrap: wrap;
+      padding-top: 2px;
+    }
+
+    .relay-foot-left {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+
+    .mini-btn.is-danger-subtle {
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      border-color: transparent;
+      background: transparent;
+    }
+
+    .mini-btn.is-danger-subtle:hover {
+      color: var(--p-danger);
+      background: var(--p-danger-soft);
+      border-color: rgba(220, 38, 38, 0.25);
+    }
+
+    .relay-accordion {
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      border-radius: 10px;
+      background: var(--color-background-primary, var(--p-bg));
+      overflow: hidden;
+    }
+
+    .relay-accordion > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 8px 11px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--color-text-primary, var(--p-text));
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      user-select: none;
+      transition: background-color 140ms ease;
+    }
+
+    .relay-accordion > summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .relay-accordion > summary:hover {
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+    }
+
+    .relay-acc-summary-right {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .relay-acc-chevron {
+      display: inline-block;
+      font-size: 11px;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      transition: transform 170ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .relay-accordion[open] > summary .relay-acc-chevron {
+      transform: rotate(90deg);
+    }
+
+    .relay-acc-body {
+      padding: 8px 11px 10px;
+      border-top: 1px solid var(--color-border-secondary, var(--p-border));
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 11.5px;
+      color: var(--color-text-secondary, var(--p-text-secondary));
+    }
+
+    .relay-acc-body ol {
+      margin: 2px 0 0 18px;
+      padding: 0;
+      line-height: 1.55;
+    }
+
+    .relay-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .relay-title {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--color-text-primary, var(--p-text));
+    }
+
+    .relay-sub {
+      font-size: 11.5px;
+      line-height: 1.5;
+      color: var(--color-text-secondary, var(--p-text-secondary));
+      margin: 0;
+    }
+
+    .relay-form-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .relay-select {
+      height: 28px;
+      padding: 0 8px;
+      border-radius: 6px;
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-primary, var(--p-bg));
+      color: var(--color-text-primary, var(--p-text));
+      font-family: inherit;
+      font-size: 12px;
+    }
+
+    .countdown-track {
+      width: 100%;
+      height: 5px;
+      border-radius: 999px;
+      background: rgba(128, 128, 128, 0.2);
+      overflow: hidden;
+    }
+
+    .countdown-fill {
+      height: 100%;
+      background: var(--color-accent, var(--p-accent));
+      will-change: width;
+    }
+
+    .pill-gold {
+      background: rgba(234, 179, 8, 0.16);
+      color: #b45309;
+      border-color: rgba(217, 119, 6, 0.35);
+      font-weight: 600;
+    }
+
+    .pill-ok {
+      background: rgba(16, 185, 129, 0.14);
+      color: #059669;
+      border-color: transparent;
+      font-weight: 600;
+    }
+
+    .radar-item {
+      border-top: 1px solid var(--color-border-secondary, var(--p-border));
+      padding-top: 7px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 11.5px;
+    }
+
+    .radar-list {
+      margin: 2px 0 0 16px;
+      padding: 0;
+      font-size: 11px;
+      color: var(--color-text-secondary, var(--p-text-secondary));
+    }
+
+    .relay-guide {
+      border: 1px dashed var(--color-border-primary, var(--p-border-strong));
+      border-radius: 8px;
+      padding: 7px 10px;
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      font-size: 11.5px;
+      color: var(--color-text-secondary, var(--p-text-secondary));
+    }
+
+    .relay-guide summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--color-text-primary, var(--p-text));
+      user-select: none;
+    }
+
+    .relay-guide ol {
+      margin: 6px 0 2px 18px;
+      padding: 0;
+      line-height: 1.55;
+    }
+
+    .quota-bars {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 2px;
+    }
+
+    .quota-bar-row {
+      display: grid;
+      grid-template-columns: 32px 1fr auto;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--color-text-secondary, var(--p-text-secondary));
+    }
+
+    .quota-track {
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(128, 128, 128, 0.18);
+      overflow: hidden;
+    }
+
+    .quota-fill {
+      height: 100%;
+      border-radius: 999px;
+      transition: width 200ms ease;
+    }
+
+    .quota-fill.is-ok { background: #10b981; }
+    .quota-fill.is-warn { background: #f59e0b; }
+    .quota-fill.is-danger { background: #ef4444; }
+
+    .quota-editor {
+      margin-top: 4px;
+      padding: 7px 8px;
+      border-radius: 7px;
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .radar-pick-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--color-text-secondary, var(--p-text-secondary));
+      cursor: pointer;
+    }
+
     /* Toast */
     .toast {
       position: fixed;
@@ -1028,12 +1708,13 @@
       color: #ffffff;
     }
 
-    @media (max-width: 420px) {
+    @media (max-width: 460px) {
       .topbar {
         padding: 6px 8px;
+        gap: 4px;
       }
       .tab-btn {
-        padding: 4px 8px;
+        padding: 4px 6.5px;
         font-size: 11.5px;
       }
       .row-size {
@@ -1042,8 +1723,12 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .tab-btn, .ctrl-btn, .text-input, .list-row, .row-actions, .mini-btn, .toast {
+      .tab-btn, .ctrl-btn, .text-input, .list-row, .row-actions, .mini-btn, .toast, .filter-pill, .search-card, .preview-drawer, .relay-acc-chevron, .top-progress, .path-breadcrumbs, .crumb-btn {
         transition: none !important;
+        animation: none !important;
+      }
+      .tab-panel.is-active, .ctrl-btn.is-spinning, .top-progress::after, .relay-scroll.is-focus-flash {
+        animation: none !important;
       }
     }
   </style>
@@ -1055,8 +1740,14 @@
         <button type="button" class="tab-btn is-active" role="tab" id="tab-btn-browse" data-tab="browse" aria-selected="true">目录浏览</button>
         <button type="button" class="tab-btn" role="tab" id="tab-btn-artifacts" data-tab="artifacts" aria-selected="false">最近产物</button>
         <button type="button" class="tab-btn" role="tab" id="tab-btn-pins" data-tab="pins" aria-selected="false">收藏夹</button>
+        <button type="button" class="tab-btn" role="tab" id="tab-btn-search" data-tab="search" aria-selected="false">历史检索</button>
+        <button type="button" class="tab-btn" role="tab" id="tab-btn-accounts" data-tab="accounts" aria-selected="false">账号接力</button>
       </nav>
       <div class="topbar-controls">
+        <button type="button" id="btn-smb-toggle" class="ctrl-btn" aria-pressed="false" title="允许局域网 NAS/SMB 路径（默认关闭；开启后仅放行私网/Tailscale/本地 UNC，拒绝公网主机以防 NTLM 泄露）">
+          <span class="dot-indicator" aria-hidden="true"></span>
+          <span>NAS/SMB</span>
+        </button>
         <button type="button" id="btn-hidden-toggle" class="ctrl-btn" aria-pressed="false" title="切换显示以 . 开头的隐藏文件">
           <span class="dot-indicator" aria-hidden="true"></span>
           <span>隐藏</span>
@@ -1064,6 +1755,7 @@
         <button type="button" id="btn-dblclick-toggle" class="ctrl-btn" title="切换双击文件时的默认动作">双击:定位</button>
         <button type="button" id="btn-refresh" class="ctrl-btn ctrl-icon" title="刷新当前视图" aria-label="刷新">↻</button>
       </div>
+      <div id="top-progress" class="top-progress" data-active="0" aria-hidden="true"></div>
     </header>
 
     <div id="workspace" class="workspace">
@@ -1074,8 +1766,11 @@
             <div class="path-row">
               <button type="button" id="btn-parent" class="ctrl-btn ctrl-icon" title="返回上级目录" aria-label="返回上级目录">↑</button>
               <button type="button" id="btn-home" class="ctrl-btn" title="回到用户家目录">家目录</button>
-              <div class="input-wrap">
-                <input id="path-input" class="text-input path-input" type="text" spellcheck="false" autocomplete="off" aria-label="当前目录路径" placeholder="输入目录路径并按回车…" />
+              <div class="path-bar-wrap">
+                <div id="path-breadcrumbs" class="path-breadcrumbs" title="点击路径段直接跳转，点击空白处或按 Ctrl+L 输入路径">
+                  <button type="button" id="path-edit-btn" class="path-edit-trigger" title="编辑路径 (Ctrl+L)" aria-label="编辑路径">✎</button>
+                </div>
+                <input id="path-input" class="text-input path-input" type="text" spellcheck="false" autocomplete="off" aria-label="当前目录路径" placeholder="输入目录路径并按回车…" hidden />
               </div>
               <button type="button" id="btn-pin-dir" class="ctrl-btn ctrl-icon" title="收藏或取消收藏当前目录" aria-label="收藏当前目录" aria-pressed="false">★</button>
             </div>
@@ -1122,6 +1817,41 @@
             <div class="empty-state">暂无收藏夹项目</div>
           </div>
         </section>
+
+        <!-- Tab 4: 历史检索 -->
+        <section id="panel-search" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-search">
+          <div class="toolbar">
+            <div class="path-row">
+              <div class="input-wrap">
+                <input id="search-input" class="text-input filter-input" type="text" spellcheck="false" autocomplete="off" aria-label="检索历史会话" placeholder="输入关键词跨会话全文检索（字面匹配，按回车执行）…" />
+                <button type="button" id="btn-clear-search" class="clear-input-btn" title="清除关键词" aria-label="清除关键词" hidden>×</button>
+              </div>
+              <button type="button" id="btn-run-search" class="ctrl-btn is-primary">检索</button>
+            </div>
+            <div class="search-filter-bar">
+              <div class="filter-pills" role="group" aria-label="内容类型筛选">
+                <button type="button" class="filter-pill is-active" data-search-filter="all" aria-pressed="true">全部</button>
+                <button type="button" class="filter-pill" data-search-filter="prose" aria-pressed="false">正文</button>
+                <button type="button" class="filter-pill" data-search-filter="code_cmd" aria-pressed="false">代码与命令</button>
+              </div>
+              <span id="search-meta" class="meta-count">跨会话脱敏全文检索</span>
+            </div>
+          </div>
+          <div id="search-list-wrap" class="list-scroll">
+            <div class="empty-state">输入关键词检索最近 80 个会话的对话正文、代码块与工具命令（自动脱敏敏感凭据）</div>
+          </div>
+        </section>
+
+        <!-- Tab 5: 账号接力 -->
+        <section id="panel-accounts" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-accounts" tabindex="-1">
+          <div class="subbar">
+            <span id="accounts-vault-label" class="subbar-info">主备多账号安全接力（默认关闭）</span>
+            <span id="accounts-active-pill" class="pill">未检测</span>
+          </div>
+          <div id="accounts-wrap" class="list-scroll relay-scroll">
+            <div class="empty-state">正在加载账号接力与上游雷达状态…</div>
+          </div>
+        </section>
       </div>
 
       <!-- Resizable Bottom Split Preview Drawer -->
@@ -1143,8 +1873,12 @@
             </div>
             <button type="button" id="btn-preview-pin" class="ctrl-btn ctrl-icon" title="收藏此文件" aria-label="收藏此文件" aria-pressed="false">★</button>
             <button type="button" id="btn-preview-open" class="ctrl-btn is-primary" hidden>原生打开</button>
+            <span class="open-with-wrap">
+              <button type="button" id="btn-preview-open-with" class="ctrl-btn" aria-haspopup="menu" aria-expanded="false" hidden>打开方式 ▾</button>
+            </span>
             <button type="button" id="btn-preview-reveal" class="ctrl-btn">定位</button>
-            <button type="button" id="btn-preview-quote" class="ctrl-btn" hidden>引用选段</button>
+            <button type="button" id="btn-preview-copy" class="ctrl-btn" title="复制全文内容" hidden>复制</button>
+            <button type="button" id="btn-preview-quote" class="ctrl-btn" title="引用文件路径、划词选段或点击行号选中的区间（Shift+点击选区间）" hidden>引用选段</button>
             <button type="button" id="btn-preview-edit" class="ctrl-btn" hidden>编辑</button>
             <button type="button" id="btn-preview-save" class="ctrl-btn is-primary" title="保存修改 (Ctrl+S)" hidden>保存</button>
             <button type="button" id="btn-preview-cancel" class="ctrl-btn" hidden>取消</button>
@@ -1157,6 +1891,7 @@
       </section>
     </div>
   </div>
+  <div id="preview-open-with-menu" class="open-with-menu" role="menu" aria-label="本地打开方式" hidden></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script>
@@ -1185,8 +1920,48 @@
         prefs: {
           pinnedPaths: [],
           lastPath: '',
+          lastTab: 'browse',
           showHidden: false,
-          doubleClickAction: 'reveal'
+          doubleClickAction: 'reveal',
+          allowLanSmb: false
+        },
+        openTargets: {
+          loaded: false,
+          loading: false,
+          items: [],
+          menuOpen: false
+        },
+        search: {
+          query: '',
+          filter: 'all',
+          loading: false,
+          searched: false,
+          results: [],
+          total: 0,
+          scannedSessions: 0,
+          durationMs: 0,
+          truncated: false,
+          error: '',
+          seq: 0
+        },
+        accounts: {
+          loaded: false,
+          loading: false,
+          switching: false,
+          data: null,
+          error: '',
+          seq: 0,
+          countdown: null, // { targetId, email, alias, totalMs, endAtMs, paused, pausedRemainMs, saveSnapshot, autoRelaunch }
+          lastSwitchResult: null,
+          memories: [],
+          editingQuotaId: '',
+          radarLoading: false,
+          radarReport: null,
+          openSections: {
+            guide: false,
+            memories: false,
+            radar: false
+          }
         },
         homeDir: '',
         brainDir: '',
@@ -1199,6 +1974,9 @@
           ok: true,
           error: '',
           entries: [],
+          rawDir: '',
+          rawEntries: null,
+          editingPath: false,
           query: '',
           selectedPath: '',
           loading: false,
@@ -1229,25 +2007,34 @@
           dirty: false,
           conflictMsg: '',
           pendingSwitchPath: '',
+          lineSelStart: 0,
+          lineSelEnd: 0,
           seq: 0
         }
       };
 
       const $ = (id) => document.getElementById(id);
+      const topbarEl = document.querySelector('.topbar');
       const workspaceEl = $('workspace');
       const tabBtns = Array.from(document.querySelectorAll('.tab-btn'));
       const tabPanels = {
         browse: $('panel-browse'),
         artifacts: $('panel-artifacts'),
-        pins: $('panel-pins')
+        pins: $('panel-pins'),
+        search: $('panel-search'),
+        accounts: $('panel-accounts')
       };
 
+      const btnSmbToggle = $('btn-smb-toggle');
       const btnHiddenToggle = $('btn-hidden-toggle');
       const btnDblClickToggle = $('btn-dblclick-toggle');
       const btnRefresh = $('btn-refresh');
 
       const btnParent = $('btn-parent');
       const btnHome = $('btn-home');
+      const topProgressEl = $('top-progress');
+      const pathBreadcrumbs = $('path-breadcrumbs');
+      const pathEditBtn = $('path-edit-btn');
       const pathInput = $('path-input');
       const btnPinDir = $('btn-pin-dir');
       const filterInput = $('filter-input');
@@ -1266,6 +2053,16 @@
       const btnPinCurrentFromTab = $('btn-pin-current-from-tab');
       const pinsListWrap = $('pins-list-wrap');
 
+      const searchInput = $('search-input');
+      const btnClearSearch = $('btn-clear-search');
+      const btnRunSearch = $('btn-run-search');
+      const searchFilterBtns = Array.from(document.querySelectorAll('button[data-search-filter]'));
+      const searchMetaEl = $('search-meta');
+      const searchListWrap = $('search-list-wrap');
+      const accountsVaultLabel = $('accounts-vault-label');
+      const accountsActivePill = $('accounts-active-pill');
+      const accountsWrap = $('accounts-wrap');
+
       const previewDrawer = $('preview-drawer');
       const previewResizer = $('preview-resizer');
       const previewIcon = $('preview-icon');
@@ -1279,7 +2076,10 @@
       const btnMdSource = $('btn-md-source');
       const btnPreviewPin = $('btn-preview-pin');
       const btnPreviewOpen = $('btn-preview-open');
+      const btnPreviewOpenWith = $('btn-preview-open-with');
+      const previewOpenWithMenu = $('preview-open-with-menu');
       const btnPreviewReveal = $('btn-preview-reveal');
+      const btnPreviewCopy = $('btn-preview-copy');
       const btnPreviewQuote = $('btn-preview-quote');
       const btnPreviewEdit = $('btn-preview-edit');
       const btnPreviewSave = $('btn-preview-save');
@@ -1290,10 +2090,178 @@
       const previewBody = $('preview-body');
       const toastEl = $('toast');
 
+      const uiAbort = new AbortController();
+      const { signal } = uiAbort;
       let rpcCounter = 1;
       const pendingRequests = new Map();
       let toastTimer = null;
       let filterDebounceTimer = null;
+      let countdownRaf = null;
+      let countdownLastSec = -1;
+      let filterComposing = false;
+      let bridgeSwitchApplied = false;
+      let lastSyncedLiveQuotaSig = '';
+      let lastSyncedLiveQuotaAt = 0;
+      const appInstanceId = `pf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      const processedIntentIds = new Set();
+      let focusFlashTimer = 0;
+      let navigationIntent = {
+        tab: 'browse',
+        source: 'default', // 'default' | 'tool-result' | 'user' | 'external-switch'
+        priority: 0,
+        expiresAt: 0
+      };
+
+      function isExternalNavLocked() {
+        return navigationIntent.source === 'external-switch' && Date.now() < navigationIntent.expiresAt;
+      }
+
+      function postBridgeToMain(payload, explicitTargetWin = null, explicitOrigin = '*') {
+        const targetWin = explicitTargetWin || (
+          (window.top && window.top !== window)
+            ? window.top
+            : (window.parent && window.parent !== window ? window.parent : null)
+        );
+        if (!targetWin) return;
+        const safeOrigin = explicitOrigin && explicitOrigin !== 'null' ? explicitOrigin : '*';
+        try {
+          targetWin.postMessage({ __agPrismBridge: 'v1', source: 'prism-files', appInstanceId, ...payload }, safeOrigin);
+        } catch {}
+      }
+
+      function focusActiveTabRegion(tab, highlight = false) {
+        requestAnimationFrame(() => {
+          try { window.focus(); } catch {}
+          if (tab === 'accounts') {
+            if (accountsWrap) accountsWrap.scrollTop = 0;
+            const panel = tabPanels.accounts;
+            if (panel && typeof panel.focus === 'function') {
+              try { panel.focus({ preventScroll: true }); } catch {}
+            }
+            if (highlight && accountsWrap) {
+              accountsWrap.classList.remove('is-focus-flash');
+              void accountsWrap.offsetWidth;
+              accountsWrap.classList.add('is-focus-flash');
+              if (focusFlashTimer) clearTimeout(focusFlashTimer);
+              focusFlashTimer = setTimeout(() => {
+                focusFlashTimer = 0;
+                accountsWrap.classList.remove('is-focus-flash');
+              }, 1550);
+            }
+          } else {
+            const tabBtn = tabBtns.find((b) => b.dataset.tab === tab);
+            if (tabBtn && typeof tabBtn.focus === 'function') {
+              try { tabBtn.focus({ preventScroll: true }); } catch {}
+            }
+          }
+        });
+      }
+
+      function navigateFromExternalBridge(tab, { intentId = '', requestId = '', sessionId = '', focus = true, replyWin = null, replyOrigin = '*' } = {}) {
+        if (!['browse', 'artifacts', 'pins', 'search', 'accounts'].includes(tab)) {
+          postBridgeToMain({ type: 'ack', intentId, requestId, sessionId, ok: false, error: 'invalid-tab' }, replyWin, replyOrigin);
+          return;
+        }
+        const alreadyHandled = Boolean(intentId && processedIntentIds.has(intentId));
+        if (intentId) {
+          processedIntentIds.add(intentId);
+          if (processedIntentIds.size > 40) {
+            const first = processedIntentIds.values().next().value;
+            processedIntentIds.delete(first);
+          }
+        }
+        bridgeSwitchApplied = true;
+        navigationIntent = {
+          tab,
+          source: 'external-switch',
+          priority: 100,
+          expiresAt: Date.now() + 10000
+        };
+        switchTab(tab, { persist: true, fromExternal: true });
+        if (focus) {
+          focusActiveTabRegion(tab, !alreadyHandled);
+        }
+        postBridgeToMain({
+          type: 'ack',
+          intentId,
+          requestId,
+          sessionId,
+          ok: true,
+          activeTab: appState.activeTab,
+          focused: Boolean(focus),
+          initialized: Boolean(appState.initialized)
+        }, replyWin, replyOrigin);
+      }
+
+      function broadcastAccountSummary(d) {
+        if (!d || typeof d !== 'object') return;
+        const accs = Array.isArray(d.accounts) ? d.accounts : [];
+        const activeAcc = accs.find((a) => a.isCurrentActive) || accs.find((a) => a.id === d.activeCredential?.matchedAccountId) || null;
+        postBridgeToMain({
+          type: 'account-summary',
+          summary: {
+            enabled: Boolean(d.enabled),
+            activeAlias: activeAcc?.alias || '',
+            activeEmail: d.activeCredential?.email || activeAcc?.email || '',
+            activeRole: activeAcc?.role || '',
+            accountCount: accs.length,
+            pendingSwitchEmail: d.pendingSwitch?.phase === 'active-swapped' ? (d.pendingSwitch.targetEmail || '') : ''
+          }
+        });
+      }
+
+      async function syncLiveQuotaFromMain(quota) {
+        if (!quota || typeof quota !== 'object') return;
+        const normPct = (v) => {
+          if (v === null || v === undefined || v === '') return null;
+          const n = Number(v);
+          return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n * 10) / 10)) : null;
+        };
+        const p5 = normPct(quota.pct5h);
+        const p7 = normPct(quota.pct7d);
+        if (p5 === null && p7 === null) return;
+        const r5 = typeof quota.reset5hAt === 'string' && !Number.isNaN(Date.parse(quota.reset5hAt)) ? quota.reset5hAt : '';
+        const r7 = typeof quota.reset7dAt === 'string' && !Number.isNaN(Date.parse(quota.reset7dAt)) ? quota.reset7dAt : '';
+        const sig = `${p5 ?? ''}|${p7 ?? ''}|${r5.slice(0, 16)}|${r7.slice(0, 16)}`;
+        const now = Date.now();
+        if (sig === lastSyncedLiveQuotaSig && now - lastSyncedLiveQuotaAt < 45000) return;
+        lastSyncedLiveQuotaSig = sig;
+        lastSyncedLiveQuotaAt = now;
+
+        const args = {};
+        if (p5 !== null) args.window5hPct = p5;
+        if (p7 !== null) args.window7dPct = p7;
+        if (r5) args.reset5hAt = r5;
+        if (r7) args.reset7dAt = r7;
+        try {
+          const res = await callServerTool('prism_quota_sync', args);
+          if (res && res.ok && !res.skipped && appState.accounts.data) {
+            const targetAcc = (appState.accounts.data.accounts || []).find((a) => a.id === res.accountId);
+            if (targetAcc && res.effectiveQuota) {
+              targetAcc.effectiveQuota = res.effectiveQuota;
+              targetAcc.lastQuota = res.effectiveQuota;
+              if (appState.activeTab === 'accounts') renderAccounts();
+            }
+          }
+        } catch {}
+      }
+
+      function setTopProgress(active) {
+        if (!topProgressEl) return;
+        topProgressEl.dataset.active = active ? '1' : '0';
+      }
+
+      window.addEventListener('pagehide', () => {
+        if (toastTimer) clearTimeout(toastTimer);
+        if (filterDebounceTimer) clearTimeout(filterDebounceTimer);
+        if (focusFlashTimer) clearTimeout(focusFlashTimer);
+        if (countdownRaf) cancelAnimationFrame(countdownRaf);
+        for (const pending of pendingRequests.values()) {
+          clearTimeout(pending.timer);
+        }
+        pendingRequests.clear();
+        uiAbort.abort();
+      }, { once: true });
 
       function escapeHtml(value) {
         return String(value ?? '')
@@ -1330,6 +2298,16 @@
         return `${mm}-${dd} ${hh}:${mi}`;
       }
 
+      const HOST_VAR_BRIDGE = {
+        '--primary': '--p-accent',
+        '--background': '--p-bg',
+        '--secondary': '--p-bg-hover',
+        '--muted': '--p-bg-subtle',
+        '--foreground': '--p-text',
+        '--muted-foreground': '--p-text-muted',
+        '--sidebar-border': '--p-border'
+      };
+
       function applyHostContext(ctx) {
         if (!ctx || typeof ctx !== 'object') return;
         appState.hostContext = { ...appState.hostContext, ...ctx };
@@ -1343,6 +2321,8 @@
           for (const [k, v] of Object.entries(vars)) {
             if (typeof k === 'string' && k.startsWith('--') && typeof v === 'string' && v.trim()) {
               document.documentElement.style.setProperty(k, v);
+              const mapped = HOST_VAR_BRIDGE[k];
+              if (mapped) document.documentElement.style.setProperty(mapped, v);
             }
           }
         }
@@ -1435,6 +2415,243 @@
         }
       }
 
+      async function copyTextSafe(text) {
+        const str = String(text ?? '');
+        if (!str) return false;
+        try {
+          if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            await navigator.clipboard.writeText(str);
+            return true;
+          }
+        } catch {}
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = str;
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          ta.style.pointerEvents = 'none';
+          document.body.appendChild(ta);
+          ta.select();
+          const ok = document.execCommand('copy');
+          document.body.removeChild(ta);
+          return ok;
+        } catch {
+          return false;
+        }
+      }
+
+      async function openConversationUri(uri) {
+        if (!uri) return false;
+        try {
+          const res = await sendRequest('ui/open-link', { url: uri }, 8000);
+          if (!res || !res.isError) {
+            showToast('已请求宿主打开会话');
+            return true;
+          }
+        } catch {}
+        try {
+          const res2 = await sendRequest('com.google.antigravity/toggle-aux-pane', {
+            tabType: 'fileView',
+            uri
+          }, 8000);
+          if (!res2 || !res2.isError) {
+            showToast('已请求宿主打开会话');
+            return true;
+          }
+        } catch {}
+        const copied = await copyTextSafe(uri);
+        showToast(copied ? `当前宿主暂不支持直接跳转，已复制 ${uri}` : `会话地址：${uri}`);
+        return false;
+      }
+
+      async function loadOpenTargets() {
+        if (appState.openTargets.loaded || appState.openTargets.loading) return appState.openTargets.items;
+        appState.openTargets.loading = true;
+        try {
+          const res = await callServerTool('list_open_targets', {});
+          appState.openTargets.items = Array.isArray(res?.targets) ? res.targets : [];
+          appState.openTargets.loaded = true;
+        } catch {
+          appState.openTargets.items = [];
+        } finally {
+          appState.openTargets.loading = false;
+          renderPreviewHeaderOnly();
+        }
+        return appState.openTargets.items;
+      }
+
+      function closeOpenWithMenu() {
+        if (!appState.openTargets.menuOpen) return;
+        appState.openTargets.menuOpen = false;
+        previewOpenWithMenu.hidden = true;
+        btnPreviewOpenWith.setAttribute('aria-expanded', 'false');
+      }
+
+      function renderOpenWithMenu() {
+        const items = appState.openTargets.items;
+        if (appState.openTargets.loading) {
+          previewOpenWithMenu.innerHTML = '<div class="open-with-empty">正在检测本机程序…</div>';
+          return;
+        }
+        if (!items.length) {
+          previewOpenWithMenu.innerHTML = '<div class="open-with-empty">未检测到已安装的编辑器或终端</div>';
+          return;
+        }
+        const editors = items.filter((t) => t.kind === 'editor');
+        const terminals = items.filter((t) => t.kind === 'terminal');
+        const parts = [];
+        if (editors.length) {
+          parts.push('<div class="open-with-group-label">本地编辑器</div>');
+          for (const t of editors) {
+            parts.push(
+              `<button type="button" class="open-with-item" role="menuitem" data-target-id="${escapeHtml(t.id)}">` +
+                `<span>${escapeHtml(t.name)}</span>` +
+                `<span class="open-with-item-tag">${t.supportsLineCol ? '编辑器' : '应用'}</span>` +
+              `</button>`
+            );
+          }
+        }
+        if (terminals.length) {
+          parts.push('<div class="open-with-group-label">终端打开所在目录</div>');
+          for (const t of terminals) {
+            parts.push(
+              `<button type="button" class="open-with-item" role="menuitem" data-target-id="${escapeHtml(t.id)}">` +
+                `<span>${escapeHtml(t.name)}</span>` +
+                `<span class="open-with-item-tag">终端</span>` +
+              `</button>`
+            );
+          }
+        }
+        previewOpenWithMenu.innerHTML = parts.join('');
+      }
+
+      async function togglePreviewOpenWithMenu() {
+        if (appState.openTargets.menuOpen) {
+          closeOpenWithMenu();
+          return;
+        }
+        if (!appState.openTargets.loaded) {
+          appState.openTargets.menuOpen = true;
+          btnPreviewOpenWith.setAttribute('aria-expanded', 'true');
+          previewOpenWithMenu.hidden = false;
+          renderOpenWithMenu();
+          positionPreviewOpenWithMenu();
+          await loadOpenTargets();
+          if (!appState.openTargets.menuOpen) return;
+        } else {
+          appState.openTargets.menuOpen = true;
+          btnPreviewOpenWith.setAttribute('aria-expanded', 'true');
+          previewOpenWithMenu.hidden = false;
+        }
+        renderOpenWithMenu();
+        positionPreviewOpenWithMenu();
+      }
+
+      function positionPreviewOpenWithMenu() {
+        const rect = btnPreviewOpenWith.getBoundingClientRect();
+        const menuW = Math.max(180, previewOpenWithMenu.offsetWidth || 190);
+        const menuH = Math.min(260, previewOpenWithMenu.offsetHeight || 160);
+        let left = Math.min(window.innerWidth - menuW - 8, Math.max(8, rect.right - menuW));
+        let top = rect.bottom + 4;
+        if (top + menuH > window.innerHeight - 8 && rect.top - menuH - 4 > 8) {
+          top = rect.top - menuH - 4;
+        }
+        previewOpenWithMenu.style.left = `${Math.round(left)}px`;
+        previewOpenWithMenu.style.top = `${Math.round(top)}px`;
+      }
+
+      async function invokeOpenWithTarget(targetId, targetPath) {
+        closeOpenWithMenu();
+        if (!targetId || !targetPath) return;
+        try {
+          const res = await callServerTool('open_with_target', { targetId, path: targetPath });
+          if (res && res.ok === false) {
+            showToast(res.error || '打开失败', true);
+            return;
+          }
+          showToast(`已通过 ${res?.targetName || targetId} 打开`);
+        } catch (err) {
+          showToast(err?.message || '打开失败', true);
+        }
+      }
+
+      function highlightLiteralHtml(snippet, query) {
+        const text = String(snippet ?? '');
+        const q = String(query ?? '').trim();
+        if (!q) return escapeHtml(text);
+        const lowerText = text.toLowerCase();
+        const lowerQ = q.toLowerCase();
+        const qLen = lowerQ.length;
+        const out = [];
+        let cursor = 0;
+        let guard = 0;
+        while (cursor < text.length && guard < 40) {
+          const idx = lowerText.indexOf(lowerQ, cursor);
+          if (idx === -1) {
+            out.push(escapeHtml(text.slice(cursor)));
+            break;
+          }
+          if (idx > cursor) {
+            out.push(escapeHtml(text.slice(cursor, idx)));
+          }
+          out.push(`<mark class="search-hl">${escapeHtml(text.slice(idx, idx + qLen))}</mark>`);
+          cursor = idx + qLen;
+          guard++;
+        }
+        if (guard >= 40 && cursor < text.length) {
+          out.push(escapeHtml(text.slice(cursor)));
+        }
+        return out.join('');
+      }
+
+      async function runTranscriptSearch() {
+        const q = searchInput.value.trim();
+        appState.search.query = q;
+        btnClearSearch.hidden = !searchInput.value;
+        if (!q) {
+          appState.search.searched = false;
+          appState.search.results = [];
+          appState.search.total = 0;
+          appState.search.error = '';
+          renderSearch();
+          return;
+        }
+        const seq = ++appState.search.seq;
+        appState.search.loading = true;
+        appState.search.error = '';
+        renderSearch();
+        try {
+          const res = await callServerTool('search_transcripts', {
+            query: q,
+            filter: appState.search.filter,
+            limit: 40
+          });
+          if (seq !== appState.search.seq) return;
+          appState.search.loading = false;
+          appState.search.searched = true;
+          if (res && res.ok === false) {
+            appState.search.error = res.error || '检索失败';
+            appState.search.results = [];
+            appState.search.total = 0;
+          } else {
+            appState.search.results = Array.isArray(res?.results) ? res.results : [];
+            appState.search.total = Number(res?.total) || appState.search.results.length;
+            appState.search.scannedSessions = Number(res?.scannedSessions) || 0;
+            appState.search.durationMs = Number(res?.durationMs) || 0;
+            appState.search.truncated = Boolean(res?.truncated);
+          }
+          renderSearch();
+        } catch (err) {
+          if (seq !== appState.search.seq) return;
+          appState.search.loading = false;
+          appState.search.searched = true;
+          appState.search.error = err?.message || '检索失败';
+          appState.search.results = [];
+          renderSearch();
+        }
+      }
+
       // Safe XSS-escaped Markdown Renderer
       function sanitizeHref(rawUrl) {
         const trimmed = String(rawUrl || '').trim();
@@ -1498,7 +2715,7 @@
                /^\s*\|?\s*:?-{3,}:?\s*\|?\s*$/.test(line) && line.includes('|');
       }
 
-      function renderMarkdownToHtml(markdownText) {
+      function renderMarkdownToHtml(markdownText, depth = 0) {
         const lines = String(markdownText || '').replace(/\r\n?/g, '\n').split('\n');
         const out = [];
         let i = 0;
@@ -1559,7 +2776,11 @@
               quoteLines.push(lines[i].replace(/^\s*>\s?/, ''));
               i++;
             }
-            out.push(`<blockquote>${renderMarkdownToHtml(quoteLines.join('\n'))}</blockquote>`);
+            if (depth >= 16) {
+              out.push(`<p>${escapeHtml(quoteLines.join('\n')).replace(/\n/g, '<br />')}</p>`);
+            } else {
+              out.push(`<blockquote>${renderMarkdownToHtml(quoteLines.join('\n'), depth + 1)}</blockquote>`);
+            }
             continue;
           }
 
@@ -1629,27 +2850,59 @@
         return out.join('\n');
       }
 
-      // Data loaders
-      async function navigateToDir(dirPath, query = appState.browse.query) {
+      // Data loaders & 0ms local directory filter
+      function filterEntriesLocal(rawList, query) {
+        const q = String(query || '').trim().toLowerCase();
+        if (!q) return rawList.slice();
+        return rawList.filter((item) => String(item?.name || '').toLowerCase().includes(q));
+      }
+
+      async function navigateToDir(dirPath, query = appState.browse.query, { force = false } = {}) {
+        const cleanQuery = String(query || '');
+        const normTarget = String(dirPath || '');
+        // Fast path: 0ms client-side filter when full directory entries are already cached locally
+        if (
+          !force &&
+          normTarget &&
+          normTarget === appState.browse.rawDir &&
+          !appState.browse.truncated &&
+          Array.isArray(appState.browse.rawEntries)
+        ) {
+          appState.browse.query = cleanQuery;
+          appState.browse.entries = filterEntriesLocal(appState.browse.rawEntries, cleanQuery);
+          renderBrowse();
+          return;
+        }
+
         const seq = ++appState.browse.seq;
         appState.browse.loading = true;
-        renderBrowse();
+        setTopProgress(true);
+        if (!appState.browse.entries.length) renderBrowse();
         try {
           const res = await callServerTool('list_directory', {
-            dir: dirPath || '',
+            dir: normTarget,
             showHidden: Boolean(appState.prefs.showHidden),
-            query: query || ''
+            query: cleanQuery
           });
           if (seq !== appState.browse.seq) return;
           appState.browse.loading = false;
+          setTopProgress(false);
           if (res) {
             appState.browse.ok = res.ok !== false;
             appState.browse.error = res.error || '';
-            appState.browse.dir = res.dir || dirPath || '';
+            appState.browse.dir = res.dir || normTarget;
             appState.browse.parent = res.parent || '';
             appState.browse.total = Number(res.total) || 0;
             appState.browse.truncated = Boolean(res.truncated);
-            appState.browse.entries = Array.isArray(res.entries) ? res.entries : [];
+            const entries = Array.isArray(res.entries) ? res.entries : [];
+            appState.browse.entries = entries;
+            if (!cleanQuery && !res.truncated && res.ok !== false) {
+              appState.browse.rawDir = appState.browse.dir;
+              appState.browse.rawEntries = entries;
+            } else if (cleanQuery === '' && res.truncated) {
+              appState.browse.rawDir = '';
+              appState.browse.rawEntries = null;
+            }
             if (typeof res.platformLabel === 'string' && res.platformLabel) {
               appState.platformLabel = res.platformLabel;
             }
@@ -1662,6 +2915,7 @@
         } catch (err) {
           if (seq !== appState.browse.seq) return;
           appState.browse.loading = false;
+          setTopProgress(false);
           appState.browse.ok = false;
           appState.browse.error = err?.message || '读取目录失败';
           renderBrowse();
@@ -1709,8 +2963,10 @@
           appState.prefs = {
             pinnedPaths: Array.isArray(res.state.pinnedPaths) ? res.state.pinnedPaths : [],
             lastPath: res.state.lastPath || appState.prefs.lastPath,
+            lastTab: ['browse', 'artifacts', 'pins', 'search', 'accounts'].includes(res.state.lastTab) ? res.state.lastTab : appState.prefs.lastTab,
             showHidden: Boolean(res.state.showHidden),
-            doubleClickAction: res.state.doubleClickAction === 'open_tab' ? 'open_tab' : 'reveal'
+            doubleClickAction: res.state.doubleClickAction === 'open_tab' ? 'open_tab' : 'reveal',
+            allowLanSmb: Boolean(res.state.allowLanSmb)
           };
         }
         if (Array.isArray(res.pinnedItems)) {
@@ -1773,6 +3029,8 @@
         appState.preview.dirty = false;
         appState.preview.conflictMsg = '';
         appState.preview.pendingSwitchPath = '';
+        appState.preview.lineSelStart = 0;
+        appState.preview.lineSelEnd = 0;
         renderPreviewDrawer();
 
         try {
@@ -1861,23 +3119,70 @@
         return sel.toString();
       }
 
+      function getLineRangeSelection() {
+        const s = Number(appState.preview.lineSelStart) || 0;
+        const e = Number(appState.preview.lineSelEnd) || 0;
+        if (s <= 0) return null;
+        const start = e > 0 ? Math.min(s, e) : s;
+        const end = e > 0 ? Math.max(s, e) : s;
+        return { start, end };
+      }
+
       async function handleQuoteSelection() {
         const prev = appState.preview.data;
         if (!prev?.path) return;
+        const canAttach = Boolean(appState.hostCapabilities?.updateModelContext);
         const selected = getSelectedPreviewText().trim();
         if (selected) {
           const payload = `来自 @${prev.path} 的选段：\n\`\`\`\n${selected}\n\`\`\``;
-          const ok = await attachContext(payload);
-          if (ok) showToast('已引用选中文本到对话');
-        } else {
+          if (canAttach) {
+            const ok = await attachContext(payload);
+            if (ok) showToast('已引用选中文本到对话');
+          } else {
+            const ok = await copyTextSafe(payload);
+            showToast(ok ? '已复制选中文本引用（Ctrl+V 粘贴给 AI）' : '复制失败', !ok);
+          }
+          return;
+        }
+        const range = getLineRangeSelection();
+        if (range && typeof prev.text === 'string') {
+          const lines = prev.text.split('\n');
+          const start = Math.max(1, Math.min(lines.length, range.start));
+          const end = Math.max(start, Math.min(lines.length, range.end));
+          const refTag = start === end ? `@${prev.path}#L${start}` : `@${prev.path}#L${start}-L${end}`;
+          const sliceText = lines.slice(start - 1, end).join('\n');
+          const payload = `来自 ${refTag} 的代码片段：\n\`\`\`\n${sliceText}\n\`\`\``;
+          if (canAttach) {
+            const ok = await attachContext(payload);
+            if (ok) showToast(`已引用 ${start === end ? `L${start}` : `L${start}-L${end}`} 到对话`);
+          } else {
+            const ok = await copyTextSafe(refTag);
+            showToast(ok ? `已复制行段引用 ${refTag}` : '复制失败', !ok);
+          }
+          return;
+        }
+        if (canAttach) {
           const ok = await attachContext(`@${prev.path}`);
           if (ok) showToast('已引用文件路径到对话');
+        } else {
+          const ok = await copyTextSafe(`@${prev.path}`);
+          showToast(ok ? `已复制 @${prev.path}` : '复制失败', !ok);
         }
       }
 
-      function switchTab(tab) {
-        if (!['browse', 'artifacts', 'pins'].includes(tab)) return;
+      function switchTab(tab, { persist = false, fromExternal = false } = {}) {
+        if (!['browse', 'artifacts', 'pins', 'search', 'accounts'].includes(tab)) return;
+        closeOpenWithMenu();
         appState.activeTab = tab;
+        if (!fromExternal && persist) {
+          navigationIntent = { tab, source: 'user', priority: 80, expiresAt: 0 };
+        }
+        if (persist && appState.prefs.lastTab !== tab) {
+          appState.prefs.lastTab = tab;
+          if (appState.initialized) {
+            callServerTool('update_state', { lastTab: tab }).catch(() => {});
+          }
+        }
         for (const btn of tabBtns) {
           const active = btn.dataset.tab === tab;
           btn.classList.toggle('is-active', active);
@@ -1886,15 +3191,36 @@
         for (const [k, panel] of Object.entries(tabPanels)) {
           panel.classList.toggle('is-active', k === tab);
         }
+        renderTopbar();
         if (tab === 'artifacts' && !appState.artifacts.loaded && !appState.artifacts.loading) {
           loadArtifacts();
         } else if (tab === 'pins' && !appState.pins.loaded && !appState.pins.loading) {
           loadPins();
+        } else if (tab === 'search') {
+          renderSearch();
+          searchInput.focus();
+        } else if (tab === 'accounts' && !appState.accounts.loaded && !appState.accounts.loading) {
+          loadAccountsTab({ forceRefresh: false });
         }
       }
 
       // Renderers
       function renderTopbar() {
+        const tab = appState.activeTab;
+        const showFileSwitches = tab === 'browse';
+        const showDblClick = tab === 'browse' || tab === 'pins';
+        if (topbarEl) topbarEl.classList.toggle('is-compact-controls', !showFileSwitches && !showDblClick);
+        btnSmbToggle.hidden = !showFileSwitches;
+        btnHiddenToggle.hidden = !showFileSwitches;
+        btnDblClickToggle.hidden = !showDblClick;
+
+        const allowLanSmb = Boolean(appState.prefs.allowLanSmb);
+        btnSmbToggle.classList.toggle('is-active', allowLanSmb);
+        btnSmbToggle.setAttribute('aria-pressed', allowLanSmb ? 'true' : 'false');
+        btnSmbToggle.title = allowLanSmb
+          ? '已开启「允许局域网 NAS/SMB 路径」（仅放行私网/Tailscale/本地 UNC，拒绝公网主机）'
+          : '当前关闭「允许局域网 NAS/SMB 路径」（默认关闭，点击手动开启）';
+
         const showHidden = Boolean(appState.prefs.showHidden);
         btnHiddenToggle.classList.toggle('is-active', showHidden);
         btnHiddenToggle.setAttribute('aria-pressed', showHidden ? 'true' : 'false');
@@ -1910,12 +3236,96 @@
           : `双击文件将在 ${appState.platformLabel || '系统目录'} 中定位（点击切换为原生打开）`;
       }
 
+      function buildBreadcrumbSegments(rawDir) {
+        const dir = String(rawDir || '').trim();
+        if (!dir) return [];
+        const isUnc = dir.startsWith('\\\\') || dir.startsWith('//');
+        if (isUnc) {
+          const clean = dir.replace(/\//g, '\\').replace(/^\\+/, '');
+          const parts = clean.split('\\').filter(Boolean);
+          if (!parts.length) return [];
+          const segs = [];
+          if (parts.length >= 2) {
+            let acc = `\\\\${parts[0]}\\${parts[1]}`;
+            segs.push({ label: acc, path: acc });
+            for (let i = 2; i < parts.length; i++) {
+              acc = `${acc}\\${parts[i]}`;
+              segs.push({ label: parts[i], path: acc });
+            }
+          } else {
+            segs.push({ label: `\\\\${parts[0]}`, path: `\\\\${parts[0]}` });
+          }
+          return segs;
+        }
+        const winMatch = dir.match(/^([A-Za-z]:)(?:[\\/](.*))?$/);
+        if (winMatch) {
+          const drive = `${winMatch[1].toUpperCase()}\\`;
+          const segs = [{ label: drive, path: drive }];
+          const rest = (winMatch[2] || '').split(/[\\/]+/).filter(Boolean);
+          let acc = drive;
+          for (const part of rest) {
+            acc = acc.endsWith('\\') ? `${acc}${part}` : `${acc}\\${part}`;
+            segs.push({ label: part, path: acc });
+          }
+          return segs;
+        }
+        const segs = [{ label: '/', path: '/' }];
+        const rest = dir.split('/').filter(Boolean);
+        let acc = '';
+        for (const part of rest) {
+          acc += `/${part}`;
+          segs.push({ label: part, path: acc });
+        }
+        return segs;
+      }
+
+      function enterPathEditMode() {
+        appState.browse.editingPath = true;
+        pathBreadcrumbs.hidden = true;
+        pathInput.hidden = false;
+        pathInput.value = appState.browse.dir || '';
+        pathInput.focus();
+        pathInput.select();
+      }
+
+      function exitPathEditMode() {
+        appState.browse.editingPath = false;
+        pathInput.hidden = true;
+        pathBreadcrumbs.hidden = false;
+      }
+
+      function renderPathBreadcrumbs(dirPath) {
+        if (!pathBreadcrumbs) return;
+        const editing = Boolean(appState.browse.editingPath);
+        pathBreadcrumbs.hidden = editing;
+        pathInput.hidden = !editing;
+        if (editing) return;
+        const segs = buildBreadcrumbSegments(dirPath);
+        const editBtnHtml = '<button type="button" id="path-edit-btn" class="path-edit-trigger" title="编辑路径 (Ctrl+L)" aria-label="编辑路径">✎</button>';
+        if (!segs.length) {
+          pathBreadcrumbs.innerHTML = `<span class="crumb-sep" style="padding-left:4px;">选择目录或按 Ctrl+L 输入路径</span>${editBtnHtml}`;
+          return;
+        }
+        // Keep breadcrumb compact on narrow widths while still preserving root + recent parent segments
+        const displaySegs = segs.length > 5
+          ? [segs[0], { label: '…', path: segs[segs.length - 4].path, isEllipsis: true }, ...segs.slice(-3)]
+          : segs;
+        const html = displaySegs.map((s, idx) => {
+          const isLast = idx === displaySegs.length - 1;
+          const sep = idx > 0 ? '<span class="crumb-sep" aria-hidden="true">›</span>' : '';
+          return `${sep}<button type="button" class="crumb-btn${isLast ? ' is-last' : ''}" data-crumb-path="${escapeHtml(s.path)}" title="${escapeHtml(s.path)}">${escapeHtml(s.label)}</button>`;
+        }).join('');
+        pathBreadcrumbs.innerHTML = `${html}${editBtnHtml}`;
+        pathBreadcrumbs.scrollLeft = pathBreadcrumbs.scrollWidth;
+      }
+
       function renderBrowse() {
         const b = appState.browse;
         btnParent.disabled = !b.parent;
         if (document.activeElement !== pathInput) {
           pathInput.value = b.dir || '';
         }
+        renderPathBreadcrumbs(b.dir || '');
         const pinned = Boolean(b.dir) && appState.prefs.pinnedPaths.includes(b.dir);
         btnPinDir.classList.toggle('is-star-active', pinned);
         btnPinDir.setAttribute('aria-pressed', pinned ? 'true' : 'false');
@@ -2088,6 +3498,70 @@
         pinsListWrap.innerHTML = `<ul class="item-list" role="list">${rowsHtml}</ul>`;
       }
 
+      function renderSearch() {
+        const s = appState.search;
+        btnClearSearch.hidden = !searchInput.value;
+        for (const btn of searchFilterBtns) {
+          const active = btn.dataset.searchFilter === s.filter;
+          btn.classList.toggle('is-active', active);
+          btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+        }
+
+        if (s.loading) {
+          searchMetaEl.textContent = '正在扫描历史会话…';
+          searchListWrap.innerHTML = '<div class="empty-state">正在检索最近会话记录…</div>';
+          return;
+        }
+
+        if (s.error) {
+          searchMetaEl.textContent = '检索出错';
+          searchListWrap.innerHTML = `<div class="empty-state">${escapeHtml(s.error)}</div>`;
+          return;
+        }
+
+        if (!s.searched) {
+          searchMetaEl.textContent = '跨会话脱敏全文检索';
+          searchListWrap.innerHTML = '<div class="empty-state">输入关键词检索最近 80 个会话的对话正文、代码块与工具命令（自动脱敏敏感凭据）</div>';
+          return;
+        }
+
+        const truncLabel = s.truncated ? '（已达上限）' : '';
+        searchMetaEl.textContent = `${s.results.length} 条结果 · ${s.scannedSessions} 会话 · ${s.durationMs}ms${truncLabel}`;
+
+        if (s.results.length === 0) {
+          searchListWrap.innerHTML = `<div class="empty-state">未在最近 ${s.scannedSessions} 个会话中找到「${escapeHtml(s.query)}」</div>`;
+          return;
+        }
+
+        const roleLabelMap = { user: '用户', assistant: '助手', tool: '工具', system: '系统' };
+        const cardsHtml = s.results.map((item, idx) => {
+          const roleLabel = roleLabelMap[item.role] || item.role || '记录';
+          const kindLabel = item.kind === 'code_cmd' ? '代码/命令' : '正文';
+          const ago = formatTimeAgo(item.mtimeMs);
+          const snippetHtml = highlightLiteralHtml(item.snippet || '', s.query);
+          return (
+            `<article class="search-card" data-search-index="${idx}">` +
+              `<div class="search-card-head">` +
+                `<div class="search-card-meta">` +
+                  `<span class="pill">会话 ${escapeHtml(item.shortSessionId || '')}</span>` +
+                  `<span class="pill">${escapeHtml(roleLabel)}</span>` +
+                  `<span class="pill">${escapeHtml(kindLabel)}</span>` +
+                  (ago ? `<span>${escapeHtml(ago)}</span>` : '') +
+                `</div>` +
+                `<div class="search-card-actions">` +
+                  `<button type="button" class="mini-btn" data-search-action="copy" data-index="${idx}">复制片段</button>` +
+                  `<button type="button" class="mini-btn is-primary" data-search-action="open-conv" data-index="${idx}">打开会话</button>` +
+                  `<button type="button" class="mini-btn" data-search-action="reveal-session" data-index="${idx}">定位目录</button>` +
+                `</div>` +
+              `</div>` +
+              `<pre class="search-snippet">${snippetHtml}</pre>` +
+            `</article>`
+          );
+        }).join('');
+
+        searchListWrap.innerHTML = `<div class="search-results">${cardsHtml}</div>`;
+      }
+
       function renderPreviewBanner() {
         const pv = appState.preview;
         if (pv.pendingSwitchPath) {
@@ -2147,8 +3621,17 @@
         btnPreviewPin.title = pinned ? '取消收藏此文件' : '收藏此文件';
 
         btnPreviewOpen.hidden = !(data?.uri && !isProtected && !appState.nativeTabUnsupported);
+        const canOpenWith = Boolean(data?.path && !isProtected && (!appState.openTargets.loaded || appState.openTargets.items.length > 0));
+        btnPreviewOpenWith.hidden = !canOpenWith;
         btnPreviewReveal.hidden = !data?.path;
-        btnPreviewQuote.hidden = !(data?.path && !isProtected && appState.hostCapabilities?.updateModelContext);
+        btnPreviewCopy.hidden = !(data?.ok && isText && typeof data.text === 'string' && !pv.editing);
+        const range = getLineRangeSelection();
+        const showQuote = Boolean(data?.path && !isProtected && (appState.hostCapabilities?.updateModelContext || range));
+        btnPreviewQuote.hidden = !showQuote;
+        btnPreviewQuote.textContent = range
+          ? (range.start === range.end ? `引用 L${range.start}` : `引用 L${range.start}-${range.end}`)
+          : '引用选段';
+        btnPreviewQuote.classList.toggle('is-primary', Boolean(range));
 
         const canEdit = Boolean(data?.ok && data.editable === true);
         btnPreviewEdit.hidden = !canEdit || pv.editing;
@@ -2266,14 +3749,18 @@
           return;
         }
 
-        // Source / plain text view with non-selectable line number gutter
+        // Source / plain text view with clickable line numbers (click line, Shift+click range -> @path#L10-L25)
         const text = String(data.text ?? '');
         const lineCount = text === '' ? 1 : text.split('\n').length;
+        const range = getLineRangeSelection();
         const nums = [];
-        for (let n = 1; n <= lineCount; n++) nums.push(n);
+        for (let n = 1; n <= lineCount; n++) {
+          const isSel = Boolean(range && n >= range.start && n <= range.end);
+          nums.push(`<span class="code-ln${isSel ? ' is-selected' : ''}" data-line="${n}" title="点击选中行号（Shift+点击选区间）">${n}</span>`);
+        }
         previewBody.innerHTML =
           `<div class="code-view">` +
-            `<div class="code-gutter" aria-hidden="true">${nums.join('\n')}</div>` +
+            `<div class="code-gutter" aria-label="代码行号（点击或 Shift+点击选中引用区间）">${nums.join('')}</div>` +
             `<pre class="code-content"><code>${escapeHtml(text)}</code></pre>` +
           `</div>`;
       }
@@ -2283,7 +3770,503 @@
         renderBrowse();
         renderArtifacts();
         renderPins();
+        renderSearch();
+        renderAccounts();
         renderPreviewDrawer();
+      }
+
+      async function loadAccountsTab({ forceRefresh = false } = {}) {
+        const seq = ++appState.accounts.seq;
+        appState.accounts.loading = true;
+        appState.accounts.error = '';
+        setTopProgress(true);
+        if (!appState.accounts.data) renderAccounts();
+        try {
+          const [st, mem] = await Promise.all([
+            callServerTool('accounts_status', { forceRefresh: Boolean(forceRefresh) }),
+            callServerTool('handoff_memory_list', { limit: 8 }).catch(() => ({ entries: [] }))
+          ]);
+          if (seq !== appState.accounts.seq) return;
+          appState.accounts.data = st || null;
+          appState.accounts.memories = Array.isArray(mem?.entries) ? mem.entries : [];
+          appState.accounts.loaded = true;
+          appState.accounts.loading = false;
+          if ((st?.accounts?.length || 0) < 2) {
+            appState.accounts.openSections.guide = true;
+          }
+          broadcastAccountSummary(st);
+          setTopProgress(false);
+        } catch (err) {
+          if (seq !== appState.accounts.seq) return;
+          appState.accounts.loading = false;
+          setTopProgress(false);
+          appState.accounts.error = err?.message || '读取账号接力状态失败';
+        }
+        renderAccounts();
+      }
+
+      function stopCountdown(clearState = true) {
+        if (countdownRaf) {
+          cancelAnimationFrame(countdownRaf);
+          countdownRaf = null;
+        }
+        countdownLastSec = -1;
+        if (clearState) {
+          appState.accounts.countdown = null;
+          renderAccounts();
+        }
+      }
+
+      function formatAccountErrorMessage(errOrMsg, fallback = '操作失败') {
+        const msg = String(errOrMsg?.message || errOrMsg || '').trim() || fallback;
+        if (/accounts_relaunch_client.*not found|permission_denied.*accounts_relaunch_client/i.test(msg)) {
+          return '后台 prism-files 插件进程还是旧版（尚未加载自动重启工具）；请先手动重启一次 Antigravity（或点顶部更新重启），重启后每次切号即可全自动重启生效。';
+        }
+        if (/凭据管理器调用失败:\s*exit 1\b/i.test(msg)) {
+          return `${msg}（后台插件进程工作目录已过期，请在左侧「技能与自定义 → Plugins」将 prism-files 关闭重开一次或重载窗口后重试）`;
+        }
+        return msg;
+      }
+
+      async function executeAccountSwitchNow(targetId, saveSnapshot = true, autoRelaunch = true, autoCaptureUncaptured = true) {
+        if (!targetId || appState.accounts.switching) return;
+        stopCountdown(false);
+        appState.accounts.switching = true;
+        if (appState.accounts.countdown) appState.accounts.countdown.paused = true;
+        setTopProgress(true);
+        renderAccounts();
+        try {
+          const res = await callServerTool('accounts_switch', {
+            targetId,
+            dryRun: false,
+            saveSnapshot,
+            autoRelaunch: Boolean(autoRelaunch),
+            autoCaptureUncaptured: Boolean(autoCaptureUncaptured),
+            handoff: { cwd: appState.browse.dir || appState.homeDir || '' }
+          });
+          appState.accounts.countdown = null;
+          appState.accounts.switching = false;
+          setTopProgress(false);
+          if (res && res.ok) {
+            appState.accounts.lastSwitchResult = res;
+            showToast(res.message || '账号凭据已安全切换');
+            await loadAccountsTab({ forceRefresh: false });
+          } else {
+            showToast(formatAccountErrorMessage(res?.error, '切换失败'), true);
+            renderAccounts();
+          }
+        } catch (err) {
+          appState.accounts.switching = false;
+          setTopProgress(false);
+          showToast(formatAccountErrorMessage(err, '切换失败'), true);
+          renderAccounts();
+        }
+      }
+
+      function tickCountdownFrame() {
+        const cd = appState.accounts.countdown;
+        if (!cd) {
+          stopCountdown(false);
+          return;
+        }
+        if (cd.paused || appState.accounts.switching) {
+          countdownRaf = null;
+          return;
+        }
+        const remainMs = Math.max(0, cd.endAtMs - Date.now());
+        if (remainMs <= 0) {
+          executeAccountSwitchNow(cd.targetId, cd.saveSnapshot, cd.autoRelaunch, cd.autoCaptureUncaptured !== false);
+          return;
+        }
+        const fillEl = document.getElementById('acc-cd-fill');
+        const titleEl = document.getElementById('acc-cd-title');
+        const remainSec = Math.ceil(remainMs / 1000);
+        if (fillEl) {
+          const pct = Math.max(0, Math.min(100, (remainMs / Math.max(1, cd.totalMs)) * 100));
+          fillEl.style.width = `${pct.toFixed(2)}%`;
+        }
+        if (titleEl && remainSec !== countdownLastSec) {
+          countdownLastSec = remainSec;
+          titleEl.textContent = cd.autoRelaunch
+            ? `⏱ 即将切换并重启至 ${cd.alias} (${remainSec}s)`
+            : `⏱ 即将切换至 ${cd.alias} (${remainSec}s)`;
+        }
+        countdownRaf = requestAnimationFrame(tickCountdownFrame);
+      }
+
+      function startSwitchCountdown(account) {
+        if (!account) return;
+        stopCountdown(false);
+        const totalSec = Math.max(3, Math.min(15, Number(appState.accounts.data?.countdownSeconds) || 5));
+        const totalMs = totalSec * 1000;
+        const autoRelaunch = appState.accounts.data?.autoRelaunchAfterSwitch !== false;
+        appState.accounts.countdown = {
+          targetId: account.id,
+          email: account.email,
+          alias: account.alias || account.email,
+          totalSec,
+          totalMs,
+          endAtMs: Date.now() + totalMs,
+          pausedRemainMs: totalMs,
+          paused: false,
+          saveSnapshot: true,
+          autoRelaunch,
+          autoCaptureUncaptured: true
+        };
+        countdownLastSec = totalSec;
+        renderAccounts();
+        countdownRaf = requestAnimationFrame(tickCountdownFrame);
+      }
+
+      function renderAccounts() {
+        const st = appState.accounts;
+        const d = st.data;
+        if (d) {
+          accountsVaultLabel.textContent = `凭据库: ${d.vault?.backend || '-'} (${d.vault?.ok ? '就绪' : '待检'})`;
+          const act = d.activeCredential;
+          accountsActivePill.textContent = act?.exists ? (act.email || '已登录(未含邮箱)') : '未检测到活跃凭据';
+          accountsActivePill.className = `pill ${act?.exists ? 'pill-ok' : 'pill-warn'}`;
+        }
+
+        if (st.loading && !d) {
+          accountsWrap.innerHTML = '<div class="empty-state">正在检测隔离凭据库与账号状态…</div>';
+          return;
+        }
+        if (st.error && !d) {
+          const isStaleServer = /not found|permission_denied|unknown tool/i.test(st.error);
+          accountsWrap.innerHTML = isStaleServer
+            ? `<article class="relay-card is-warn">` +
+                `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
+                `<p class="relay-sub">界面已更新到 v0.5.0，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
+                `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
+              `</article>`
+            : `<article class="relay-card is-warn">` +
+                `<div class="relay-card-head"><span class="relay-title">读取账号状态失败</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重试</button></div>` +
+                `<p class="relay-sub">${escapeHtml(st.error)}</p>` +
+              `</article>`;
+          return;
+        }
+
+        const parts = [];
+        if (!d || !d.enabled) {
+          parts.push(
+            '<article class="relay-card">' +
+              '<div class="relay-card-head">' +
+                '<span class="relay-title">🔒 主备多账号接力（默认关闭）</span>' +
+                '<span class="pill">物理隔离</span>' +
+              '</div>' +
+              '<p class="relay-sub">1. <strong>绝不触碰本地会话</strong>：仅替换 OS 原生凭据库中的受验 OAuth 凭据，保留全部本地对话、SQLite、brain 产物与 workspace。<br>' +
+              '2. <strong>零明文落盘</strong>：备份存入 Windows 凭据管理器 / macOS Keychain / Linux Secret Service 独立命名空间，元数据文件仅存邮箱与指纹前缀。<br>' +
+              '3. <strong>防串号与原子回滚</strong>：切换前强核验 <code>id_token_email</code>，异常自动回滚原凭据。</p>' +
+              '<div class="relay-form-row">' +
+                '<button type="button" class="ctrl-btn is-primary" data-acc-action="enable">我已了解安全边界，开启账号接力</button>' +
+                '<button type="button" class="ctrl-btn" data-acc-action="verify">仅只读校验本机隔离状态</button>' +
+              '</div>' +
+            '</article>'
+          );
+        } else {
+          const rec = d.recommendation || {};
+          if (d.activeCredential?.unregistered && d.activeCredential?.email) {
+            parts.push(
+              `<article class="relay-card is-warn">` +
+                `<div class="relay-card-head"><span class="relay-title">🛡️ 检测到未捕获的新登录账号</span>` +
+                `<button type="button" class="mini-btn is-primary" data-acc-action="capture-quick">立即备份该新号</button></div>` +
+                `<p class="relay-sub">当前在线 <code>${escapeHtml(d.activeCredential.email)}</code> 尚未加入备份列表；直接切走其他账号时也会<strong>自动为其建立防丢备份槽位</strong>。</p>` +
+              `</article>`
+            );
+          }
+          if (rec.primaryRecovery) {
+            parts.push(
+              `<article class="relay-card is-accent">` +
+                `<div class="relay-card-head"><span class="relay-title">💡 主号恢复提醒</span>` +
+                `<button type="button" class="mini-btn is-primary" data-acc-action="countdown" data-id="${escapeHtml(rec.primaryRecovery.accountId)}">5s 倒计时切回主号</button></div>` +
+                `<p class="relay-sub">${escapeHtml(rec.primaryRecovery.reason)}</p>` +
+              `</article>`
+            );
+          }
+          if (rec.crossFamilyHint) {
+            parts.push(
+              `<article class="relay-card is-warn"><p class="relay-sub">${escapeHtml(rec.crossFamilyHint)}</p></article>`
+            );
+          }
+
+          if (st.countdown) {
+            const cd = st.countdown;
+            const remainMs = cd.paused
+              ? (cd.pausedRemainMs ?? cd.totalMs)
+              : Math.max(0, (cd.endAtMs || Date.now()) - Date.now());
+            const remainSec = Math.ceil(remainMs / 1000);
+            const pct = Math.max(0, Math.min(100, (remainMs / Math.max(1, cd.totalMs)) * 100));
+            const cdActionLabel = cd.autoRelaunch ? '立即切换并重启' : '立即切换';
+            parts.push(
+              `<article class="relay-card is-warn">` +
+                `<div class="relay-card-head">` +
+                  `<span id="acc-cd-title" class="relay-title">${st.switching ? '⏳ 正在执行原子切换…' : (cd.autoRelaunch ? `⏱ 即将切换并重启至 ${escapeHtml(cd.alias)} (${remainSec}s)` : `⏱ 即将切换至 ${escapeHtml(cd.alias)} (${remainSec}s)`)}</span>` +
+                  `<span class="pill">${escapeHtml(cd.email)}</span>` +
+                `</div>` +
+                `<div class="countdown-track"><div id="acc-cd-fill" class="countdown-fill" style="width:${pct.toFixed(2)}%"></div></div>` +
+                `<div class="relay-form-row">` +
+                  `<label style="font-size:11.5px;display:inline-flex;align-items:center;gap:4px;"><input type="checkbox" id="acc-cd-relaunch" ${cd.autoRelaunch ? 'checked' : ''}>切后自动重启 Antigravity</label>` +
+                  `<label style="font-size:11.5px;display:inline-flex;align-items:center;gap:4px;"><input type="checkbox" id="acc-cd-snap" ${cd.saveSnapshot ? 'checked' : ''}>切前落盘 4 要素交接</label>` +
+                `</div>` +
+                `<div class="relay-form-row">` +
+                  `<button type="button" class="mini-btn is-primary" data-acc-action="cd-now" ${st.switching ? 'disabled' : ''}>${cdActionLabel}</button>` +
+                  `<button type="button" class="mini-btn" data-acc-action="cd-pause" ${st.switching ? 'disabled' : ''}>${cd.paused ? '继续' : '暂停'}</button>` +
+                  `<button type="button" class="mini-btn" data-acc-action="cd-cancel" ${st.switching ? 'disabled' : ''}>取消</button>` +
+                `</div>` +
+              `</article>`
+            );
+          }
+
+          if (st.lastSwitchResult) {
+            const sw = st.lastSwitchResult;
+            const autoStarted = Boolean(sw.relaunch?.ok && sw.relaunch?.scheduled);
+            parts.push(
+              `<article class="relay-card is-accent">` +
+                `<div class="relay-card-head">` +
+                  `<span class="relay-title">${autoStarted ? '🚀 凭据切换完成 · 正在自动重启 Antigravity…' : '🔄 凭据切换完成（需重启 Antigravity 生效）'}</span>` +
+                  `<div class="search-card-actions">` +
+                    (!autoStarted ? `<button type="button" class="mini-btn is-primary" data-acc-action="relaunch-now">🚀 立即重启 Antigravity 生效</button>` : '') +
+                    `<button type="button" class="mini-btn" data-acc-action="dismiss-sw">收起</button>` +
+                  `</div>` +
+                `</div>` +
+                `<p class="relay-sub">${escapeHtml(sw.message || '')}</p>` +
+                `<div class="relay-form-row">` +
+                  (sw.externalMemoryPrompt ? `<button type="button" class="mini-btn is-primary" data-acc-action="copy-ext-mem">复制外部 memory_store 同步指令</button>` : '') +
+                  (sw.resumePrompt ? `<button type="button" class="mini-btn" data-acc-action="copy-resume">复制切后「接力」提示</button>` : '') +
+                `</div>` +
+              `</article>`
+            );
+          } else if (d?.pendingSwitch?.phase === 'active-swapped') {
+            parts.push(
+              `<article class="relay-card is-accent">` +
+                `<div class="relay-card-head">` +
+                  `<span class="relay-title">🔄 已切换至 ${escapeHtml(d.pendingSwitch.targetEmail || '目标账号')}（待重启生效）</span>` +
+                  `<button type="button" class="mini-btn is-primary" data-acc-action="relaunch-now">🚀 立即重启 Antigravity 生效</button>` +
+                `</div>` +
+                `<p class="relay-sub">磁盘凭据已完成切换且会话记录 100% 保留，点右侧按钮将安全关闭并重开客户端，自动恢复扩展与原会话。</p>` +
+              `</article>`
+            );
+          }
+
+          const accs = Array.isArray(d.accounts) ? d.accounts : [];
+          if (!accs.length) {
+            parts.push('<div class="empty-state">尚未捕获账号，请先在下方点击「捕获当前活跃账号」把当前主号存入 OS 隔离凭据库</div>');
+          } else {
+            const fmtQuotaEta = (iso) => {
+              if (!iso) return '';
+              const ms = Date.parse(iso) - Date.now();
+              if (!Number.isFinite(ms) || ms <= 0) return '';
+              const mins = Math.ceil(ms / 60000);
+              if (mins < 60) return `${mins}m 后重置`;
+              const hrs = Math.floor(mins / 60);
+              if (hrs < 48) return `${hrs}h${mins % 60 ? (mins % 60) + 'm' : ''} 后重置`;
+              const days = Math.floor(hrs / 24);
+              return `${days}d${hrs % 24 ? (hrs % 24) + 'h' : ''} 后重置`;
+            };
+            const barRow = (label, pct, passed, resetIso) => {
+              if (pct === null || pct === undefined) return '';
+              const n = Math.max(0, Math.min(100, Number(pct)));
+              const cls = n >= 50 ? 'is-ok' : n >= 20 ? 'is-warn' : 'is-danger';
+              const meta = passed
+                ? '<span class="pill pill-ok">预计已满血 100%</span>'
+                : `<span>${n}%${fmtQuotaEta(resetIso) ? ' · ' + escapeHtml(fmtQuotaEta(resetIso)) : ''}</span>`;
+              return (
+                `<div class="quota-bar-row">` +
+                  `<strong>${label}</strong>` +
+                  `<div class="quota-track"><div class="quota-fill ${cls}" style="width:${n}%"></div></div>` +
+                  meta +
+                `</div>`
+              );
+            };
+            const autoRelaunchPref = d.autoRelaunchAfterSwitch !== false;
+            const switchCtaText = autoRelaunchPref ? '⚡ 切换并重启' : '⏱ 5s 倒计时切号';
+            for (const a of accs) {
+              const roleBadge = a.role === 'primary'
+                ? '<span class="pill pill-gold">★ 主账号</span>'
+                : '<span class="pill">备用</span>';
+              const activeBadge = a.isCurrentActive ? '<span class="pill pill-ok">● 当前在线</span>' : '';
+              const backupBadge = a.vaultHasBackup ? '' : '<span class="pill pill-danger">缺备份</span>';
+              const toggleRole = a.role === 'primary' ? 'backup' : 'primary';
+              const toggleRoleText = a.role === 'primary' ? '改备用' : '设为主号';
+              const eff = a.effectiveQuota;
+              const q5Html = eff ? barRow('5h', eff.effective5hPct, eff.reset5hPassed, eff.reset5hAt) : '';
+              const q7Html = eff ? barRow('7d', eff.effective7dPct, eff.reset7dPassed, eff.reset7dAt) : '';
+              const famBits = [];
+              if (eff?.families?.gemini) famBits.push(`Gemini 5h:${eff.families.gemini.pct5h ?? '-'}% / 7d:${eff.families.gemini.pct7d ?? '-'}%`);
+              if (eff?.families?.claude) famBits.push(`Claude 5h:${eff.families.claude.pct5h ?? '-'}% / 7d:${eff.families.claude.pct7d ?? '-'}%`);
+              const quotaBlock = (q5Html || q7Html)
+                ? `<div class="quota-bars">${q5Html}${q7Html}${famBits.length ? `<div class="relay-sub" style="font-size:10.5px;">${escapeHtml(famBits.join(' ｜ '))}</div>` : ''}</div>`
+                : `<p class="relay-sub">尚未记录额度 · 可点左下角「录入额度」或让 AI 自动同步</p>`;
+              const isEditingQuota = st.editingQuotaId === a.id;
+              const editorHtml = isEditingQuota
+                ? `<div class="quota-editor" data-quota-editor="${escapeHtml(a.id)}">` +
+                    `<div class="relay-form-row">` +
+                      `<input type="number" min="0" max="100" class="text-input" style="max-width:86px;" id="qe-5h-${escapeHtml(a.id)}" placeholder="5h 剩余%" value="${eff?.effective5hPct ?? ''}" />` +
+                      `<input type="number" min="0" max="100" class="text-input" style="max-width:86px;" id="qe-7d-${escapeHtml(a.id)}" placeholder="7d 剩余%" value="${eff?.effective7dPct ?? ''}" />` +
+                      `<input type="number" min="0.1" step="0.5" class="text-input" style="max-width:96px;" id="qe-r5h-${escapeHtml(a.id)}" placeholder="5h 几h重置" />` +
+                    `</div>` +
+                    `<input type="text" class="text-input" id="qe-raw-${escapeHtml(a.id)}" placeholder="或直接粘贴额度文本（如 5h 剩余 80% 3h后重置；7d 剩余 45%）" />` +
+                    `<div class="relay-form-row">` +
+                      `<button type="button" class="mini-btn is-primary" data-acc-action="save-quota" data-id="${escapeHtml(a.id)}">保存额度</button>` +
+                      `<button type="button" class="mini-btn" data-acc-action="cancel-quota">取消</button>` +
+                    `</div>` +
+                  `</div>`
+                : '';
+              parts.push(
+                `<article class="relay-card${a.isCurrentActive ? ' is-online' : ''}">` +
+                  `<div class="relay-card-head">` +
+                    `<div class="search-card-meta">${roleBadge}${activeBadge}${backupBadge}<span class="relay-title">${escapeHtml(a.alias || a.email)}</span></div>` +
+                    `<div class="search-card-actions">` +
+                      (!a.isCurrentActive ? `<button type="button" class="mini-btn is-primary" data-acc-action="countdown" data-id="${escapeHtml(a.id)}">${switchCtaText}</button>` : '') +
+                    `</div>` +
+                  `</div>` +
+                  quotaBlock +
+                  editorHtml +
+                  `<p class="relay-sub"><code>${escapeHtml(a.email)}</code> · 指纹 <code>${escapeHtml(a.credHash || '-')}</code> · 最近使用 ${escapeHtml((a.lastUsedAt || '').slice(0, 16).replace('T', ' '))}</p>` +
+                  `<div class="relay-card-foot">` +
+                    `<div class="relay-foot-left">` +
+                      (!a.isCurrentActive ? `<button type="button" class="mini-btn" data-acc-action="dryrun" data-id="${escapeHtml(a.id)}">预演</button>` : '') +
+                      `<button type="button" class="mini-btn" data-acc-action="edit-quota" data-id="${escapeHtml(a.id)}">录入额度</button>` +
+                      `<button type="button" class="mini-btn" data-acc-action="setrole" data-id="${escapeHtml(a.id)}" data-role="${toggleRole}">${toggleRoleText}</button>` +
+                    `</div>` +
+                    `<button type="button" class="mini-btn is-danger-subtle" data-acc-action="delete" data-id="${escapeHtml(a.id)}">删备份</button>` +
+                  `</div>` +
+                `</article>`
+              );
+            }
+          }
+
+          parts.push(
+            '<article class="relay-card">' +
+              '<div class="relay-card-head">' +
+                '<span class="relay-title">捕获新账号与快捷操作</span>' +
+                '<div class="relay-form-row">' +
+                  '<button type="button" class="mini-btn" data-acc-action="snapshot">写交接快照</button>' +
+                  '<button type="button" class="mini-btn" data-acc-action="verify">校验隔离</button>' +
+                  '<button type="button" class="mini-btn is-danger-subtle" data-acc-action="disable">关闭模块</button>' +
+                '</div>' +
+              '</div>' +
+              '<div class="relay-form-row">' +
+                '<input id="acc-capture-alias" class="text-input" style="max-width:140px;" type="text" placeholder="别名（如 主号/备1）" />' +
+                '<select id="acc-capture-role" class="relay-select" aria-label="账号角色">' +
+                  '<option value="primary">设为主号 (Primary)</option>' +
+                  '<option value="backup" selected>设为备用 (Backup)</option>' +
+                '</select>' +
+                '<button type="button" class="ctrl-btn is-primary" data-acc-action="capture">捕获当前活跃账号</button>' +
+              '</div>' +
+            '</article>'
+          );
+
+          const guideOpen = st.openSections?.guide || accs.length < 2;
+          parts.push(
+            `<details class="relay-accordion" data-sec="guide" ${guideOpen ? 'open' : ''}>` +
+              `<summary>` +
+                `<span>📖 如何添加主号与备用号（零输密码 · 3 步录入）</span>` +
+                `<span class="relay-acc-summary-right"><span class="pill">${accs.length} 槽</span><span class="relay-acc-chevron" aria-hidden="true">▸</span></span>` +
+              `</summary>` +
+              `<div class="relay-acc-body">` +
+                `<ol>` +
+                  `<li><strong>捕获主号</strong>：保持当前主力账号登录状态 → 上方填别名（如 <code>主号</code>）、选「主号」→ 点 <strong>「捕获当前活跃账号」</strong>；</li>` +
+                  `<li><strong>捕获备用号</strong>：去 Antigravity 设置切登录备用账号（全量会话与记录会自动保留），回来填别名选「备用」→ 再点一次 <strong>「捕获当前活跃账号」</strong>；</li>` +
+                  `<li><strong>免登录一键切</strong>：录好主备号后，以后随时点卡片右上角 <strong>「⚡ 切换并重启」</strong> 即可安全切号并自动重启生效。</li>` +
+                `</ol>` +
+              `</div>` +
+            `</details>`
+          );
+
+          const mems = st.memories || [];
+          const memItemsHtml = mems.length
+            ? mems.slice(0, 5).map((m, idx) =>
+                `<div class="radar-item">` +
+                  `<div class="relay-card-head">` +
+                    `<span class="pill">${escapeHtml(m.slotTag || '')}</span>` +
+                    `<div class="search-card-actions">` +
+                      `<button type="button" class="mini-btn" data-acc-action="mem-copy-ext" data-idx="${idx}">同步外部Memory</button>` +
+                      `<button type="button" class="mini-btn is-primary" data-acc-action="mem-copy-resume" data-idx="${idx}">复制接力</button>` +
+                      `<button type="button" class="mini-btn is-danger-subtle" data-acc-action="mem-del" data-id="${escapeHtml(m.id)}">删除</button>` +
+                    `</div>` +
+                  `</div>` +
+                  `<div>${escapeHtml(m.summary || '')}</div>` +
+                  `<div class="relay-sub">下一步：${escapeHtml(m.nextAction || '-')}</div>` +
+                `</div>`
+              ).join('')
+            : '<p class="relay-sub">暂无历史交接记忆；切号时勾选「切前落盘 4 要素交接」会自动记录。</p>';
+
+          parts.push(
+            `<details class="relay-accordion" data-sec="memories" ${st.openSections?.memories ? 'open' : ''}>` +
+              `<summary>` +
+                `<span>🧠 槽位交接记忆（按时间倒序 · 自动脱敏）</span>` +
+                `<span class="relay-acc-summary-right"><span class="pill">${mems.length} 条</span><span class="relay-acc-chevron" aria-hidden="true">▸</span></span>` +
+              `</summary>` +
+              `<div class="relay-acc-body">${memItemsHtml}</div>` +
+            `</details>`
+          );
+        }
+
+        const rad = st.radarReport;
+        let radarBodyHtml = '<p class="relay-sub">闭环顺序：① 只读侦察（不改代码） → ② 勾选想要融合的功能 → ③ 让 AI 融合后点「同步基线」归绿。</p>';
+        if (st.radarLoading) {
+          radarBodyHtml = '<p class="relay-sub">正在比对上游 Release 与关键路径变更…</p>';
+        } else if (rad && Array.isArray(rad.results)) {
+          radarBodyHtml = rad.results.map((r) => {
+            const lvl = r.impactLevel === 'HIGH'
+              ? '<span class="pill pill-danger">HIGH</span>'
+              : r.impactLevel === 'MEDIUM'
+                ? '<span class="pill pill-warn">MEDIUM</span>'
+                : r.impactLevel === 'UP_TO_DATE'
+                  ? '<span class="pill pill-ok">已同步</span>'
+                  : `<span class="pill">${escapeHtml(r.impactLevel || '')}</span>`;
+            const compatHtml = (r.compatFixes || []).length
+              ? `<div style="margin-top:3px;"><strong style="font-size:11px;">兼容性 / 安全必看：</strong>` +
+                r.compatFixes.map((c) =>
+                  `<label class="radar-pick-row"><input type="checkbox" class="radar-pick-cb" checked data-key="${escapeHtml(r.key)}" data-repo="${escapeHtml(r.repo)}" data-sha="${escapeHtml(c.sha)}" data-msg="${escapeHtml(c.message)}"><span><code>${escapeHtml(c.sha)}</code> ${escapeHtml(c.message)}</span></label>`
+                ).join('') + `</div>`
+              : '';
+            const featHtml = (r.featureCandidates || []).length
+              ? `<div style="margin-top:3px;"><strong style="font-size:11px;">实用 / 有趣新功能候选：</strong>` +
+                r.featureCandidates.map((c) =>
+                  `<label class="radar-pick-row"><input type="checkbox" class="radar-pick-cb" data-key="${escapeHtml(r.key)}" data-repo="${escapeHtml(r.repo)}" data-sha="${escapeHtml(c.sha)}" data-msg="${escapeHtml(c.message)}"><span><code>${escapeHtml(c.sha)}</code> ${escapeHtml(c.message)}</span></label>`
+                ).join('') + `</div>`
+              : '';
+            const rowActions = r.hasUpdate
+              ? `<button type="button" class="mini-btn" data-acc-action="radar-copy-picked" data-key="${escapeHtml(r.key)}" data-repo="${escapeHtml(r.repo)}">复制已选融合指令</button>` +
+                `<button type="button" class="mini-btn is-primary" data-acc-action="radar-sync-key" data-key="${escapeHtml(r.key)}">同步基线</button>`
+              : '';
+            return (
+              `<div class="radar-item">` +
+                `<div class="relay-card-head"><div class="search-card-meta"><strong>${escapeHtml(r.repo)}</strong>${lvl}</div><div class="search-card-actions">${rowActions}</div></div>` +
+                `<div class="relay-sub">基线 ${escapeHtml(r.baselineTag || r.baselineCommit || '-')} → 最新 ${escapeHtml(r.latestTag || r.latestCommit || '-')} (${escapeHtml(r.license || '')})</div>` +
+                compatHtml + featHtml +
+              `</div>`
+            );
+          }).join('');
+        }
+        const radarBadge = st.radarLoading
+          ? '<span class="pill">检查中</span>'
+          : (rad?.summary?.high ? `<span class="pill pill-danger">HIGH ${rad.summary.high}</span>` : (rad ? '<span class="pill pill-ok">已侦察</span>' : '<span class="pill">待检</span>'));
+        const radarOpen = Boolean(st.openSections?.radar || st.radarLoading || rad);
+        parts.push(
+          `<details class="relay-accordion" data-sec="radar" ${radarOpen ? 'open' : ''}>` +
+            `<summary>` +
+              `<span>🛰️ 上游更新雷达（先选功能再融合 · 同步归绿）</span>` +
+              `<span class="relay-acc-summary-right">${radarBadge}<span class="relay-acc-chevron" aria-hidden="true">▸</span></span>` +
+            `</summary>` +
+            `<div class="relay-acc-body">` +
+              `<div class="relay-card-head">` +
+                `<span class="relay-sub">追踪上游更新并按兼容性/候选功能择优融合</span>` +
+                `<div class="search-card-actions">` +
+                  (rad?.markdown ? `<button type="button" class="mini-btn" data-acc-action="radar-copy">复制简报</button>` : '') +
+                  `<button type="button" class="mini-btn is-primary" data-acc-action="radar-check" ${st.radarLoading ? 'disabled' : ''}>${st.radarLoading ? '检查中…' : '检查上游动向'}</button>` +
+                `</div>` +
+              `</div>` +
+              radarBodyHtml +
+            `</div>` +
+          `</details>`
+        );
+
+        accountsWrap.innerHTML = parts.join('');
       }
 
       // Apply open_prism_files tool result
@@ -2296,8 +4279,10 @@
           appState.prefs = {
             pinnedPaths: Array.isArray(sc.state.pinnedPaths) ? sc.state.pinnedPaths : [],
             lastPath: sc.state.lastPath || '',
+            lastTab: ['browse', 'artifacts', 'pins', 'search', 'accounts'].includes(sc.state.lastTab) ? sc.state.lastTab : 'browse',
             showHidden: Boolean(sc.state.showHidden),
-            doubleClickAction: sc.state.doubleClickAction === 'open_tab' ? 'open_tab' : 'reveal'
+            doubleClickAction: sc.state.doubleClickAction === 'open_tab' ? 'open_tab' : 'reveal',
+            allowLanSmb: Boolean(sc.state.allowLanSmb)
           };
         }
         if (sc.listing) {
@@ -2308,10 +4293,17 @@
           appState.browse.total = Number(sc.listing.total) || 0;
           appState.browse.truncated = Boolean(sc.listing.truncated);
           appState.browse.entries = Array.isArray(sc.listing.entries) ? sc.listing.entries : [];
+          if (!sc.listing.truncated && sc.listing.ok !== false && appState.browse.dir) {
+            appState.browse.rawDir = appState.browse.dir;
+            appState.browse.rawEntries = appState.browse.entries;
+          }
           appState.browse.loading = false;
         }
         renderAll();
-        if (sc.tab && ['browse', 'artifacts', 'pins'].includes(sc.tab)) {
+        if (typeof sc.warning === 'string' && sc.warning.trim()) {
+          showToast(sc.warning.trim(), true);
+        }
+        if (sc.tab && ['browse', 'artifacts', 'pins', 'search', 'accounts'].includes(sc.tab) && !isExternalNavLocked()) {
           switchTab(sc.tab);
         }
         if (sc.selectFile) {
@@ -2323,9 +4315,60 @@
 
       // Register message handler BEFORE calling ui/initialize
       window.addEventListener('message', (event) => {
-        if (window.parent !== window && event.source && event.source !== window.parent) return;
         const msg = event.data;
-        if (!msg || typeof msg !== 'object' || msg.jsonrpc !== '2.0') return;
+        if (!msg || typeof msg !== 'object') return;
+
+        // Sanitized bridge from main window Prism Suite extension (ping/pong, quota sync & focused tab switch)
+        if (msg.__agPrismBridge === 'v1') {
+          if (event.source && event.source !== window.parent && event.source !== window.top) return;
+          const orig = String(event.origin || '').trim();
+          const trustedOrig = !orig || orig === 'null' || orig === window.location.origin ||
+            /^(?:app|vscode-webview|file):\/\//i.test(orig) ||
+            /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i.test(orig);
+          if (!trustedOrig) return;
+          if (msg.source && msg.source !== 'prism-suite') return;
+          const replyWin = event.source || null;
+          const replyOrigin = orig && orig !== 'null' ? orig : '*';
+
+          if (msg.type === 'bridge-ping') {
+            postBridgeToMain({
+              type: 'bridge-pong',
+              requestId: String(msg.requestId || ''),
+              sessionId: String(msg.sessionId || ''),
+              activeTab: appState.activeTab,
+              initialized: Boolean(appState.initialized)
+            }, replyWin, replyOrigin);
+            return;
+          }
+          if (msg.type === 'init-sync') {
+            if (msg.switchTab && ['browse', 'artifacts', 'pins', 'search', 'accounts'].includes(msg.switchTab)) {
+              navigateFromExternalBridge(msg.switchTab, {
+                intentId: String(msg.intentId || ''),
+                requestId: String(msg.requestId || ''),
+                sessionId: String(msg.sessionId || ''),
+                focus: msg.focus !== false,
+                replyWin,
+                replyOrigin
+              });
+            }
+            if (msg.quota) syncLiveQuotaFromMain(msg.quota);
+          } else if (msg.type === 'quota-sync' && msg.quota) {
+            syncLiveQuotaFromMain(msg.quota);
+          } else if (msg.type === 'switch-tab') {
+            navigateFromExternalBridge(msg.tab, {
+              intentId: String(msg.intentId || ''),
+              requestId: String(msg.requestId || ''),
+              sessionId: String(msg.sessionId || ''),
+              focus: msg.focus !== false,
+              replyWin,
+              replyOrigin
+            });
+          }
+          return;
+        }
+
+        if (window.parent !== window && event.source && event.source !== window.parent) return;
+        if (msg.jsonrpc !== '2.0') return;
 
         if (msg.id !== undefined && msg.id !== null && !msg.method) {
           const pending = pendingRequests.get(msg.id);
@@ -2361,7 +4404,7 @@
         } else if (msg.method === 'ui/notifications/tool-input') {
           appState.hasToolInput = true;
           const args = msg.params?.arguments || msg.params || {};
-          if (args.tab && ['browse', 'artifacts', 'pins'].includes(args.tab)) {
+          if (args.tab && ['browse', 'artifacts', 'pins', 'search', 'accounts'].includes(args.tab)) {
             switchTab(args.tab);
           }
         } else if (msg.method === 'ui/notifications/tool-result') {
@@ -2369,12 +4412,24 @@
           const sc = msg.params?.structuredContent || msg.params?.result?.structuredContent;
           applyOpenToolResult(sc);
         }
-      });
+      }, { signal });
 
       // Topbar Events
       for (const btn of tabBtns) {
-        btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+        btn.addEventListener('click', () => switchTab(btn.dataset.tab, { persist: true }));
       }
+
+      btnSmbToggle.addEventListener('click', async () => {
+        const nextSmb = !appState.prefs.allowLanSmb;
+        const ok = await persistPrefs({ allowLanSmb: nextSmb });
+        if (ok) {
+          showToast(
+            nextSmb
+              ? '已开启「允许局域网 NAS/SMB 路径」（仅放行私网/本地 UNC，拒绝公网）'
+              : '已关闭「允许局域网 NAS/SMB 路径」'
+          );
+        }
+      });
 
       btnHiddenToggle.addEventListener('click', async () => {
         const nextHidden = !appState.prefs.showHidden;
@@ -2394,8 +4449,11 @@
       });
 
       btnRefresh.addEventListener('click', () => {
+        btnRefresh.classList.remove('is-spinning');
+        void btnRefresh.offsetWidth;
+        btnRefresh.classList.add('is-spinning');
         if (appState.activeTab === 'browse') {
-          navigateToDir(appState.browse.dir, appState.browse.query);
+          navigateToDir(appState.browse.dir, appState.browse.query, { force: true });
           if (appState.preview.visible && appState.preview.data?.path && !appState.preview.dirty) {
             loadPreview(appState.preview.data.path, { force: true });
           }
@@ -2403,10 +4461,230 @@
           loadArtifacts();
         } else if (appState.activeTab === 'pins') {
           loadPins();
+        } else if (appState.activeTab === 'search' && searchInput.value.trim()) {
+          runTranscriptSearch();
+        } else if (appState.activeTab === 'accounts') {
+          loadAccountsTab({ forceRefresh: true });
         }
       });
 
-      // Browse Toolbar Events
+      // Accounts Relay & Upstream Radar Event Delegation
+      accountsWrap.addEventListener('toggle', (event) => {
+        const det = event.target;
+        if (det && det.matches && det.matches('details.relay-accordion[data-sec]')) {
+          const sec = det.dataset.sec;
+          if (sec && appState.accounts.openSections) {
+            appState.accounts.openSections[sec] = Boolean(det.open);
+          }
+        }
+      }, true);
+
+      accountsWrap.addEventListener('change', (event) => {
+        if (event.target && event.target.id === 'acc-cd-snap' && appState.accounts.countdown) {
+          appState.accounts.countdown.saveSnapshot = Boolean(event.target.checked);
+        } else if (event.target && event.target.id === 'acc-cd-relaunch' && appState.accounts.countdown) {
+          const autoR = Boolean(event.target.checked);
+          appState.accounts.countdown.autoRelaunch = autoR;
+          if (appState.accounts.data) appState.accounts.data.autoRelaunchAfterSwitch = autoR;
+          const nowBtn = accountsWrap.querySelector('button[data-acc-action="cd-now"]');
+          if (nowBtn) nowBtn.textContent = autoR ? '立即切换并重启' : '立即切换';
+          callServerTool('accounts_toggle_enabled', { autoRelaunchAfterSwitch: autoR }).catch(() => {});
+        }
+      });
+
+      accountsWrap.addEventListener('click', async (event) => {
+        const btn = event.target.closest('button[data-acc-action]');
+        if (!btn) return;
+        const act = btn.dataset.accAction;
+        try {
+          if (act === 'reload-tab') {
+            await loadAccountsTab({ forceRefresh: true });
+          } else if (act === 'enable') {
+            await callServerTool('accounts_toggle_enabled', { enabled: true });
+            showToast('已开启主备账号接力（绝不触碰会话库）');
+            await loadAccountsTab({ forceRefresh: true });
+          } else if (act === 'disable') {
+            stopCountdown(false);
+            await callServerTool('accounts_toggle_enabled', { enabled: false });
+            showToast('已关闭账号接力模块');
+            await loadAccountsTab({ forceRefresh: false });
+          } else if (act === 'verify') {
+            const res = await callServerTool('accounts_verify_integrity', {});
+            showToast(`隔离校验正常 · brain 会话 ${res.brainSessionCount} · 后端 ${res.vaultBackend}`);
+          } else if (act === 'relaunch-now') {
+            btn.disabled = true;
+            const res = await callServerTool('accounts_relaunch_client', { dryRun: false });
+            btn.disabled = false;
+            if (res?.ok && res?.scheduled) {
+              showToast(res.message || '正在自动关闭并重开 Antigravity，请稍候…');
+            } else {
+              showToast(res?.error || '调度自动重启失败，请手动重启客户端', true);
+            }
+          } else if (act === 'capture' || act === 'capture-quick') {
+            const aliasEl = document.getElementById('acc-capture-alias');
+            const roleEl = document.getElementById('acc-capture-role');
+            const res = await callServerTool('accounts_capture', {
+              alias: act === 'capture-quick' ? '' : (aliasEl ? aliasEl.value.trim() : ''),
+              role: act === 'capture-quick' ? 'backup' : (roleEl ? roleEl.value : 'backup')
+            });
+            if (res.ok) {
+              showToast(`已捕获 ${res.account.alias} (${res.account.email})`);
+              await loadAccountsTab({ forceRefresh: false });
+            } else {
+              showToast(res.error || '捕获失败', true);
+            }
+          } else if (act === 'snapshot') {
+            const res = await callServerTool('accounts_save_snapshot', {
+              cwd: appState.browse.dir || appState.homeDir || '',
+              verifiedSummary: '手动触发切前 4 要素交接快照'
+            });
+            showToast(`已记录交接快照 ${res.snapshot?.slotTag || ''}`);
+            await loadAccountsTab({ forceRefresh: false });
+          } else if (act === 'countdown') {
+            const id = btn.dataset.id;
+            const acc = (appState.accounts.data?.accounts || []).find((a) => a.id === id);
+            startSwitchCountdown(acc);
+          } else if (act === 'cd-pause' && appState.accounts.countdown) {
+            const cd = appState.accounts.countdown;
+            if (!cd.paused) {
+              cd.paused = true;
+              cd.pausedRemainMs = Math.max(0, (cd.endAtMs || Date.now()) - Date.now());
+              if (countdownRaf) {
+                cancelAnimationFrame(countdownRaf);
+                countdownRaf = null;
+              }
+            } else {
+              cd.paused = false;
+              cd.endAtMs = Date.now() + (cd.pausedRemainMs || cd.totalMs);
+              countdownLastSec = -1;
+              countdownRaf = requestAnimationFrame(tickCountdownFrame);
+            }
+            renderAccounts();
+          } else if (act === 'cd-now' && appState.accounts.countdown) {
+            const cd = appState.accounts.countdown;
+            await executeAccountSwitchNow(cd.targetId, cd.saveSnapshot, cd.autoRelaunch, cd.autoCaptureUncaptured !== false);
+          } else if (act === 'cd-cancel') {
+            stopCountdown(true);
+            showToast('已取消切号倒计时');
+          } else if (act === 'dryrun') {
+            const res = await callServerTool('accounts_switch', { targetId: btn.dataset.id, dryRun: true, autoCaptureUncaptured: true });
+            showToast(res.ok ? res.message : formatAccountErrorMessage(res.error, '预演拦截'), !res.ok);
+          } else if (act === 'edit-quota') {
+            appState.accounts.editingQuotaId = appState.accounts.editingQuotaId === btn.dataset.id ? '' : btn.dataset.id;
+            renderAccounts();
+          } else if (act === 'cancel-quota') {
+            appState.accounts.editingQuotaId = '';
+            renderAccounts();
+          } else if (act === 'save-quota') {
+            const id = btn.dataset.id;
+            const v5 = document.getElementById(`qe-5h-${id}`)?.value?.trim();
+            const v7 = document.getElementById(`qe-7d-${id}`)?.value?.trim();
+            const r5 = document.getElementById(`qe-r5h-${id}`)?.value?.trim();
+            const raw = document.getElementById(`qe-raw-${id}`)?.value?.trim();
+            const quota = {};
+            if (v5 !== '' && v5 !== undefined) quota.window5hPct = Number(v5);
+            if (v7 !== '' && v7 !== undefined) quota.window7dPct = Number(v7);
+            if (r5 !== '' && r5 !== undefined && Number(r5) > 0) quota.reset5hInHours = Number(r5);
+            if (raw) quota.rawText = raw;
+            const res = await callServerTool('accounts_update', { accountId: id, quota });
+            if (res.ok) {
+              appState.accounts.editingQuotaId = '';
+              showToast('已更新该账号额度快照');
+              await loadAccountsTab();
+            } else {
+              showToast(res.error || '保存额度失败', true);
+            }
+          } else if (act === 'setrole') {
+            const res = await callServerTool('accounts_update', { accountId: btn.dataset.id, role: btn.dataset.role });
+            if (res.ok) {
+              showToast(`已设为 ${btn.dataset.role === 'primary' ? '主账号' : '备用账号'}`);
+              await loadAccountsTab();
+            } else {
+              showToast(res.error || '修改失败', true);
+            }
+          } else if (act === 'delete') {
+            const res = await callServerTool('accounts_delete', { accountId: btn.dataset.id });
+            showToast(res.ok ? '已移除隔离备份槽（不影响当前登录与会话）' : (res.error || '移除失败'), !res.ok);
+            await loadAccountsTab();
+          } else if (act === 'dismiss-sw') {
+            appState.accounts.lastSwitchResult = null;
+            renderAccounts();
+          } else if (act === 'copy-ext-mem' && appState.accounts.lastSwitchResult?.externalMemoryPrompt) {
+            const ok = await copyTextSafe(appState.accounts.lastSwitchResult.externalMemoryPrompt);
+            showToast(ok ? '已复制外部 memory_store 指令' : '复制失败', !ok);
+          } else if (act === 'copy-resume' && appState.accounts.lastSwitchResult?.resumePrompt) {
+            const ok = await copyTextSafe(appState.accounts.lastSwitchResult.resumePrompt);
+            showToast(ok ? '已复制切后「接力」提示' : '复制失败', !ok);
+          } else if (act === 'mem-copy-ext') {
+            const item = appState.accounts.memories[Number(btn.dataset.idx)];
+            if (item?.externalMemoryPrompt) {
+              const ok = await copyTextSafe(item.externalMemoryPrompt);
+              showToast(ok ? '已复制外部 memory_store 指令' : '复制失败', !ok);
+            }
+          } else if (act === 'mem-copy-resume') {
+            const item = appState.accounts.memories[Number(btn.dataset.idx)];
+            if (item?.resumePrompt) {
+              const ok = await copyTextSafe(item.resumePrompt);
+              showToast(ok ? '已复制「接力」恢复提示' : '复制失败', !ok);
+            }
+          } else if (act === 'mem-del') {
+            await callServerTool('handoff_memory_remove', { id: btn.dataset.id });
+            showToast('已删除该条交接记忆');
+            await loadAccountsTab();
+          } else if (act === 'radar-check') {
+            appState.accounts.radarLoading = true;
+            renderAccounts();
+            const rep = await callServerTool('check_upstreams', { force: true });
+            appState.accounts.radarLoading = false;
+            appState.accounts.radarReport = rep;
+            renderAccounts();
+            showToast(`上游检查完成：HIGH ${rep?.summary?.high ?? 0} / MEDIUM ${rep?.summary?.medium ?? 0}`);
+          } else if (act === 'radar-copy-picked') {
+            const key = btn.dataset.key;
+            const repo = btn.dataset.repo;
+            const checks = Array.from(accountsWrap.querySelectorAll(`.radar-pick-cb[data-key="${CSS.escape(key)}"]:checked`));
+            if (!checks.length) {
+              showToast('请先勾选至少一条想要评估或融合的更新项；若决定全部跳过请直接点「同步基线」', true);
+              return;
+            }
+            const pickedLines = checks.map((c) => `- ${c.dataset.sha} ${c.dataset.msg}`).join('\n');
+            const prompt = `请对比上游仓库 ${repo} 中我勾选的以下变更，评估并以 Clean-room 方式择优融合进 anti-claude-prism-suite（未勾选的一律跳过，绝不照搬照抄），完成后同步基线：\n${pickedLines}`;
+            const ok = await copyTextSafe(prompt);
+            showToast(ok ? `已复制 ${checks.length} 条已选融合指令，粘贴给 AI 即可` : '复制失败', !ok);
+          } else if (act === 'radar-sync-key') {
+            const key = btn.dataset.key;
+            await callServerTool('sync_upstream_baseline', { keys: [key] });
+            showToast(`已将 ${key} 基线同步至最新并归绿`);
+            appState.accounts.radarReport = await callServerTool('check_upstreams', { force: true });
+            renderAccounts();
+          } else if (act === 'radar-copy' && appState.accounts.radarReport?.markdown) {
+            const ok = await copyTextSafe(appState.accounts.radarReport.markdown);
+            showToast(ok ? '已复制上游择优评估简报' : '复制失败', !ok);
+          }
+        } catch (err) {
+          appState.accounts.radarLoading = false;
+          showToast(formatAccountErrorMessage(err, '操作失败'), true);
+          renderAccounts();
+        }
+      });
+
+      // Browse Toolbar & Breadcrumbs Events
+      pathBreadcrumbs.addEventListener('click', (event) => {
+        const crumbBtn = event.target.closest('button[data-crumb-path]');
+        if (crumbBtn) {
+          filterInput.value = '';
+          appState.browse.query = '';
+          navigateToDir(crumbBtn.dataset.crumbPath, '');
+          return;
+        }
+        enterPathEditMode();
+      });
+
+      pathInput.addEventListener('blur', () => {
+        exitPathEditMode();
+        renderPathBreadcrumbs(appState.browse.dir || '');
+      });
+
       btnParent.addEventListener('click', () => {
         if (appState.browse.parent) {
           filterInput.value = '';
@@ -2425,10 +4703,12 @@
         if (event.key === 'Enter') {
           event.preventDefault();
           const target = pathInput.value.trim();
+          exitPathEditMode();
           if (target) navigateToDir(target, appState.browse.query);
         } else if (event.key === 'Escape') {
           pathInput.value = appState.browse.dir || '';
-          pathInput.blur();
+          exitPathEditMode();
+          renderPathBreadcrumbs(appState.browse.dir || '');
         }
       });
 
@@ -2440,13 +4720,57 @@
         if (appState.browse.dir) togglePinPath(appState.browse.dir);
       });
 
-      filterInput.addEventListener('input', () => {
+      const triggerBrowseFilter = () => {
         appState.browse.query = filterInput.value;
         btnClearFilter.hidden = !filterInput.value;
+        if (!appState.browse.truncated && appState.browse.rawDir === appState.browse.dir && Array.isArray(appState.browse.rawEntries)) {
+          if (filterDebounceTimer) clearTimeout(filterDebounceTimer);
+          navigateToDir(appState.browse.dir, appState.browse.query);
+          return;
+        }
         if (filterDebounceTimer) clearTimeout(filterDebounceTimer);
         filterDebounceTimer = setTimeout(() => {
           navigateToDir(appState.browse.dir, appState.browse.query);
         }, 150);
+      };
+
+      filterInput.addEventListener('compositionstart', () => {
+        filterComposing = true;
+      });
+
+      filterInput.addEventListener('compositionend', () => {
+        filterComposing = false;
+        triggerBrowseFilter();
+      });
+
+      filterInput.addEventListener('input', () => {
+        if (filterComposing) return;
+        triggerBrowseFilter();
+      });
+
+      filterInput.addEventListener('keydown', (event) => {
+        if (filterComposing) return;
+        if (event.key === 'ArrowDown' && appState.browse.entries.length > 0) {
+          event.preventDefault();
+          filterInput.blur();
+          appState.browse.selectedPath = appState.browse.entries[0].path;
+          renderBrowse();
+          browseListWrap.querySelector('.list-row.is-selected')?.scrollIntoView({ block: 'nearest' });
+        } else if (event.key === 'Enter' && appState.browse.entries.length > 0) {
+          event.preventDefault();
+          const cur = appState.browse.entries.find((it) => it.path === appState.browse.selectedPath) || appState.browse.entries[0];
+          if (cur) {
+            appState.browse.selectedPath = cur.path;
+            if (cur.isDir) {
+              filterInput.value = '';
+              appState.browse.query = '';
+              navigateToDir(cur.path, '');
+            } else {
+              renderBrowse();
+              loadPreview(cur.path);
+            }
+          }
+        }
       });
 
       btnClearFilter.addEventListener('click', () => {
@@ -2605,10 +4929,106 @@
         }
       });
 
+      btnPreviewOpenWith.addEventListener('click', (event) => {
+        event.stopPropagation();
+        togglePreviewOpenWithMenu();
+      });
+
+      previewOpenWithMenu.addEventListener('click', (event) => {
+        const itemBtn = event.target.closest('button[data-target-id]');
+        if (!itemBtn) return;
+        event.stopPropagation();
+        const targetId = itemBtn.dataset.targetId;
+        const targetPath = appState.preview.data?.path;
+        if (targetId && targetPath) {
+          invokeOpenWithTarget(targetId, targetPath);
+        }
+      });
+
+      document.addEventListener('click', (event) => {
+        if (!appState.openTargets.menuOpen) return;
+        if (!previewOpenWithMenu.contains(event.target) && !btnPreviewOpenWith.contains(event.target)) {
+          closeOpenWithMenu();
+        }
+      }, { signal });
+
+      window.addEventListener('resize', () => {
+        if (appState.openTargets.menuOpen) closeOpenWithMenu();
+      }, { signal });
+
+      // Search Tab Events
+      searchInput.addEventListener('input', () => {
+        btnClearSearch.hidden = !searchInput.value;
+      });
+
+      searchInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          runTranscriptSearch();
+        } else if (event.key === 'Escape') {
+          searchInput.value = '';
+          btnClearSearch.hidden = true;
+          appState.search.query = '';
+          appState.search.searched = false;
+          appState.search.results = [];
+          renderSearch();
+        }
+      });
+
+      btnRunSearch.addEventListener('click', () => {
+        runTranscriptSearch();
+      });
+
+      btnClearSearch.addEventListener('click', () => {
+        searchInput.value = '';
+        btnClearSearch.hidden = true;
+        appState.search.query = '';
+        appState.search.searched = false;
+        appState.search.results = [];
+        renderSearch();
+        searchInput.focus();
+      });
+
+      for (const btn of searchFilterBtns) {
+        btn.addEventListener('click', () => {
+          const nextFilter = btn.dataset.searchFilter || 'all';
+          if (appState.search.filter === nextFilter) return;
+          appState.search.filter = nextFilter;
+          renderSearch();
+          if (searchInput.value.trim()) {
+            runTranscriptSearch();
+          }
+        });
+      }
+
+      searchListWrap.addEventListener('click', async (event) => {
+        const actionBtn = event.target.closest('button[data-search-action]');
+        if (!actionBtn) return;
+        const idx = Number(actionBtn.dataset.index);
+        const item = appState.search.results[idx];
+        if (!item) return;
+        const act = actionBtn.dataset.searchAction;
+        if (act === 'copy') {
+          const ok = await copyTextSafe(item.snippet || '');
+          showToast(ok ? '已复制脱敏片段' : '复制失败', !ok);
+        } else if (act === 'open-conv') {
+          await openConversationUri(item.conversationUri || `conversation://${item.sessionId}`);
+        } else if (act === 'reveal-session') {
+          await revealPath(item.sessionDir);
+        }
+      });
+
       btnPreviewReveal.addEventListener('click', () => {
         if (appState.preview.data?.path) {
           revealPath(appState.preview.data.path);
         }
+      });
+
+      btnPreviewCopy.addEventListener('click', async () => {
+        const text = appState.preview.data?.text;
+        if (typeof text !== 'string') return;
+        const ok = await copyTextSafe(text);
+        showToast(ok ? '已复制文件全文到剪贴板' : '复制失败', !ok);
       });
 
       // Preserve selection on mousedown so clicking "引用选段" keeps the highlighted range
@@ -2682,6 +5102,30 @@
       });
 
       previewBody.addEventListener('click', (event) => {
+        const lnEl = event.target.closest('.code-ln[data-line]');
+        if (lnEl) {
+          const lineNum = Number(lnEl.dataset.line);
+          if (Number.isInteger(lineNum) && lineNum > 0) {
+            const pv = appState.preview;
+            if (event.shiftKey && pv.lineSelStart > 0) {
+              pv.lineSelEnd = lineNum;
+            } else if (pv.lineSelStart === lineNum && (pv.lineSelEnd === 0 || pv.lineSelEnd === lineNum)) {
+              pv.lineSelStart = 0;
+              pv.lineSelEnd = 0;
+            } else {
+              pv.lineSelStart = lineNum;
+              pv.lineSelEnd = lineNum;
+            }
+            const range = getLineRangeSelection();
+            const allLns = previewBody.querySelectorAll('.code-ln[data-line]');
+            for (let i = 0; i < allLns.length; i++) {
+              const n = i + 1;
+              allLns[i].classList.toggle('is-selected', Boolean(range && n >= range.start && n <= range.end));
+            }
+            renderPreviewHeaderOnly();
+          }
+          return;
+        }
         const btn = event.target.closest('button[data-placeholder-action]');
         if (!btn) return;
         const act = btn.dataset.placeholderAction;
@@ -2701,6 +5145,7 @@
         dragging = true;
         dragStartY = event.clientY;
         dragStartHeight = appState.preview.collapsed ? 220 : previewDrawer.getBoundingClientRect().height;
+        previewDrawer.classList.add('is-resizing');
         previewResizer.setPointerCapture(event.pointerId);
       });
 
@@ -2718,6 +5163,7 @@
       function stopDrag(event) {
         if (!dragging) return;
         dragging = false;
+        previewDrawer.classList.remove('is-resizing');
         try {
           previewResizer.releasePointerCapture(event.pointerId);
         } catch {}
@@ -2731,21 +5177,141 @@
         renderPreviewDrawer();
       });
 
-      // Global Shortcuts: Ctrl/Cmd+L (focus path), Ctrl/Cmd+S (save edit)
-      window.addEventListener('keydown', (event) => {
-        const mod = event.ctrlKey || event.metaKey;
-        if (!mod) return;
-        const key = event.key.toLowerCase();
-        if (key === 'l') {
-          event.preventDefault();
-          if (appState.activeTab !== 'browse') switchTab('browse');
-          pathInput.focus();
-          pathInput.select();
-        } else if (key === 's' && appState.preview.visible && appState.preview.editing) {
-          event.preventDefault();
-          saveEditedFile();
+      function isTypingFocus(el) {
+        if (!el) return false;
+        const tag = (el.tagName || '').toUpperCase();
+        return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+      }
+
+      function isInteractiveControlFocus(el) {
+        if (!el) return false;
+        if (isTypingFocus(el)) return true;
+        const tag = (el.tagName || '').toUpperCase();
+        if (tag === 'BUTTON' || tag === 'A' || tag === 'SUMMARY') return true;
+        const role = (el.getAttribute && el.getAttribute('role')) || '';
+        return role === 'button' || role === 'tab' || role === 'menuitem' || role === 'link';
+      }
+
+      function stepActiveListSelection(delta) {
+        const tab = appState.activeTab;
+        if (tab === 'browse') {
+          const items = appState.browse.entries;
+          if (!items.length) return;
+          const curIdx = items.findIndex((it) => it.path === appState.browse.selectedPath);
+          const nextIdx = curIdx === -1
+            ? (delta > 0 ? 0 : items.length - 1)
+            : Math.max(0, Math.min(items.length - 1, curIdx + delta));
+          appState.browse.selectedPath = items[nextIdx].path;
+          renderBrowse();
+          browseListWrap.querySelector('.list-row.is-selected')?.scrollIntoView({ block: 'nearest' });
+        } else if (tab === 'artifacts') {
+          const q = appState.artifacts.query.trim().toLowerCase();
+          const items = q
+            ? appState.artifacts.items.filter((it) => it.name.toLowerCase().includes(q) || (it.sessionId || '').toLowerCase().includes(q))
+            : appState.artifacts.items;
+          if (!items.length) return;
+          const curIdx = items.findIndex((it) => it.path === appState.artifacts.selectedPath);
+          const nextIdx = curIdx === -1
+            ? (delta > 0 ? 0 : items.length - 1)
+            : Math.max(0, Math.min(items.length - 1, curIdx + delta));
+          appState.artifacts.selectedPath = items[nextIdx].path;
+          renderArtifacts();
+          artifactsListWrap.querySelector('.list-row.is-selected')?.scrollIntoView({ block: 'nearest' });
+        } else if (tab === 'pins') {
+          const items = appState.pins.items;
+          if (!items.length) return;
+          const curIdx = items.findIndex((it) => it.path === appState.pins.selectedPath);
+          const nextIdx = curIdx === -1
+            ? (delta > 0 ? 0 : items.length - 1)
+            : Math.max(0, Math.min(items.length - 1, curIdx + delta));
+          appState.pins.selectedPath = items[nextIdx].path;
+          renderPins();
+          pinsListWrap.querySelector('.list-row.is-selected')?.scrollIntoView({ block: 'nearest' });
         }
-      });
+      }
+
+      function activateSelectedListItem() {
+        const tab = appState.activeTab;
+        if (tab === 'browse') {
+          const item = appState.browse.entries.find((it) => it.path === appState.browse.selectedPath);
+          if (!item) return false;
+          if (item.isDir) {
+            filterInput.value = '';
+            appState.browse.query = '';
+            navigateToDir(item.path, '');
+          } else {
+            loadPreview(item.path);
+          }
+          return true;
+        }
+        if (tab === 'artifacts') {
+          const item = appState.artifacts.items.find((it) => it.path === appState.artifacts.selectedPath);
+          if (!item) return false;
+          loadPreview(item.path);
+          return true;
+        }
+        if (tab === 'pins') {
+          const item = appState.pins.items.find((it) => it.path === appState.pins.selectedPath);
+          if (!item || item.exists === false) return false;
+          if (item.isDir) {
+            switchTab('browse', { persist: true });
+            filterInput.value = '';
+            appState.browse.query = '';
+            navigateToDir(item.path, '');
+          } else {
+            loadPreview(item.path);
+          }
+          return true;
+        }
+        return false;
+      }
+
+      // Global Shortcuts: Escape, Ctrl/Cmd+L, Ctrl/Cmd+S, and Keyboard Navigation (Up/Down/Enter/Backspace)
+      window.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          if (appState.openTargets.menuOpen) {
+            closeOpenWithMenu();
+            return;
+          }
+          if (getLineRangeSelection()) {
+            appState.preview.lineSelStart = 0;
+            appState.preview.lineSelEnd = 0;
+            previewBody.querySelectorAll('.code-ln.is-selected').forEach((n) => n.classList.remove('is-selected'));
+            renderPreviewHeaderOnly();
+            return;
+          }
+        }
+        const mod = event.ctrlKey || event.metaKey;
+        if (mod) {
+          const key = event.key.toLowerCase();
+          if (key === 'l') {
+            event.preventDefault();
+            if (appState.activeTab !== 'browse') switchTab('browse', { persist: true });
+            enterPathEditMode();
+          } else if (key === 's' && appState.preview.visible && appState.preview.editing) {
+            event.preventDefault();
+            saveEditedFile();
+          }
+          return;
+        }
+        if (event.altKey || appState.openTargets.menuOpen || appState.preview.editing || isTypingFocus(event.target)) return;
+        if (appState.activeTab === 'browse' || appState.activeTab === 'artifacts' || appState.activeTab === 'pins') {
+          if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            stepActiveListSelection(1);
+          } else if (event.key === 'ArrowUp') {
+            event.preventDefault();
+            stepActiveListSelection(-1);
+          } else if (event.key === 'Enter' && !isInteractiveControlFocus(event.target)) {
+            if (activateSelectedListItem()) event.preventDefault();
+          } else if (event.key === 'Backspace' && !isInteractiveControlFocus(event.target) && appState.activeTab === 'browse' && appState.browse.parent) {
+            event.preventDefault();
+            filterInput.value = '';
+            appState.browse.query = '';
+            navigateToDir(appState.browse.parent, '');
+          }
+        }
+      }, { signal });
 
       // Bootstrap & Initialize Handshake
       async function fallbackLoadIfNoToolResult() {
@@ -2754,6 +5320,9 @@
           const stateRes = await callServerTool('get_state', {});
           if (appState.hasToolResult) return;
           applyStateResult(stateRes);
+          if (!bridgeSwitchApplied && !isExternalNavLocked() && appState.prefs.lastTab && appState.prefs.lastTab !== appState.activeTab) {
+            switchTab(appState.prefs.lastTab, { persist: false });
+          }
           await navigateToDir(appState.prefs.lastPath || appState.homeDir || '', '');
         } catch {}
       }
@@ -2767,14 +5336,25 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.3.0' },
+            appInfo: { name: 'prism-files', version: '0.5.0' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};
           applyHostContext(initRes?.hostContext || {});
           appState.initialized = true;
           sendNotification('ui/notifications/initialized', {});
+          postBridgeToMain({ type: 'ready' });
           renderAll();
+          loadOpenTargets().catch(() => {});
+
+          // Background warm sync of account summary for main-window Prism popover capsule
+          setTimeout(() => {
+            if (!appState.accounts.loaded && !appState.accounts.loading) {
+              callServerTool('accounts_status', { forceRefresh: false })
+                .then((st) => { if (st && st.ok) broadcastAccountSummary(st); })
+                .catch(() => {});
+            }
+          }, 900);
 
           // Fallback when mounted directly as sidebar/aux pane without immediate tool-result
           setTimeout(() => {

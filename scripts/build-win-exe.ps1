@@ -20,7 +20,7 @@ if (-not (Test-Path -LiteralPath $PluginDir -PathType Container)) {
     throw "Missing plugin directory: $PluginDir"
 }
 
-foreach ($requiredExt in @("prism-suite.css", "prism-suite.js")) {
+foreach ($requiredExt in @("prism-suite.css", "prism-suite.js", "prism-suite-fx.css", "prism-suite-fx.js", "prism-suite-workflow.css", "prism-suite-workflow.js")) {
     $reqPath = Join-Path $ExtDir $requiredExt
     if (-not (Test-Path -LiteralPath $reqPath -PathType Leaf)) {
         throw "Missing required extension file: $reqPath"

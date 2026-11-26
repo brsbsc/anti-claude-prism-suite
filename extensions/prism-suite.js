@@ -1,18 +1,23 @@
 /* ============================================================================
- * Anti-Claude Prism Suite v0.2.0 (Clean-Room Original, MIT)
+ * Anti-Claude Prism Suite v0.5.0 (Clean-Room Original, MIT)
  * Performance-first architecture:
  *   - Zero document.body MutationObserver (0.0ms typing latency in composer)
  *   - Stream ink observer attaches ONLY to [data-testid="autoscroll-viewport"]
  *     during active generation and disconnects immediately on idle
- *   - Typing-grace guard + visibility pause on lightweight periodic sync
- *   - Reused CSS Highlight objects with 30fps throttling & reduced-motion guard
+ *   - Typing-grace + IME composition + touch-drag guard + dirty-checked DOM writes
+ *   - Versioned event bus (window.__agPrismBus v4) for modular companion extensions
  * ============================================================================ */
 (() => {
   if (typeof window.__agPrismSuiteDispose === 'function') {
     try { window.__agPrismSuiteDispose(); } catch {}
   }
 
+  const SUITE_VERSION = '0.5.0';
+  const REPO_RELEASES_API = 'https://api.github.com/repos/wushuai0802/anti-claude-prism-suite/releases/latest';
+  const REPO_RELEASES_URL = 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest';
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';
+  const LIVE_QUOTA_STORAGE_KEY = 'ag_prism_live_quota_v1';
+  const ACCOUNT_SUMMARY_STORAGE_KEY = 'ag_prism_account_summary_v1';
   const MASCOT_SIZE_MIN = 16;
   const MASCOT_SIZE_MAX = 36;
   const MASCOT_SIZE_DEFAULT = 24;
@@ -97,25 +102,79 @@
     return String(Math.round(v));
   }
 
-  /* ---- Typing-grace tracker: never run background DOM scans while user is typing ---- */
+  /* ---- Typing-grace, IME composition & touch-drag guard ---- */
   let lastTypingAt = 0;
+  let isComposing = false;
+  let isTouchDragging = false;
+  let composeResetTimer = 0;
+
   function markUserTyping(e) {
     const t = e && e.target;
     if (t && (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'INPUT')) {
       lastTypingAt = Date.now();
     }
   }
+  function onCompositionStart(e) {
+    isComposing = true;
+    markUserTyping(e);
+    clearTimeout(composeResetTimer);
+    composeResetTimer = setTimeout(() => { isComposing = false; }, 8000);
+  }
+  function onCompositionEnd(e) {
+    isComposing = false;
+    clearTimeout(composeResetTimer);
+    markUserTyping(e);
+  }
+  function onTouchStart() { isTouchDragging = true; }
+  function onTouchEnd() { isTouchDragging = false; }
+
   document.addEventListener('keydown', markUserTyping, { capture: true, passive: true });
-  document.addEventListener('compositionstart', markUserTyping, { capture: true, passive: true });
+  document.addEventListener('compositionstart', onCompositionStart, { capture: true, passive: true });
   document.addEventListener('compositionupdate', markUserTyping, { capture: true, passive: true });
+  document.addEventListener('compositionend', onCompositionEnd, { capture: true, passive: true });
+  document.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+  document.addEventListener('touchend', onTouchEnd, { capture: true, passive: true });
+  document.addEventListener('touchcancel', onTouchEnd, { capture: true, passive: true });
   onCleanup(() => {
+    clearTimeout(composeResetTimer);
     document.removeEventListener('keydown', markUserTyping, true);
-    document.removeEventListener('compositionstart', markUserTyping, true);
+    document.removeEventListener('compositionstart', onCompositionStart, true);
     document.removeEventListener('compositionupdate', markUserTyping, true);
+    document.removeEventListener('compositionend', onCompositionEnd, true);
+    document.removeEventListener('touchstart', onTouchStart, true);
+    document.removeEventListener('touchend', onTouchEnd, true);
+    document.removeEventListener('touchcancel', onTouchEnd, true);
   });
 
   function isUserActivelyTyping() {
-    return Date.now() - lastTypingAt < 1800;
+    return isComposing || isTouchDragging || Date.now() - lastTypingAt < 1800;
+  }
+
+  /* ---- Dirty-checked attribute & CSS var writers (prevent full-page style recalcs) ---- */
+  function setAttrIfChanged(el, attr, val) {
+    if (!el) return false;
+    if (val === null || val === undefined || val === false) {
+      if (!el.hasAttribute(attr)) return false;
+      el.removeAttribute(attr);
+      return true;
+    }
+    const str = String(val);
+    if (el.getAttribute(attr) === str) return false;
+    el.setAttribute(attr, str);
+    return true;
+  }
+
+  function setStyleVarIfChanged(el, prop, val) {
+    if (!el || !el.style) return false;
+    if (val === null || val === undefined || val === '') {
+      if (!el.style.getPropertyValue(prop)) return false;
+      el.style.removeProperty(prop);
+      return true;
+    }
+    const str = String(val);
+    if (el.style.getPropertyValue(prop) === str) return false;
+    el.style.setProperty(prop, str);
+    return true;
   }
 
   /* ==========================================================================
@@ -123,6 +182,8 @@
    * ========================================================================== */
   const LIGHT_NAMES = { default: '纯白默认', crystal: '白昼冷晶', alabaster: '暖白画册', sage: '松雾青岚' };
   const DARK_NAMES = { default: '暖炭默认', obsidian: '深空黑曜', basalt: '暖炭玄岩', marine: '深海墨蓝' };
+  const LIGHT_ACCENTS = { default: '#2F75C3', crystal: '#2563EB', alabaster: '#B45309', sage: '#15803D' };
+  const DARK_ACCENTS = { default: '#60A5FA', obsidian: '#3B82F6', basalt: '#D97706', marine: '#38BDF8' };
 
   function isCurrentlyDark() {
     return (
@@ -131,24 +192,21 @@
     );
   }
 
+  function getThemeAccent() {
+    if (isCurrentlyDark()) return DARK_ACCENTS[prefs.darkPalette] || DARK_ACCENTS.default;
+    return LIGHT_ACCENTS[prefs.lightPalette] || LIGHT_ACCENTS.default;
+  }
+
   function applyPalettes() {
     const html = document.documentElement;
     if (!html) return;
-    if (prefs.lightPalette && prefs.lightPalette !== 'default') {
-      html.setAttribute('data-ag-ps-light', prefs.lightPalette);
-    } else {
-      html.removeAttribute('data-ag-ps-light');
-    }
-    if (prefs.darkPalette && prefs.darkPalette !== 'default') {
-      html.setAttribute('data-ag-ps-dark', prefs.darkPalette);
-    } else {
-      html.removeAttribute('data-ag-ps-dark');
-    }
+    setAttrIfChanged(html, 'data-ag-ps-light', prefs.lightPalette && prefs.lightPalette !== 'default' ? prefs.lightPalette : null);
+    setAttrIfChanged(html, 'data-ag-ps-dark', prefs.darkPalette && prefs.darkPalette !== 'default' ? prefs.darkPalette : null);
   }
   applyPalettes();
   onCleanup(() => {
-    document.documentElement?.removeAttribute('data-ag-ps-light');
-    document.documentElement?.removeAttribute('data-ag-ps-dark');
+    setAttrIfChanged(document.documentElement, 'data-ag-ps-light', null);
+    setAttrIfChanged(document.documentElement, 'data-ag-ps-dark', null);
   });
 
   /* ==========================================================================
@@ -262,6 +320,16 @@
   }
 
   function closeTopFloatingPanel(restoreFocus = false) {
+    // Unified overlay priority stack: Image Context Menu > Suite Popover > Outline Drawer > Inline Editor
+    const imgMenu = document.getElementById('ag-ps-img-menu');
+    if (imgMenu && imgMenu.isConnected) {
+      if (typeof window.__agPrismCloseImageMenu === 'function') {
+        try { window.__agPrismCloseImageMenu(); } catch { imgMenu.remove(); }
+      } else {
+        imgMenu.remove();
+      }
+      return true;
+    }
     const pop = document.getElementById('ag-ps-popover');
     if (pop && pop.getAttribute('data-open') === '1') {
       pop.removeAttribute('data-open');
@@ -276,6 +344,15 @@
       if (restoreFocus) document.getElementById('ag-ps-btn-outline')?.focus();
       return true;
     }
+    const inlineEd = document.querySelector('.ag-ps-inline-editor');
+    if (inlineEd && inlineEd.isConnected) {
+      if (typeof window.__agPrismCloseInlineEditor === 'function') {
+        try { window.__agPrismCloseInlineEditor(); } catch { inlineEd.remove(); }
+      } else {
+        inlineEd.remove();
+      }
+      return true;
+    }
     return false;
   }
 
@@ -285,6 +362,7 @@
       if (closeTopFloatingPanel(true)) {
         e.preventDefault();
         e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
       }
       return;
     }
@@ -327,6 +405,19 @@
     if (resizeRaf) cancelAnimationFrame(resizeRaf);
   });
 
+  const outlineTextCache = new WeakMap();
+  const registeredOutlineActions = [];
+
+  function getCachedTurnText(el) {
+    if (!el) return '';
+    const rawLen = el.textContent ? el.textContent.length : 0;
+    const prev = outlineTextCache.get(el);
+    if (prev && prev.len === rawLen) return prev.txt;
+    const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    outlineTextCache.set(el, { len: rawLen, txt });
+    return txt;
+  }
+
   function renderOutlineList(filter = '') {
     const drawer = document.getElementById('ag-ps-outline');
     if (!drawer) return;
@@ -337,7 +428,7 @@
     const q = String(filter || '').trim().toLowerCase();
     const items = [];
     for (let i = 0; i < turns.length; i++) {
-      const txt = (turns[i].textContent || '').replace(/\s+/g, ' ').trim();
+      const txt = getCachedTurnText(turns[i]);
       if (q && !txt.toLowerCase().includes(q)) continue;
       items.push({ idx: i, txt, isCurrent: i === curIdx });
     }
@@ -348,14 +439,24 @@
       list.innerHTML = `<div style="padding:14px 8px;text-align:center;color:var(--muted-foreground)">暂无匹配提问（快捷键 Alt+↑/↓ 跳轮）</div>`;
       return;
     }
+    const extraBtns = (idx) =>
+      registeredOutlineActions
+        .map(
+          (act) =>
+            `<button type="button" class="ag-ps-outline-btw ag-ps-outline-act" data-outline-act="${escapeHtml(act.id)}" data-act-idx="${idx}" data-ag-ps-tip="${escapeHtml(act.title || act.label)}">${escapeHtml(act.label)}</button>`
+        )
+        .join('');
     list.innerHTML = items
       .map(
         (it) =>
-          `<button type="button" class="ag-ps-outline-item" data-turn-idx="${it.idx}"${it.isCurrent ? ' aria-current="true"' : ''}>
-            <span class="ag-ps-outline-idx">#${it.idx + 1}</span>
-            <span class="ag-ps-outline-txt" title="${escapeHtml(it.txt)}">${escapeHtml(it.txt.slice(0, 60))}</span>
-            <span class="ag-ps-outline-btw" data-btw-idx="${it.idx}" title="作为 /btw 支线提问">btw</span>
-          </button>`
+          `<div class="ag-ps-outline-item" role="listitem"${it.isCurrent ? ' aria-current="true"' : ''}>
+            <button type="button" class="ag-ps-outline-main" data-turn-idx="${it.idx}">
+              <span class="ag-ps-outline-idx">#${it.idx + 1}</span>
+              <span class="ag-ps-outline-txt" data-ag-ps-tip="${escapeHtml(it.txt)}">${escapeHtml(it.txt.slice(0, 60))}</span>
+            </button>
+            ${extraBtns(it.idx)}
+            <button type="button" class="ag-ps-outline-btw" data-btw-idx="${it.idx}" data-ag-ps-tip="作为 /btw 支线提问">btw</button>
+          </div>`
       )
       .join('');
   }
@@ -372,11 +473,26 @@
         <span class="ag-ps-outline-count ag-ps-pop-meta">0 轮</span>
       </div>
       <input type="text" class="ag-ps-outline-search" placeholder="筛选提问关键词… (Alt+↑/↓ 跳轮 · Esc 关)" />
-      <div class="ag-ps-outline-list"></div>
+      <div class="ag-ps-outline-list" role="list"></div>
     `;
     const input = drawer.querySelector('.ag-ps-outline-search');
     input.addEventListener('input', () => renderOutlineList(input.value));
     drawer.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const actEl = e.target.closest('[data-outline-act]');
+      if (actEl) {
+        e.stopPropagation();
+        const actId = actEl.getAttribute('data-outline-act');
+        const idx = Number(actEl.getAttribute('data-act-idx'));
+        const act = registeredOutlineActions.find((a) => a.id === actId);
+        const turns = getUserTurnElements();
+        if (act && typeof act.onClick === 'function' && turns[idx]) {
+          try { act.onClick(idx, turns[idx], buildBusHelpers()); } catch {}
+        }
+        drawer.removeAttribute('data-open');
+        syncToolbarActiveStates();
+        return;
+      }
       const btw = e.target.closest('[data-btw-idx]');
       if (btw) {
         e.stopPropagation();
@@ -502,7 +618,10 @@
     }
     return heatCache.data;
   }
-  onCleanup(() => clearTimeout(heatPartialTimer));
+  onCleanup(() => {
+    clearTimeout(heatPartialTimer);
+    document.querySelectorAll('.ag-ps-usage-extra').forEach((n) => n.remove());
+  });
 
   function syncUsageExtraMount() {
     const cardBody = document.querySelector('#ag-claude-ov-sections [data-ov-card="usage"] .ag-ov-card-body');
@@ -1005,6 +1124,7 @@
   onCleanup(cancelSnapRaf);
 
   let mascotBubbleOwner = null;
+  let lastObstacleSig = '';
 
   function syncBubbleEdgeAlign(bubble, actor, dock) {
     if (!bubble || !actor || !dock) return;
@@ -1116,16 +1236,247 @@
   }
   onCleanup(() => stopMascotRoaming(false));
 
-  function computeHomePositions(trackW, count, hasOverflowBadge) {
+  /* ---- Smart Button-Obstacle Avoidance & Playful Pointer-Dodge for Mascots ---- */
+  function scanDockObstacles(dock) {
+    if (!dock || !dock.isConnected) return { zones: [], crowded: false, sig: '' };
+    const dockRect = dock.getBoundingClientRect();
+    if (!dockRect.width) return { zones: [], crowded: false, sig: '' };
+    const { w, h, gap } = getMascotDims();
+    const bandTop = dockRect.top - Math.max(h, 26) - 10;
+    const bandBottom = dockRect.bottom + 12;
+    const searchRoot = dock.closest('main, [role="main"]') || document.body;
+    if (!searchRoot) return { zones: [], crowded: false, sig: '' };
+
+    const rawZones = [];
+    const controls = searchRoot.querySelectorAll('button, [role="button"], a[href], input:not([type="hidden"]), [role="tab"], [role="radio"]');
+    for (let i = 0; i < controls.length; i++) {
+      const el = controls[i];
+      if (!el.isConnected || dock.contains(el) || el.closest('#ag-ps-orb-dock, #ag-ps-popover, #ag-ps-tooltip')) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0 || r.width > 280) continue;
+      if (r.bottom < bandTop || r.top > bandBottom) continue;
+      if (r.right < dockRect.left - 8 || r.left > dockRect.right + 8) continue;
+      const l = Math.max(0, Math.floor(r.left - dockRect.left) - 10);
+      const ri = Math.min(Math.ceil(dockRect.width), Math.ceil(r.right - dockRect.left) + 10);
+      if (ri > l) rawZones.push([l, ri]);
+    }
+    if (!rawZones.length) return { zones: [], crowded: false, sig: '' };
+    rawZones.sort((a, b) => a[0] - b[0]);
+    const merged = [rawZones[0]];
+    for (let i = 1; i < rawZones.length; i++) {
+      const prev = merged[merged.length - 1];
+      if (rawZones[i][0] <= prev[1] + 12) {
+        prev[1] = Math.max(prev[1], rawZones[i][1]);
+      } else {
+        merged.push(rawZones[i]);
+      }
+    }
+
+    const totalBlockedW = merged.reduce((sum, z) => sum + (z[1] - z[0]), 0);
+    const hasBadge = Boolean(dock.querySelector('.ag-ps-more-badge'));
+    const rightBound = Math.max(12, Math.round(dockRect.width - (hasBadge ? 44 : 16)));
+    const needW = mascotActors.length ? mascotActors.length * w + Math.max(0, mascotActors.length - 1) * gap : w;
+    let cursor = 12;
+    let maxFreeGap = 0;
+    for (let i = 0; i < merged.length; i++) {
+      if (merged[i][0] > cursor) {
+        maxFreeGap = Math.max(maxFreeGap, Math.min(rightBound, merged[i][0]) - cursor);
+      }
+      cursor = Math.max(cursor, merged[i][1]);
+    }
+    if (rightBound > cursor) {
+      maxFreeGap = Math.max(maxFreeGap, rightBound - cursor);
+    }
+    const crowded = totalBlockedW > dockRect.width * 0.65 || (mascotActors.length > 0 && maxFreeGap < needW);
+    const sig = `${crowded ? '1' : '0'}|${merged.map((z) => `${z[0]}:${z[1]}`).join(',')}`;
+    return { zones: merged, crowded, sig };
+  }
+
+  function getDockObstacleZones(dock) {
+    return scanDockObstacles(dock).zones;
+  }
+
+  function isIntervalBlocked(x, w, zones) {
+    for (let i = 0; i < zones.length; i++) {
+      if (x + w > zones[i][0] && x < zones[i][1]) return true;
+    }
+    return false;
+  }
+
+  function findNearestSafeX(curX, w, minX, maxX, zones, avoidLeft, avoidRight) {
+    const allZones = avoidRight > avoidLeft ? [...zones, [avoidLeft, avoidRight]] : zones;
+    let bestX = null;
+    let bestDist = Infinity;
+    for (let x = minX; x <= maxX; x += 6) {
+      if (!isIntervalBlocked(x, w, allZones)) {
+        const d = Math.abs(x - curX);
+        if (d < bestDist) {
+          bestDist = d;
+          bestX = x;
+        }
+      }
+    }
+    return bestX;
+  }
+
+  function computeHomePositions(trackW, count, hasOverflowBadge, dock = null, scan = null) {
     const { w, gap } = getMascotDims();
     const rightPad = hasOverflowBadge ? 44 : 16;
     const totalW = count * w + Math.max(0, count - 1) * gap;
-    const startX = Math.max(12, Math.round(trackW - rightPad - totalW));
+    const info = scan || (dock ? scanDockObstacles(dock) : { zones: [], crowded: false });
+    const zones = info.zones || [];
+    let anchorRight = trackW - rightPad;
+
+    // If right-side controls (e.g. ^ / × or interactive card buttons) overlap default home, park neatly to their left
+    for (let i = zones.length - 1; i >= 0; i--) {
+      const [zl, zr] = zones[i];
+      if (zr >= anchorRight - totalW && zl < anchorRight) {
+        if (zl - 10 - totalW >= 12) {
+          anchorRight = zl - 10;
+        }
+      }
+    }
+
+    const startX = Math.max(12, Math.round(anchorRight - totalW));
     const xs = [];
     for (let i = 0; i < count; i++) {
-      xs.push(startX + i * (w + gap));
+      let cx = startX + i * (w + gap);
+      if (zones.length && isIntervalBlocked(cx, w, zones)) {
+        const safe = findNearestSafeX(cx, w, 12, Math.max(12, trackW - rightPad - w), zones, 0, 0);
+        if (safe !== null) cx = safe;
+      }
+      xs.push(cx);
     }
     return xs;
+  }
+
+  function positionMoreBadgeSafe(dock, xs, zones) {
+    const badge = dock && dock.querySelector('.ag-ps-more-badge');
+    if (!badge) return;
+    if (!xs.length) {
+      badge.hidden = true;
+      return;
+    }
+    const { w } = getMascotDims();
+    const trackW = dock.clientWidth || dock.parentElement?.getBoundingClientRect().width || 0;
+    const badgeW = Math.max(24, badge.offsetWidth || 26);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const candidates = [maxX + w + 6, minX - badgeW - 6];
+    let chosen = null;
+    for (const c of candidates) {
+      const rounded = Math.round(c);
+      if (rounded >= 6 && rounded + badgeW <= trackW - 6 && !isIntervalBlocked(rounded, badgeW, zones)) {
+        chosen = rounded;
+        break;
+      }
+    }
+    if (chosen === null) {
+      badge.hidden = true;
+    } else {
+      badge.hidden = false;
+      badge.style.left = `${chosen}px`;
+      badge.style.right = 'auto';
+    }
+  }
+
+  let dodgeHostEl = null;
+  let dodgeHostAc = null;
+  let lastDodgeCheckAt = 0;
+  let dodgeRestoreTimer = 0;
+
+  function detachMascotDodgeWatcher() {
+    if (dodgeHostAc) {
+      try { dodgeHostAc.abort(); } catch {}
+      dodgeHostAc = null;
+    }
+    dodgeHostEl = null;
+    if (dodgeRestoreTimer) {
+      clearTimeout(dodgeRestoreTimer);
+      dodgeRestoreTimer = 0;
+    }
+  }
+  onCleanup(detachMascotDodgeWatcher);
+
+  function ensureMascotDodgeWatcher(box) {
+    if (!box) return;
+    if (dodgeHostEl === window && dodgeHostAc) return;
+    detachMascotDodgeWatcher();
+    dodgeHostEl = window;
+    dodgeHostAc = new AbortController();
+    window.addEventListener(
+      'pointermove',
+      (e) => {
+        if (disposed || !mascotActors.length) return;
+        const now = Date.now();
+        if (now - lastDodgeCheckAt < 80) return;
+        lastDodgeCheckAt = now;
+        const dock = document.getElementById('ag-ps-mascot-dock');
+        if (!dock || !dock.isConnected || dock.getAttribute('data-yield') === '1') return;
+        const dockRect = dock.getBoundingClientRect();
+        if (!dockRect.width) return;
+        const { w, h } = getMascotDims();
+        if (e.clientY < dockRect.top - Math.max(h, 26) - 12 || e.clientY > dockRect.bottom + 14) return;
+        const scan = scanDockObstacles(dock);
+        if (scan.crowded) {
+          dock.setAttribute('data-yield', '1');
+          if (tipTarget && dock.contains(tipTarget)) hideCustomTooltip();
+          return;
+        }
+        const zones = scan.zones;
+        if (!zones.length) return;
+        const localPx = e.clientX - dockRect.left;
+        const nearZone = zones.find(([zl, zr]) => localPx >= zl - 16 && localPx <= zr + 16);
+        if (!nearZone) return;
+
+        const { minX, maxX } = getMascotRunwayBounds(dock);
+        let dodgedAny = false;
+        for (const actor of mascotActors) {
+          if (!actor.el || !actor.el.isConnected) continue;
+          const overlapsPointerZone = actor.x + w > nearZone[0] - 10 && actor.x < nearZone[1] + 10;
+          if (!overlapsPointerZone) continue;
+          const safeX = findNearestSafeX(actor.x, w, minX, maxX, zones, nearZone[0] - 12, nearZone[1] + 12);
+          if (safeX !== null && Math.abs(safeX - actor.x) >= 10) {
+            const dir = safeX < actor.x ? -1 : 1;
+            actor.el.setAttribute('data-dodging', '1');
+            actor.el.setAttribute('data-act', 'run');
+            applyActorTransform(actor, safeX, dir, 0.24);
+            setActorEmote(actor, '💨', false, 680);
+            if (tipTarget === actor.el) hideCustomTooltip();
+            dodgedAny = true;
+            setTimeout(() => {
+              if (!disposed && actor.el?.isConnected) {
+                actor.el.removeAttribute('data-dodging');
+                if (actor.el.getAttribute('data-act') === 'run' && !actor.roaming) {
+                  actor.el.removeAttribute('data-act');
+                }
+              }
+            }, 420);
+          } else {
+            // No safe escape slot on runway: yield smoothly so button clicks pass straight through
+            dock.setAttribute('data-yield', '1');
+            if (tipTarget && dock.contains(tipTarget)) hideCustomTooltip();
+            dodgedAny = true;
+            break;
+          }
+        }
+        if (dodgedAny && !mascotRoamingActive) {
+          clearTimeout(dodgeRestoreTimer);
+          dodgeRestoreTimer = setTimeout(() => {
+            dodgeRestoreTimer = 0;
+            if (!disposed && !mascotRoamingActive) {
+              const d2 = document.getElementById('ag-ps-mascot-dock');
+              if (d2) {
+                const s2 = scanDockObstacles(d2);
+                if (!s2.crowded) d2.removeAttribute('data-yield');
+                parkActorsHome(d2, false, false, s2);
+              }
+            }
+          }, 2600);
+        }
+      },
+      { passive: true, signal: dodgeHostAc.signal }
+    );
   }
 
   function applyActorTransform(actor, x, facing, durSec) {
@@ -1144,21 +1495,23 @@
     }
   }
 
-  function parkActorsHome(dock, instant, onlyIdleActors = false) {
+  function parkActorsHome(dock, instant, onlyIdleActors = false, scan = null) {
     if (!dock || !mascotActors.length) return;
     const trackW = dock.clientWidth || dock.parentElement?.getBoundingClientRect().width || 0;
     if (trackW <= 0) return;
     lastTrackWidth = trackW;
     const hasBadge = Boolean(dock.querySelector('.ag-ps-more-badge'));
-    const xs = computeHomePositions(trackW, mascotActors.length, hasBadge);
+    const info = scan || scanDockObstacles(dock);
+    const xs = computeHomePositions(trackW, mascotActors.length, hasBadge, dock, info);
     cancelSnapRaf();
     if (instant) dock.setAttribute('data-snap', '1');
     else dock.removeAttribute('data-snap');
     mascotActors.forEach((actor, idx) => {
       if (onlyIdleActors && actor.roaming) return;
       if (actor.el) actor.el.removeAttribute('data-act');
-      applyActorTransform(actor, xs[idx], 1, instant ? 0 : 0.55);
+      applyActorTransform(actor, xs[idx], 1, instant ? 0 : 0.45);
     });
+    positionMoreBadgeSafe(dock, xs, info.zones || []);
     if (instant) {
       mascotSnapRaf = requestAnimationFrame(() => {
         mascotSnapRaf = 0;
@@ -1262,15 +1615,21 @@
       const span = maxX - minX;
 
       const roll = Math.random();
+      const obstacleZones = getDockObstacleZones(dock);
       if (span >= w * 2 && roll < (isCalm ? 0.52 : 0.58)) {
         let targetX = actor.x;
         const minStep = Math.min(48, span * 0.25);
-        for (let attempt = 0; attempt < 6; attempt++) {
+        for (let attempt = 0; attempt < 10; attempt++) {
           const cand = minX + Math.random() * span;
           if (Math.abs(cand - actor.x) < minStep) continue;
+          if (obstacleZones.length && isIntervalBlocked(cand, w, obstacleZones)) continue;
           const crowded = mascotActors.some((o, oi) => oi !== idx && Math.abs(o.x - cand) < w + 8);
           targetX = cand;
           if (!crowded) break;
+        }
+        if (obstacleZones.length && isIntervalBlocked(targetX, w, obstacleZones)) {
+          const safe = findNearestSafeX(targetX, w, minX, maxX, obstacleZones, 0, 0);
+          if (safe !== null) targetX = safe;
         }
         const dist = Math.abs(targetX - actor.x);
         if (dist >= 10) {
@@ -1335,7 +1694,7 @@
     mascotRoamingActive = true;
     dock.setAttribute('data-roaming', '1');
     const hasBadge = Boolean(dock.querySelector('.ag-ps-more-badge'));
-    const homeXs = computeHomePositions(dock.clientWidth || 0, mascotActors.length, hasBadge);
+    const homeXs = computeHomePositions(dock.clientWidth || 0, mascotActors.length, hasBadge, dock);
     mascotActors.forEach((actor, idx) => {
       if (actor.busy) {
         if (!actor.roaming) {
@@ -1442,6 +1801,7 @@
       box.appendChild(dock);
       rebuilt = true;
     }
+    ensureMascotDodgeWatcher(box);
     if (rebuilt || rosterSig !== lastRosterSig) {
       stopMascotRoaming(false);
       lastRosterSig = rosterSig;
@@ -1449,10 +1809,10 @@
       const actorsHtml = roster
         .map(
           (item, idx) =>
-            `<span class="ag-ps-actor" data-actor-idx="${idx}" data-busy="${item.busy ? '1' : '0'}" style="--ag-ps-idx:${idx}" title="${escapeHtml(item.label)}（${item.busy ? '运行中' : '待命 · 0fps'}）"><span class="ag-ps-emote" aria-hidden="true"></span><span class="ag-ps-actor-body">${item.svg}</span></span>`
+            `<span class="ag-ps-actor" data-actor-idx="${idx}" data-busy="${item.busy ? '1' : '0'}" style="--ag-ps-idx:${idx}" data-ag-ps-tip="${escapeHtml(item.label)} · ${item.busy ? '运行中' : '待命'}" data-ag-ps-tip-status="${item.busy ? 'busy' : 'idle'}"><span class="ag-ps-emote" aria-hidden="true"></span><span class="ag-ps-actor-body">${item.svg}</span></span>`
         )
         .join('');
-      const badgeHtml = overflow > 0 ? `<span class="ag-ps-more-badge" title="还有 ${overflow} 个活跃 Agent">+${overflow}</span>` : '';
+      const badgeHtml = overflow > 0 ? `<span class="ag-ps-more-badge" data-ag-ps-tip="还有 ${overflow} 个活跃 Agent">+${overflow}</span>` : '';
       dock.innerHTML = `<span class="ag-ps-mascot-bubble"></span>${actorsHtml}${badgeHtml}`;
       mascotActors = Array.from(dock.querySelectorAll('.ag-ps-actor')).map((el, idx) => ({
         key: roster[idx].key,
@@ -1473,6 +1833,16 @@
       }));
       applyMascotSizeVars(dock, false);
       parkActorsHome(dock, true, false);
+      const obs = scanDockObstacles(dock);
+      lastObstacleSig = obs.sig;
+      const { w } = getMascotDims();
+      const anyBlocked = obs.zones.length > 0 && mascotActors.some((a) => isIntervalBlocked(a.x, w, obs.zones));
+      if (obs.crowded || anyBlocked) {
+        dock.setAttribute('data-yield', '1');
+        if (tipTarget && dock.contains(tipTarget)) hideCustomTooltip();
+      } else {
+        dock.removeAttribute('data-yield');
+      }
     } else {
       mascotActors.forEach((actor, idx) => {
         const item = roster[idx];
@@ -1480,11 +1850,32 @@
         actor.busy = item.busy;
         actor.label = item.label;
         if (actor.el) {
-          actor.el.setAttribute('data-busy', item.busy ? '1' : '0');
-          actor.el.title = `${item.label}（${item.busy ? '运行中' : '待命 · 0fps'}）`;
+          setAttrIfChanged(actor.el, 'data-busy', item.busy ? '1' : '0');
+          setAttrIfChanged(actor.el, 'data-ag-ps-tip', `${item.label} · ${item.busy ? '运行中' : '待命'}`);
+          setAttrIfChanged(actor.el, 'data-ag-ps-tip-status', item.busy ? 'busy' : 'idle');
         }
       });
       applyMascotSizeVars(dock, false);
+      const obs = scanDockObstacles(dock);
+      const { w } = getMascotDims();
+      const sigChanged = obs.sig !== lastObstacleSig;
+      if (sigChanged) lastObstacleSig = obs.sig;
+      const anyBlocked = obs.zones.length > 0 && mascotActors.some((a) => isIntervalBlocked(a.x, w, obs.zones));
+      if (obs.crowded) {
+        dock.setAttribute('data-yield', '1');
+        if (tipTarget && dock.contains(tipTarget)) hideCustomTooltip();
+      } else if (sigChanged || anyBlocked) {
+        parkActorsHome(dock, false, mascotRoamingActive, obs);
+        const stillBlocked = obs.zones.length > 0 && mascotActors.some((a) => isIntervalBlocked(a.x, w, obs.zones));
+        if (stillBlocked) {
+          dock.setAttribute('data-yield', '1');
+          if (tipTarget && dock.contains(tipTarget)) hideCustomTooltip();
+        } else {
+          dock.removeAttribute('data-yield');
+        }
+      } else {
+        dock.removeAttribute('data-yield');
+      }
     }
     dock.setAttribute('data-vibe', prefs.mascotVibe === 'calm' ? 'calm' : 'lively');
     syncMascotCompactGuard();
@@ -1552,7 +1943,10 @@
       const status = detectLeadStatusEmote(Boolean(busy));
       if (status.icon) {
         setActorEmote(lead, status.icon, false);
-        if (status.tip && lead.el) lead.el.title = `${lead.label}（${status.tip}）`;
+        if (status.tip && lead.el) {
+          setAttrIfChanged(lead.el, 'data-ag-ps-tip', `${lead.label} · ${status.tip}`);
+          setAttrIfChanged(lead.el, 'data-ag-ps-tip-status', 'busy');
+        }
       } else if (moodNow === 'sleep') {
         setActorEmote(lead, 'zZ', true);
       } else {
@@ -1568,6 +1962,7 @@
     stopMascotRoaming(false);
     mascotActors = [];
     lastRosterSig = '';
+    lastObstacleSig = '';
     document.getElementById('ag-ps-mascot-dock')?.remove();
   });
 
@@ -1580,6 +1975,7 @@
   const thoughtInFlight = new WeakSet();
   const thoughtTextMemo = new WeakMap(); // bodyEl -> { src, zh, ver }
   const thoughtPeekOriginal = new WeakSet(); // bodyEl user chose to peek original
+  const thoughtBoxByTrigger = new WeakMap(); // triggerBtn -> { box, bodyEl }
   let thoughtSeq = 0;
 
   function looksMostlyEnglish(text) {
@@ -1605,12 +2001,25 @@
   }
 
   function removeThoughtBoxNear(triggerBtn) {
+    const tracked = triggerBtn ? thoughtBoxByTrigger.get(triggerBtn) : null;
+    if (tracked) {
+      if (tracked.box && tracked.box.isConnected) tracked.box.remove();
+      if (tracked.bodyEl) {
+        tracked.bodyEl.classList.remove('ag-ps-thought-src-dim', 'ag-ps-thought-src-hidden');
+      }
+      thoughtBoxByTrigger.delete(triggerBtn);
+    }
     const parent = triggerBtn && triggerBtn.parentElement;
     if (!parent) return;
     parent.querySelectorAll(':scope > .ag-ps-thought-zh').forEach((n) => n.remove());
     parent.querySelectorAll('.ag-ps-thought-src-dim, .ag-ps-thought-src-hidden').forEach((n) => {
       n.classList.remove('ag-ps-thought-src-dim', 'ag-ps-thought-src-hidden');
     });
+    const fallbackBody = findThoughtBody(triggerBtn);
+    if (fallbackBody && fallbackBody.parentElement && fallbackBody.parentElement !== parent) {
+      fallbackBody.parentElement.querySelectorAll(':scope > .ag-ps-thought-zh').forEach((n) => n.remove());
+      fallbackBody.classList.remove('ag-ps-thought-src-dim', 'ag-ps-thought-src-hidden');
+    }
   }
 
   function applyThoughtDisplay(bodyEl, zhText, mode) {
@@ -1650,6 +2059,7 @@
       bodyEl.classList.remove('ag-ps-thought-src-hidden');
       bodyEl.classList.add('ag-ps-thought-src-dim');
     }
+    return box;
   }
 
   function extractCleanThoughtText(bodyEl) {
@@ -1663,7 +2073,7 @@
     }
   }
 
-  function translateThoughtContainer(bodyEl) {
+  function translateThoughtContainer(bodyEl, triggerBtn = null) {
     if (!bodyEl || typeof window.__agProjectCall !== 'function') return;
     const mode = prefs.thoughtMode;
     if (mode === 'off') {
@@ -1675,7 +2085,8 @@
     const clipped = srcText.slice(0, 9800);
     const memo = thoughtTextMemo.get(bodyEl);
     if (memo && memo.src === clipped && memo.zh) {
-      applyThoughtDisplay(bodyEl, memo.zh, mode);
+      const box = applyThoughtDisplay(bodyEl, memo.zh, mode);
+      if (triggerBtn && box) thoughtBoxByTrigger.set(triggerBtn, { box, bodyEl });
       return;
     }
     if (thoughtInFlight.has(bodyEl)) return;
@@ -1689,7 +2100,8 @@
         if (!latest || latest.ver !== myVer) return; // Discard stale response
         if (res && res.ok && res.translated && !res.skipped) {
           thoughtTextMemo.set(bodyEl, { src: clipped, zh: res.translated, ver: myVer });
-          applyThoughtDisplay(bodyEl, res.translated, prefs.thoughtMode);
+          const box = applyThoughtDisplay(bodyEl, res.translated, prefs.thoughtMode);
+          if (triggerBtn && box) thoughtBoxByTrigger.set(triggerBtn, { box, bodyEl });
         }
       })
       .catch(() => {})
@@ -1711,6 +2123,7 @@
       if (!bodyEl) continue;
       if (prefs.thoughtMode === 'off') {
         applyThoughtDisplay(bodyEl, '', 'off');
+        thoughtBoxByTrigger.delete(trig);
         continue;
       }
       // Only defer the actively streaming last thinking block (which has no completed duration yet)
@@ -1718,10 +2131,13 @@
       const isCompleted = /\d+\s*s\b|\d+\s*秒|已思考|Thought\s+for/i.test(trigTxt);
       if (isBusy && i === triggers.length - 1 && !isCompleted) {
         const memo = thoughtTextMemo.get(bodyEl);
-        if (memo && memo.zh) applyThoughtDisplay(bodyEl, memo.zh, prefs.thoughtMode);
+        if (memo && memo.zh) {
+          const box = applyThoughtDisplay(bodyEl, memo.zh, prefs.thoughtMode);
+          if (box) thoughtBoxByTrigger.set(trig, { box, bodyEl });
+        }
         continue;
       }
-      translateThoughtContainer(bodyEl);
+      translateThoughtContainer(bodyEl, trig);
     }
   }
   onCleanup(() => {
@@ -1732,14 +2148,617 @@
   });
 
   /* ==========================================================================
-   * 7. Titlebar Entry & Control Popover
+   * 7. Titlebar Entry, Theme-Adaptive Tooltip, Update Capsule & v4 Event Bus
    * ========================================================================== */
+  const registeredPanelSections = [];
+  const busSubscribers = new Set();
+  let cachedComposerEl = null;
+
+  function getComposerEl() {
+    if (cachedComposerEl && cachedComposerEl.isConnected) return cachedComposerEl;
+    const inputBox = document.getElementById('antigravity.agentSidePanelInputBox');
+    if (inputBox) {
+      cachedComposerEl =
+        inputBox.closest('[data-testid="composer-container"]') ||
+        inputBox.closest('form') ||
+        inputBox.parentElement ||
+        inputBox;
+      return cachedComposerEl;
+    }
+    const fallback = document.querySelector('[data-testid="composer-container"]');
+    cachedComposerEl = fallback || null;
+    return cachedComposerEl;
+  }
+
+  function parseRelativeResetToIso(durationText, nowMs = Date.now()) {
+    const s = String(durationText || '').trim();
+    if (!s) return '';
+    if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+      const t = Date.parse(s);
+      return Number.isFinite(t) ? new Date(t).toISOString() : '';
+    }
+    let totalMs = 0;
+    const dayM = s.match(/(\d+(?:\.\d+)?)\s*(?:d|day|days|天)/i);
+    const hourM = s.match(/(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours|小时|时)/i);
+    const minM = s.match(/(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes|分钟|分)/i);
+    if (dayM) totalMs += Number(dayM[1]) * 86400000;
+    if (hourM) totalMs += Number(hourM[1]) * 3600000;
+    if (minM) totalMs += Number(minM[1]) * 60000;
+    if (totalMs > 0 && Number.isFinite(totalMs)) {
+      return new Date(nowMs + totalMs).toISOString();
+    }
+    return '';
+  }
+
+  function getQuotaState() {
+    let pct5h = null;
+    let pct7d = null;
+    let reset5hAt = '';
+    let reset7dAt = '';
+    try {
+      const ov = document.getElementById('ag-claude-ov-sections') || document.querySelector('[data-testid="overview-panel"]');
+      if (ov) {
+        const txt = ov.textContent || '';
+        const m5 = txt.match(/5\s*(?:小时|h)[^\d%]{0,24}(\d{1,3}(?:\.\d+)?)\s*%\s*(?:已用|used|剩余|left)?/i);
+        const m7 = txt.match(/(?:每周|周限额|周额度|weekly|7d)[^\d%]{0,24}(\d{1,3}(?:\.\d+)?)\s*%\s*(?:已用|used|剩余|left)?/i);
+        const toRemaining = (m) => {
+          if (!m) return null;
+          const v = Number(m[1]);
+          if (!Number.isFinite(v)) return null;
+          const isUsed = /已用|used/i.test(m[0]);
+          const rem = isUsed ? 100 - v : v;
+          return Math.max(0, Math.min(100, Math.round(rem * 10) / 10));
+        };
+        pct5h = toRemaining(m5);
+        pct7d = toRemaining(m7);
+        const nowMs = Date.now();
+        const r5 = txt.match(/5\s*(?:小时|h)[^;\n]{0,42}?(\d+\s*(?:h|小时)(?:\s*\d+\s*(?:m|分))?|\d+\s*(?:m|分钟?))/i);
+        const r7 = txt.match(/(?:每周|周限额|周额度|weekly|7d)[^;\n]{0,42}?(\d+\s*(?:d|天)(?:\s*\d+\s*(?:h|小时))?|\d+\s*(?:h|小时))/i);
+        if (r5) reset5hAt = parseRelativeResetToIso(r5[1], nowMs);
+        if (r7) reset7dAt = parseRelativeResetToIso(r7[1], nowMs);
+      }
+    } catch {}
+    const vals = [pct5h, pct7d].filter((n) => typeof n === 'number');
+    const minPct = vals.length ? Math.min(...vals) : null;
+    return { pct5h, pct7d, minPct, reset5hAt, reset7dAt };
+  }
+
+  /* ---- Sanitized Workbench Bridge (Main Window <-> Prism Files MCP App iframe) ---- */
+  const ALLOWED_BRIDGE_TABS = new Set(['browse', 'artifacts', 'pins', 'search', 'accounts']);
+  const bridgeSessionId = `ps-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  let bridgeTargetWin = null;
+  let bridgeTargetOrigin = '*';
+  let bridgeLastSeenAt = 0;
+  let pendingWorkbenchTab = '';
+  let pendingWorkbenchTabAt = 0;
+  let pendingIntentId = '';
+  let bridgeRetryTimers = [];
+  let lastPushedQuotaSig = '';
+  let lastPushedQuotaAt = 0;
+
+  let cachedLiveQuota = (() => {
+    try {
+      const raw = localStorage.getItem(LIVE_QUOTA_STORAGE_KEY);
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (p && typeof p === 'object') return p;
+      }
+    } catch {}
+    return { pct5h: null, pct7d: null, reset5hAt: '', reset7dAt: '', observedAt: 0 };
+  })();
+
+  let cachedAccountSummary = (() => {
+    try {
+      const raw = localStorage.getItem(ACCOUNT_SUMMARY_STORAGE_KEY);
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (p && typeof p === 'object') return p;
+      }
+    } catch {}
+    return null;
+  })();
+
+  function clearBridgeRetryTimers() {
+    while (bridgeRetryTimers.length) {
+      clearTimeout(bridgeRetryTimers.pop());
+    }
+  }
+
+  function isTrustedBridgeOrigin(origin) {
+    const o = String(origin || '').trim();
+    if (!o || o === 'null') return true; // Sandboxed srcdoc MCP App iframe
+    if (o === window.location.origin) return true;
+    return /^(?:app|vscode-webview|file):\/\//i.test(o) || /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i.test(o);
+  }
+
+  function collectCandidateFrameWindows() {
+    const wins = [];
+    const seen = new Set();
+    const pushWin = (w) => {
+      if (!w || w === window || seen.has(w)) return;
+      seen.add(w);
+      wins.push(w);
+    };
+    if (bridgeTargetWin) pushWin(bridgeTargetWin);
+    try {
+      const frames = document.querySelectorAll('iframe');
+      for (let i = 0; i < frames.length; i++) {
+        const cw = frames[i].contentWindow;
+        pushWin(cw);
+        // Best-effort 1-level nested frame scan when same-origin
+        try {
+          const innerCount = cw && cw.frames ? cw.frames.length : 0;
+          for (let j = 0; j < Math.min(innerCount, 6); j++) {
+            pushWin(cw.frames[j]);
+          }
+        } catch {}
+      }
+    } catch {}
+    return wins;
+  }
+
+  function isOwnedIframeWindow(win) {
+    if (!win || win === window) return false;
+    if (win === bridgeTargetWin) return true;
+    const candidates = collectCandidateFrameWindows();
+    if (candidates.includes(win)) return true;
+    try {
+      if (win.parent === window || win.top === window) return true;
+    } catch {}
+    return false;
+  }
+
+  function postBridgeMessage(win, payload, origin = bridgeTargetOrigin) {
+    if (!win || typeof win.postMessage !== 'function') return false;
+    const safeOrigin = origin && origin !== 'null' ? origin : '*';
+    try {
+      win.postMessage(
+        Object.assign({ __agPrismBridge: 'v1', sessionId: bridgeSessionId, source: 'prism-suite', target: 'prism-files' }, payload),
+        safeOrigin
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function broadcastBridgePing() {
+    const reqId = `ping-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const wins = collectCandidateFrameWindows();
+    for (let i = 0; i < wins.length; i++) {
+      postBridgeMessage(wins[i], { type: 'bridge-ping', requestId: reqId }, '*');
+    }
+  }
+
+  function dispatchSwitchTabWithRetry(targetTab) {
+    if (!targetTab || !ALLOWED_BRIDGE_TABS.has(targetTab)) return;
+    clearBridgeRetryTimers();
+    const intentId = `nav-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    pendingWorkbenchTab = targetTab;
+    pendingWorkbenchTabAt = Date.now();
+    pendingIntentId = intentId;
+
+    const sendAttempt = (attempt) => {
+      if (disposed || pendingIntentId !== intentId) return;
+      const reqId = `${intentId}-r${attempt}`;
+      if (bridgeTargetWin) {
+        postBridgeMessage(bridgeTargetWin, {
+          type: 'switch-tab',
+          intentId,
+          requestId: reqId,
+          tab: targetTab,
+          focus: true
+        }, bridgeTargetOrigin);
+      }
+      // Also broadcast discovery ping + switch-tab to candidate frames on early/retry attempts so hot-reloaded or nested frames pick it up
+      if (!bridgeTargetWin || attempt === 1 || attempt === 3) {
+        const wins = collectCandidateFrameWindows();
+        for (let i = 0; i < wins.length; i++) {
+          if (wins[i] === bridgeTargetWin) continue;
+          postBridgeMessage(wins[i], { type: 'bridge-ping', requestId: `p-${reqId}` }, '*');
+          postBridgeMessage(wins[i], {
+            type: 'switch-tab',
+            intentId,
+            requestId: reqId,
+            tab: targetTab,
+            focus: true
+          }, '*');
+        }
+      }
+    };
+
+    const delays = [0, 100, 260, 600, 1100, 1800];
+    for (let i = 0; i < delays.length; i++) {
+      const idx = i;
+      if (delays[i] === 0) {
+        sendAttempt(0);
+      } else {
+        bridgeRetryTimers.push(setTimeout(() => sendAttempt(idx), delays[idx]));
+      }
+    }
+  }
+
+  function sanitizeQuotaPayload(q) {
+    if (!q || typeof q !== 'object') return null;
+    const normPct = (v) => {
+      if (v === null || v === undefined || v === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n * 10) / 10)) : null;
+    };
+    const pct5h = normPct(q.pct5h);
+    const pct7d = normPct(q.pct7d);
+    if (pct5h === null && pct7d === null) return null;
+    return {
+      pct5h,
+      pct7d,
+      reset5hAt: typeof q.reset5hAt === 'string' ? q.reset5hAt.slice(0, 40) : '',
+      reset7dAt: typeof q.reset7dAt === 'string' ? q.reset7dAt.slice(0, 40) : '',
+      observedAt: Date.now()
+    };
+  }
+
+  function syncWorkbenchTooltip() {
+    const wbBtn = document.getElementById('ag-ps-btn-workbench');
+    if (!wbBtn) return;
+    const parts = ['快捷打开 Prism 工作台'];
+    if (cachedAccountSummary && cachedAccountSummary.activeAlias) {
+      const roleTag = cachedAccountSummary.activeRole === 'primary' ? '主号' : '备号';
+      parts.push(`${roleTag}: ${cachedAccountSummary.activeAlias}`);
+    }
+    const q = cachedLiveQuota;
+    if (q && (typeof q.pct5h === 'number' || typeof q.pct7d === 'number')) {
+      const qBits = [];
+      if (typeof q.pct5h === 'number') qBits.push(`5h ${q.pct5h}%`);
+      if (typeof q.pct7d === 'number') qBits.push(`7d ${q.pct7d}%`);
+      if (qBits.length) parts.push(qBits.join(' · '));
+    }
+    setAttrIfChanged(wbBtn, 'data-ag-ps-tip', parts.join(' ｜ '));
+  }
+
+  function pushLiveQuotaToBridge(force = false) {
+    const live = sanitizeQuotaPayload(getQuotaState());
+    if (!live) return;
+    cachedLiveQuota = live;
+    try { localStorage.setItem(LIVE_QUOTA_STORAGE_KEY, JSON.stringify(live)); } catch {}
+    syncWorkbenchTooltip();
+    const sig = `${live.pct5h ?? ''}|${live.pct7d ?? ''}|${live.reset5hAt.slice(0, 16)}|${live.reset7dAt.slice(0, 16)}`;
+    const now = Date.now();
+    if (!force && sig === lastPushedQuotaSig && now - lastPushedQuotaAt < 60000) return;
+    lastPushedQuotaSig = sig;
+    lastPushedQuotaAt = now;
+    if (bridgeTargetWin) {
+      if (!postBridgeMessage(bridgeTargetWin, { type: 'quota-sync', quota: live })) {
+        bridgeTargetWin = null;
+      }
+    }
+  }
+
+  function onWorkbenchBridgeMessage(event) {
+    if (disposed) return;
+    const data = event && event.data;
+    if (!data || typeof data !== 'object' || data.__agPrismBridge !== 'v1') return;
+    if (!isTrustedBridgeOrigin(event.origin)) return;
+    const src = event.source;
+    if (!src || src === window) return;
+    if (data.source && data.source !== 'prism-files') return;
+    const replyOrigin = event.origin && event.origin !== 'null' ? event.origin : '*';
+
+    if (data.type === 'ready' || data.type === 'bridge-pong') {
+      if (!isOwnedIframeWindow(src)) return;
+      bridgeTargetWin = src;
+      bridgeTargetOrigin = replyOrigin;
+      bridgeLastSeenAt = Date.now();
+      const liveNow = sanitizeQuotaPayload(getQuotaState()) || (cachedLiveQuota && (cachedLiveQuota.pct5h !== null || cachedLiveQuota.pct7d !== null) ? cachedLiveQuota : null);
+      const wantTab =
+        pendingWorkbenchTab && Date.now() - pendingWorkbenchTabAt < 15000 && ALLOWED_BRIDGE_TABS.has(pendingWorkbenchTab)
+          ? pendingWorkbenchTab
+          : '';
+      postBridgeMessage(src, {
+        type: 'init-sync',
+        switchTab: wantTab,
+        intentId: wantTab ? (pendingIntentId || `init-${Date.now().toString(36)}`) : '',
+        focus: Boolean(wantTab),
+        quota: liveNow
+      }, replyOrigin);
+      return;
+    }
+
+    if (data.type === 'ack') {
+      if (!isOwnedIframeWindow(src)) return;
+      bridgeTargetWin = src;
+      bridgeTargetOrigin = replyOrigin;
+      bridgeLastSeenAt = Date.now();
+      if (data.ok && pendingIntentId && data.intentId === pendingIntentId) {
+        pendingIntentId = '';
+        pendingWorkbenchTab = '';
+        pendingWorkbenchTabAt = 0;
+        clearBridgeRetryTimers();
+      }
+      return;
+    }
+
+    if (data.type === 'account-summary' && data.summary && typeof data.summary === 'object') {
+      if (!isOwnedIframeWindow(src)) return;
+      bridgeTargetWin = src;
+      bridgeTargetOrigin = replyOrigin;
+      bridgeLastSeenAt = Date.now();
+      const s = data.summary;
+      cachedAccountSummary = {
+        enabled: Boolean(s.enabled),
+        activeAlias: String(s.activeAlias || '').trim().slice(0, 32),
+        activeEmail: String(s.activeEmail || '').trim().slice(0, 64),
+        activeRole: s.activeRole === 'primary' ? 'primary' : (s.activeRole === 'backup' ? 'backup' : ''),
+        accountCount: Math.max(0, Math.min(99, Number(s.accountCount) || 0)),
+        pendingSwitchEmail: String(s.pendingSwitchEmail || '').trim().slice(0, 64),
+        updatedAt: Date.now()
+      };
+      try { localStorage.setItem(ACCOUNT_SUMMARY_STORAGE_KEY, JSON.stringify(cachedAccountSummary)); } catch {}
+      syncWorkbenchTooltip();
+      const pop = document.getElementById('ag-ps-popover');
+      if (pop && pop.getAttribute('data-open') === '1') {
+        renderPopoverContent(pop);
+      }
+    }
+  }
+  window.addEventListener('message', onWorkbenchBridgeMessage);
+  onCleanup(() => {
+    window.removeEventListener('message', onWorkbenchBridgeMessage);
+    clearBridgeRetryTimers();
+    bridgeTargetWin = null;
+  });
+  setTimeout(() => { if (!disposed) broadcastBridgePing(); }, 450);
+
+  function emitBus(type) {
+    if (disposed) return;
+    const payload = {
+      type,
+      prefs: Object.assign({}, prefs),
+      busy: isAgentGenerating(),
+      dark: isCurrentlyDark(),
+      path: window.location.pathname
+    };
+    for (const fn of busSubscribers) {
+      try { fn(payload); } catch {}
+    }
+  }
+
+  function setPref(key, val) {
+    if (!key) return;
+    if (prefs[key] === val) return;
+    prefs[key] = val;
+    savePrefs();
+    emitBus('prefs');
+    const pop = document.getElementById('ag-ps-popover');
+    if (pop && pop.getAttribute('data-open') === '1') {
+      renderPopoverContent(pop);
+    }
+  }
+
+  function buildBusHelpers() {
+    return {
+      prefs: Object.assign({}, prefs),
+      getPrefs: () => Object.assign({}, prefs),
+      setPref,
+      refreshPopover: () => {
+        const pop = document.getElementById('ag-ps-popover');
+        if (pop && pop.getAttribute('data-open') === '1') renderPopoverContent(pop);
+      },
+      showToast: showJumpToast,
+      isDark: isCurrentlyDark,
+      isBusy: isAgentGenerating,
+      escapeHtml
+    };
+  }
+
+  /* ---- GitHub Release Update Checker (on-demand only, zero auto network calls) ---- */
+  let updateState = { status: 'idle', latest: '', url: REPO_RELEASES_URL };
+
+  function compareSemver(a, b) {
+    const pa = String(a || '').replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
+    const pb = String(b || '').replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < 3; i++) {
+      if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+    }
+    return 0;
+  }
+
+  async function checkGithubUpdate() {
+    if (updateState.status === 'checking') return;
+    updateState = { status: 'checking', latest: '', url: REPO_RELEASES_URL };
+    const pop = document.getElementById('ag-ps-popover');
+    if (pop && pop.getAttribute('data-open') === '1') renderPopoverContent(pop);
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 7000);
+      const res = await fetch(REPO_RELEASES_API, {
+        headers: { Accept: 'application/vnd.github+json' },
+        signal: ctrl.signal
+      });
+      clearTimeout(timer);
+      if (disposed) return;
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (disposed) return;
+      const tag = String(data.tag_name || '').trim();
+      const url = typeof data.html_url === 'string' && /^https:\/\/github\.com\//.test(data.html_url) ? data.html_url : REPO_RELEASES_URL;
+      if (tag && compareSemver(tag, SUITE_VERSION) > 0) {
+        updateState = { status: 'available', latest: tag, url };
+        showJumpToast(`发现新版本 ${tag}，可前往 Releases 下载更新`);
+      } else {
+        updateState = { status: 'latest', latest: tag || `v${SUITE_VERSION}`, url };
+        showJumpToast(`当前已是最新版本 v${SUITE_VERSION}`);
+      }
+    } catch {
+      if (disposed) return;
+      updateState = { status: 'error', latest: '', url: REPO_RELEASES_URL };
+      showJumpToast('检查更新失败，请稍后再试');
+    }
+    if (disposed) return;
+    const p2 = document.getElementById('ag-ps-popover');
+    if (p2 && p2.getAttribute('data-open') === '1') renderPopoverContent(p2);
+  }
+
+  /* ---- Pointer-Safe Theme-Adaptive Custom Tooltip Engine (data-ag-ps-tip) ---- */
+  let tipEl = null;
+  let tipTarget = null;
+
+  function ensureTooltipEl() {
+    if (tipEl && tipEl.isConnected) return tipEl;
+    tipEl = document.createElement('div');
+    tipEl.id = 'ag-ps-tooltip';
+    tipEl.setAttribute('role', 'tooltip');
+    tipEl.setAttribute('data-ag-i18n-ignore', '1');
+    document.body.appendChild(tipEl);
+    return tipEl;
+  }
+
+  function hideCustomTooltip() {
+    tipTarget = null;
+    if (tipEl) tipEl.removeAttribute('data-show');
+  }
+
+  function showCustomTooltip(target, evt) {
+    if (disposed || !target) return;
+    const text = target.getAttribute('data-ag-ps-tip');
+    if (!text) return;
+    tipTarget = target;
+    const el = ensureTooltipEl();
+    const status = target.getAttribute('data-ag-ps-tip-status') || '';
+    el.textContent = '';
+    if (status === 'busy' || status === 'idle') {
+      const dot = document.createElement('span');
+      dot.className = 'ag-ps-tip-dot';
+      dot.setAttribute('data-status', status);
+      el.appendChild(dot);
+    }
+    const span = document.createElement('span');
+    span.textContent = text;
+    el.appendChild(span);
+    el.setAttribute('data-show', '1');
+
+    const r = target.getBoundingClientRect();
+    const tw = el.offsetWidth || 140;
+    const th = el.offsetHeight || 28;
+    const isMascot = target.classList.contains('ag-ps-actor');
+    const clearance = isMascot ? 16 : 12;
+
+    let left = Math.round(r.left + r.width / 2 - tw / 2);
+    left = Math.max(8, Math.min(window.innerWidth - tw - 8, left));
+
+    // Strictly prefer ABOVE target so the OS pointer below never obscures text
+    let top = Math.round(r.top - th - clearance);
+    let place = 'top';
+    if (top < 8) {
+      top = Math.round(r.bottom + 14);
+      place = 'bottom';
+      if (evt && typeof evt.clientY === 'number' && top <= evt.clientY + 18) {
+        top = Math.min(window.innerHeight - th - 8, Math.round(evt.clientY + 22));
+      }
+    } else if (evt && typeof evt.clientY === 'number' && top + th > evt.clientY - 12) {
+      top = Math.max(8, Math.round(evt.clientY - th - 16));
+    }
+
+    el.setAttribute('data-place', place);
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+  }
+
+  function onTipOver(e) {
+    const t = e.target && e.target.closest ? e.target.closest('[data-ag-ps-tip]') : null;
+    if (t && t !== tipTarget) showCustomTooltip(t, e);
+  }
+  function onTipOut(e) {
+    if (!tipTarget) return;
+    const rel = e.relatedTarget;
+    if (!rel || !tipTarget.contains(rel)) hideCustomTooltip();
+  }
+  document.addEventListener('mouseover', onTipOver, true);
+  document.addEventListener('mouseout', onTipOut, true);
+  document.addEventListener('focusin', onTipOver, true);
+  document.addEventListener('focusout', hideCustomTooltip, true);
+  document.addEventListener('scroll', hideCustomTooltip, true);
+  onCleanup(() => {
+    document.removeEventListener('mouseover', onTipOver, true);
+    document.removeEventListener('mouseout', onTipOut, true);
+    document.removeEventListener('focusin', onTipOver, true);
+    document.removeEventListener('focusout', hideCustomTooltip, true);
+    document.removeEventListener('scroll', hideCustomTooltip, true);
+    if (tipEl) tipEl.remove();
+    tipEl = null;
+  });
+
   function renderPopoverContent(pop) {
     const darkNow = isCurrentlyDark();
+    const helpers = buildBusHelpers();
+    const extraSectionsHtml = registeredPanelSections
+      .slice()
+      .sort((a, b) => (a.order || 50) - (b.order || 50))
+      .map((sec) => {
+        let body = '';
+        try { body = String(sec.render ? sec.render(helpers.prefs, helpers) : ''); } catch {}
+        if (!body) return '';
+        return `<div class="ag-ps-ext-section" data-ext-sec="${escapeHtml(sec.id)}">
+          ${sec.title ? `<div class="ag-ps-sec-lbl"><span>${escapeHtml(sec.title)}</span></div>` : ''}
+          ${body}
+        </div>`;
+      })
+      .join('');
+    const updateBtnText =
+      updateState.status === 'checking'
+        ? '检查中…'
+        : updateState.status === 'available'
+          ? `新版本 ${escapeHtml(updateState.latest)} ↗`
+          : updateState.status === 'latest'
+            ? '已是最新 ✓'
+            : updateState.status === 'error'
+              ? '重试检查'
+              : '检查更新';
+    const liveQ = sanitizeQuotaPayload(getQuotaState()) || cachedLiveQuota;
+    const accSum = cachedAccountSummary;
+    const shortEmail = (em) => {
+      const s = String(em || '').trim();
+      if (!s) return '';
+      const at = s.indexOf('@');
+      if (at <= 0) return s.slice(0, 16);
+      const local = s.slice(0, at);
+      return local.length > 12 ? `${local.slice(0, 10)}…` : local;
+    };
+    const accTitle = accSum?.activeAlias
+      ? `${accSum.activeRole === 'primary' ? '★ ' : ''}${accSum.activeAlias}${accSum.activeEmail ? ` · ${shortEmail(accSum.activeEmail)}` : ''}`
+      : (accSum?.activeEmail ? shortEmail(accSum.activeEmail) : '多账号安全接力');
+    const quotaChips = [];
+    if (liveQ && typeof liveQ.pct5h === 'number') {
+      const tier5 = liveQ.pct5h >= 50 ? 'ok' : liveQ.pct5h >= 20 ? 'warn' : 'danger';
+      quotaChips.push(`<span class="ag-ps-qchip" data-tier="${tier5}">5h ${liveQ.pct5h}%</span>`);
+    }
+    if (liveQ && typeof liveQ.pct7d === 'number') {
+      const tier7 = liveQ.pct7d >= 50 ? 'ok' : liveQ.pct7d >= 20 ? 'warn' : 'danger';
+      quotaChips.push(`<span class="ag-ps-qchip" data-tier="${tier7}">7d ${liveQ.pct7d}%</span>`);
+    }
+    const accSubHtml = accSum?.pendingSwitchEmail
+      ? `<span class="ag-ps-qchip" data-tier="warn">待重启切至 ${escapeHtml(shortEmail(accSum.pendingSwitchEmail))}</span>`
+      : (quotaChips.length
+        ? quotaChips.join('')
+        : `<span class="ag-ps-toggle-sub">${accSum?.accountCount ? `已捕获 ${accSum.accountCount} 个账号` : '打开工作台同步主备账号与额度'}</span>`);
+
     pop.innerHTML = `
       <div class="ag-ps-pop-hdr">
         <span class="ag-ps-pop-title">✦ 棱镜扩展套件</span>
-        <span class="ag-ps-pop-meta">${darkNow ? '深色模式' : '浅色模式'} · v0.2.4</span>
+        <span style="display:inline-flex;align-items:center;gap:6px;">
+          <button type="button" class="ag-ps-mini-reset" data-open-workbench="1" title="快捷打开 Prism 工作台（文件 / 历史检索 / 账号接力）">工作台 ↗</button>
+          <span class="ag-ps-pop-meta">${darkNow ? '深色模式' : '浅色模式'} · v${SUITE_VERSION}</span>
+        </span>
+      </div>
+
+      <div class="ag-ps-account-bar">
+        <div class="ag-ps-account-info">
+          <div class="ag-ps-account-name">
+            <span class="ag-ps-account-dot" data-online="${accSum?.activeEmail ? '1' : '0'}" aria-hidden="true"></span>
+            <span class="ag-ps-account-text">${escapeHtml(accTitle)}</span>
+          </div>
+          <div class="ag-ps-account-meta">${accSubHtml}</div>
+        </div>
+        <button type="button" class="ag-ps-account-cta" data-open-workbench-tab="accounts" title="打开 Prism 工作台并直达「账号接力」页签">⚡ 切号</button>
       </div>
 
       <div class="ag-ps-sec-lbl"><span>浅色配色</span><span class="ag-ps-sec-tag">${!darkNow ? '当前生效' : '浅色首选'}</span></div>
@@ -1836,6 +2855,15 @@
           </div>
         </div>
       </div>
+      ${extraSectionsHtml}
+      <div class="ag-ps-about-bar">
+        <span class="ag-ps-about-ver">Prism Suite v${SUITE_VERSION}</span>
+        ${
+          updateState.status === 'available'
+            ? `<a class="ag-ps-update-pill" data-update-link="1" href="${escapeHtml(updateState.url)}" target="_blank" rel="noopener noreferrer">${updateBtnText}</a>`
+            : `<button type="button" class="ag-ps-update-pill" data-check-update="1" ${updateState.status === 'checking' ? 'disabled' : ''}>${updateBtnText}</button>`
+        }
+      </div>
     `;
   }
 
@@ -1847,6 +2875,22 @@
     pop.setAttribute('data-ag-i18n-ignore', '1');
     pop.addEventListener('click', (e) => {
       e.stopPropagation();
+      const chkUpd = e.target.closest('[data-check-update]');
+      if (chkUpd) {
+        e.preventDefault();
+        checkGithubUpdate();
+        return;
+      }
+      const extSecEl = e.target.closest('[data-ext-sec]');
+      if (extSecEl) {
+        const secId = extSecEl.getAttribute('data-ext-sec');
+        const sec = registeredPanelSections.find((s) => s.id === secId);
+        if (sec && typeof sec.onClick === 'function') {
+          try {
+            if (sec.onClick(e, buildBusHelpers()) === true) return;
+          } catch {}
+        }
+      }
       const jumpUsage = e.target.closest('[data-jump-usage]');
       if (jumpUsage) {
         e.preventDefault();
@@ -1858,6 +2902,7 @@
           ovBtn.click();
         }
         setTimeout(() => {
+          if (disposed) return;
           syncUsageExtraMount();
           const card = document.querySelector('#ag-claude-ov-sections [data-ov-card="usage"]');
           if (card) {
@@ -1865,7 +2910,9 @@
             card.classList.remove('ag-ps-turn-pulse');
             void card.offsetWidth;
             card.classList.add('ag-ps-turn-pulse');
-            setTimeout(() => card.classList.remove('ag-ps-turn-pulse'), 1500);
+            setTimeout(() => {
+              if (!disposed) card.classList.remove('ag-ps-turn-pulse');
+            }, 1500);
           }
         }, 180);
         return;
@@ -1876,6 +2923,7 @@
         prefs.lightPalette = val;
         savePrefs();
         applyPalettes();
+        emitBus('theme');
         renderPopoverContent(pop);
         const name = LIGHT_NAMES[val] || val;
         showJumpToast(isCurrentlyDark() ? `已设为浅色首选「${name}」，切换浅色模式时生效` : `已切换浅色配色：${name}`);
@@ -1887,6 +2935,7 @@
         prefs.darkPalette = val;
         savePrefs();
         applyPalettes();
+        emitBus('theme');
         renderPopoverContent(pop);
         const name = DARK_NAMES[val] || val;
         showJumpToast(!isCurrentlyDark() ? `已设为深色首选「${name}」，切换深色模式时生效` : `已切换深色配色：${name}`);
@@ -1897,6 +2946,7 @@
         const k = sw.getAttribute('data-toggle');
         prefs[k] = !prefs[k];
         savePrefs();
+        emitBus('prefs');
         const busy = isAgentGenerating();
         if (k === 'inkStream') syncStreamObserver(busy);
         if (k === 'outline' && !prefs.outline) toggleOutlineDrawer(false);
@@ -1946,6 +2996,19 @@
         renderPopoverContent(pop);
         return;
       }
+      const wbTabBtn = e.target.closest('[data-open-workbench-tab]');
+      if (wbTabBtn) {
+        const targetTab = wbTabBtn.getAttribute('data-open-workbench-tab') || 'accounts';
+        togglePopover(false);
+        openPrismWorkbenchQuick(targetTab);
+        return;
+      }
+      const wbBtn = e.target.closest('[data-open-workbench]');
+      if (wbBtn) {
+        togglePopover(false);
+        openPrismWorkbenchQuick();
+        return;
+      }
       const tm = e.target.closest('[data-thought-mode]');
       if (tm) {
         prefs.thoughtMode = tm.getAttribute('data-thought-mode');
@@ -1955,6 +3018,14 @@
       }
     });
     pop.addEventListener('input', (e) => {
+      const extSecEl = e.target.closest('[data-ext-sec]');
+      if (extSecEl) {
+        const sec = registeredPanelSections.find((s) => s.id === extSecEl.getAttribute('data-ext-sec'));
+        if (sec && typeof sec.onInput === 'function') {
+          try { sec.onInput(e, buildBusHelpers()); } catch {}
+          return;
+        }
+      }
       const slider = e.target.closest('[data-mascot-size]');
       if (!slider) return;
       const sz = clampMascotSize(slider.value);
@@ -1966,9 +3037,18 @@
       if (resetBtn) resetBtn.disabled = sz === MASCOT_SIZE_DEFAULT;
     });
     pop.addEventListener('change', (e) => {
+      const extSecEl = e.target.closest('[data-ext-sec]');
+      if (extSecEl) {
+        const sec = registeredPanelSections.find((s) => s.id === extSecEl.getAttribute('data-ext-sec'));
+        if (sec && typeof sec.onChange === 'function') {
+          try { sec.onChange(e, buildBusHelpers()); } catch {}
+          return;
+        }
+      }
       const slider = e.target.closest('[data-mascot-size]');
       if (!slider) return;
-      prefs.mascotSize = clampMascotSize(slider.value);
+      const sz = clampMascotSize(slider.value);
+      prefs.mascotSize = sz;
       savePrefs();
       applyMascotSizeVars(document.getElementById('ag-ps-mascot-dock'), true);
     });
@@ -2001,9 +3081,190 @@
     if (oBtn) oBtn.setAttribute('data-active', outOpen ? '1' : '0');
   }
 
+  let workbenchOpening = false;
+
+  function findWorkbenchEntry(root = document, { skipSidebar = false } = {}) {
+    if (!root || !root.querySelectorAll) return null;
+    const candidates = root.querySelectorAll('button, a, [role="tab"], [role="button"], [role="menuitem"]');
+    for (const el of candidates) {
+      if (!el.isConnected || el.closest('#ag-ps-popover, #ag-ps-outline, [data-testid="autoscroll-viewport"]')) continue;
+      if (el.id === 'ag-ps-btn-workbench' || el.id === 'ag-ps-btn-suite' || el.id === 'ag-ps-btn-outline') continue;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;
+      if (skipSidebar && !el.closest('[role="menu"], [data-radix-popper-content-wrapper]') && (el.closest('aside, nav, [data-testid*="sidebar" i]') || r.left < 280)) {
+        continue;
+      }
+      const txt = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+      const aria = String(el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+      if ((txt.length <= 28 && /Prism\s*(?:工作台|文件)/i.test(txt)) || /Prism\s*(?:工作台|文件)/i.test(aria)) {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  function triggerRadixTrigger(el) {
+    if (!el) return;
+    try { el.focus({ preventScroll: true }); } catch {}
+    try {
+      if (typeof PointerEvent === 'function') {
+        el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }));
+      }
+    } catch {}
+    try {
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+    } catch {}
+    try { el.click(); } catch {}
+  }
+
+  function hoverAndClickMenuItem(el) {
+    if (!el) return;
+    for (const type of ['pointerenter', 'pointermove', 'mouseover', 'mouseenter']) {
+      try {
+        const Evt = type.startsWith('pointer') && typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+        el.dispatchEvent(new Evt(type, { bubbles: true, cancelable: true }));
+      } catch {}
+    }
+    try { el.focus({ preventScroll: true }); } catch {}
+    try { el.click(); } catch {}
+  }
+
+  function findMoreToolbarButton(toolbar) {
+    if (!toolbar) return null;
+    const menuBtn = toolbar.querySelector('button[aria-haspopup="menu"]:not(.ag-ps-tb-btn)');
+    if (menuBtn) return menuBtn;
+    const buttons = Array.from(toolbar.querySelectorAll('button')).filter(
+      (b) => b.isConnected && !b.classList.contains('ag-ps-tb-btn') && b.getAttribute('data-testid') !== 'toggle-overview-panel'
+    );
+    const tagged = buttons.find((b) => {
+      const lbl = `${b.getAttribute('aria-label') || ''} ${b.getAttribute('title') || ''}`;
+      return /more|更多|menu|菜单|action|选项/i.test(lbl);
+    });
+    return tagged || buttons[0] || null;
+  }
+
+  function trySidebarFallback() {
+    const fallback = findWorkbenchEntry(document, { skipSidebar: false });
+    if (!fallback) return false;
+    const isAlreadyHere =
+      fallback.getAttribute('aria-current') === 'page' ||
+      fallback.getAttribute('data-active') === 'true' ||
+      (!document.querySelector('[data-testid="autoscroll-viewport"]') && !document.getElementById('antigravity.agentSidePanelInputBox'));
+    if (isAlreadyHere) {
+      showJumpToast('当前已在 Prism 工作台');
+      return true;
+    }
+    triggerRadixTrigger(fallback);
+    return true;
+  }
+
+  function openPrismWorkbenchQuick(targetTab = '') {
+    const wantTab = targetTab && ALLOWED_BRIDGE_TABS.has(targetTab) ? targetTab : '';
+    if (wantTab) {
+      dispatchSwitchTabWithRetry(wantTab);
+    }
+    // 1. Prioritize already-open right-side aux pane tab (skipping left global sidebar)
+    const rightTab = findWorkbenchEntry(document, { skipSidebar: true });
+    if (rightTab) {
+      triggerRadixTrigger(rightTab);
+      if (wantTab) {
+        // Re-ping after aux pane becomes visible so focus + tab switch completes even if pane was hidden/unmounted
+        bridgeRetryTimers.push(setTimeout(() => {
+          if (!disposed && pendingIntentId) broadcastBridgePing();
+        }, 160));
+      }
+      return true;
+    }
+    if (workbenchOpening) return false;
+    const toolbar = document.querySelector('[data-testid="pane-titlebar-toolbar"]');
+    const moreBtn = findMoreToolbarButton(toolbar);
+    if (!moreBtn) {
+      if (!trySidebarFallback()) {
+        showJumpToast('请在右侧栏点「+」或「⋮ → 扩展插件」打开「Prism 工作台」');
+      }
+      return false;
+    }
+    workbenchOpening = true;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    (async () => {
+      try {
+        // 2. Open via native toolbar menu (⋮ -> 扩展插件 -> Prism 工作台) for side-by-side aux pane
+        triggerRadixTrigger(moreBtn);
+        let subTrigger = null;
+        for (let i = 0; i < 6; i++) {
+          await sleep(60);
+          if (disposed) return;
+          const menus = document.querySelectorAll('[role="menu"], [data-radix-popper-content-wrapper]');
+          for (const m of menus) {
+            const directItem = findWorkbenchEntry(m, { skipSidebar: false });
+            if (directItem) {
+              directItem.click();
+              return;
+            }
+            const items = m.querySelectorAll('[role="menuitem"], button');
+            for (const it of items) {
+              const t = String(it.textContent || '').replace(/\s+/g, ' ').trim();
+              if (/扩展插件|Plugins|Extensions/i.test(t)) {
+                subTrigger = it;
+                break;
+              }
+            }
+            if (subTrigger) break;
+          }
+          if (subTrigger) break;
+        }
+        if (subTrigger) {
+          hoverAndClickMenuItem(subTrigger);
+          for (let j = 0; j < 7; j++) {
+            await sleep(65);
+            if (disposed) return;
+            const menus = document.querySelectorAll('[role="menu"], [data-radix-popper-content-wrapper]');
+            for (const m of menus) {
+              const target = findWorkbenchEntry(m, { skipSidebar: false });
+              if (target) {
+                target.click();
+                return;
+              }
+            }
+          }
+        }
+        try {
+          (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        } catch {}
+        if (!disposed) {
+          // 3. Fallback to left sidebar global view only if aux pane menu didn't have it
+          if (!trySidebarFallback()) {
+            showJumpToast('未检测到已启用的 Prism 工作台入口，请先在 Plugins Manager 确认已启用');
+          }
+        }
+      } finally {
+        workbenchOpening = false;
+      }
+    })();
+    return true;
+  }
+
   function syncToolbarButtons() {
     const toolbar = document.querySelector('[data-testid="pane-titlebar-toolbar"]');
     if (!toolbar) return;
+
+    let wbBtn = document.getElementById('ag-ps-btn-workbench');
+    if (!wbBtn || wbBtn.parentElement !== toolbar) {
+      if (wbBtn) wbBtn.remove();
+      wbBtn = document.createElement('button');
+      wbBtn.id = 'ag-ps-btn-workbench';
+      wbBtn.type = 'button';
+      wbBtn.className = 'ag-ps-tb-btn';
+      wbBtn.setAttribute('data-ag-i18n-ignore', '1');
+      wbBtn.setAttribute('data-ag-ps-tip', '快捷打开 Prism 工作台（文件 / 历史检索 / 账号接力 / 上游雷达）');
+      wbBtn.textContent = '工作台';
+      wbBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openPrismWorkbenchQuick();
+      });
+      toolbar.insertBefore(wbBtn, toolbar.firstChild);
+    }
+
     let outBtn = document.getElementById('ag-ps-btn-outline');
     if (prefs.outline) {
       if (!outBtn || outBtn.parentElement !== toolbar) {
@@ -2046,6 +3307,7 @@
   onCleanup(() => {
     document.getElementById('ag-ps-btn-suite')?.remove();
     document.getElementById('ag-ps-btn-outline')?.remove();
+    document.getElementById('ag-ps-btn-workbench')?.remove();
     document.getElementById('ag-ps-jump-toast')?.remove();
   });
 
@@ -2094,25 +3356,36 @@
   });
 
   let lastPath = window.location.pathname;
+  let lastDarkState = isCurrentlyDark();
   function tickAll() {
     if (disposed || document.hidden) return;
     // Detect SPA conversation switch and close stale outline drawer
     if (window.location.pathname !== lastPath) {
       lastPath = window.location.pathname;
+      cachedComposerEl = null;
       const drawer = document.getElementById('ag-ps-outline');
       if (drawer && drawer.getAttribute('data-open') === '1') {
         renderOutlineList('');
       }
+      emitBus('route');
+    }
+    const darkNow = isCurrentlyDark();
+    if (darkNow !== lastDarkState) {
+      lastDarkState = darkNow;
+      emitBus('theme');
     }
     const busy = isAgentGenerating();
     syncStreamObserver(busy);
     // Defer non-urgent DOM scans while user is actively typing in composer
     if (isUserActivelyTyping() && !busy) return;
     syncToolbarButtons();
+    syncWorkbenchTooltip();
     syncMascotDock(busy);
     ensureOverviewObserver();
     syncUsageExtraMount();
     syncThoughtBlocks(busy);
+    pushLiveQuotaToBridge(false);
+    emitBus('tick');
   }
 
   function onVisibilityChange() {
@@ -2121,12 +3394,97 @@
       detachStreamObserver();
       clearInkHighlights();
       stopMascotRoaming(false);
+      emitBus('visibility');
     } else {
+      emitBus('visibility');
       tickAll();
     }
   }
   document.addEventListener('visibilitychange', onVisibilityChange);
   onCleanup(() => document.removeEventListener('visibilitychange', onVisibilityChange));
+
+  /* ---- Publish Versioned Event Bus (window.__agPrismBus v4) ---- */
+  const prismBus = {
+    version: 4,
+    suiteVersion: SUITE_VERSION,
+    getPrefs: () => Object.assign({}, prefs),
+    registerDefaults(defaultsObj) {
+      if (!defaultsObj || typeof defaultsObj !== 'object') return;
+      let changed = false;
+      for (const [k, v] of Object.entries(defaultsObj)) {
+        if (!(k in prefs)) {
+          prefs[k] = v;
+          changed = true;
+        }
+      }
+      if (changed) emitBus('prefs');
+    },
+    setPref,
+    subscribe(fn) {
+      if (typeof fn !== 'function') return () => {};
+      busSubscribers.add(fn);
+      return () => busSubscribers.delete(fn);
+    },
+    registerPanelSection(spec) {
+      if (!spec || !spec.id) return;
+      const idx = registeredPanelSections.findIndex((s) => s.id === spec.id);
+      if (idx >= 0) registeredPanelSections[idx] = spec;
+      else registeredPanelSections.push(spec);
+      const pop = document.getElementById('ag-ps-popover');
+      if (pop && pop.getAttribute('data-open') === '1') renderPopoverContent(pop);
+    },
+    unregisterPanelSection(id) {
+      if (!id) return;
+      const idx = registeredPanelSections.findIndex((s) => s.id === id);
+      if (idx >= 0) {
+        registeredPanelSections.splice(idx, 1);
+        const pop = document.getElementById('ag-ps-popover');
+        if (pop && pop.getAttribute('data-open') === '1') renderPopoverContent(pop);
+      }
+    },
+    registerOutlineAction(spec) {
+      if (!spec || !spec.id) return;
+      const idx = registeredOutlineActions.findIndex((a) => a.id === spec.id);
+      if (idx >= 0) registeredOutlineActions[idx] = spec;
+      else registeredOutlineActions.push(spec);
+    },
+    unregisterOutlineAction(id) {
+      if (!id) return;
+      const idx = registeredOutlineActions.findIndex((a) => a.id === id);
+      if (idx >= 0) registeredOutlineActions.splice(idx, 1);
+    },
+    isBusy: isAgentGenerating,
+    isDark: isCurrentlyDark,
+    isTyping: isUserActivelyTyping,
+    getComposerEl,
+    getViewportEl: () => document.querySelector('[data-testid="autoscroll-viewport"]'),
+    getThemeAccent,
+    getQuotaState,
+    openWorkbench: openPrismWorkbenchQuick,
+    showToast: showJumpToast,
+    refreshPopover: () => {
+      const pop = document.getElementById('ag-ps-popover');
+      if (pop && pop.getAttribute('data-open') === '1') renderPopoverContent(pop);
+    },
+    setAttrIfChanged,
+    setStyleVarIfChanged,
+    onCleanup
+  };
+  window.__agPrismBus = prismBus;
+  if (Array.isArray(window.__agPrismBusQueue)) {
+    const queued = window.__agPrismBusQueue.splice(0, window.__agPrismBusQueue.length);
+    for (const initFn of queued) {
+      if (typeof initFn === 'function') {
+        try { initFn(prismBus); } catch {}
+      }
+    }
+  }
+  onCleanup(() => {
+    busSubscribers.clear();
+    if (window.__agPrismBus === prismBus) {
+      try { delete window.__agPrismBus; } catch { window.__agPrismBus = null; }
+    }
+  });
 
   tickAll();
   const intervalId = setInterval(tickAll, 2400);

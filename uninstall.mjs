@@ -8,14 +8,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolvePluginsDir, resolveUserDir } from './install.mjs';
+import { EXTENSION_FILES, resolvePluginsDir, resolvePrismFilesTargetDir, resolveUserDir } from './install.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 
 export function uninstallExtensions({ userDir = resolveUserDir() } = {}) {
   const targetDir = path.join(path.resolve(userDir), 'extensions');
   const removed = [];
-  for (const name of ['prism-suite.css', 'prism-suite.js']) {
+  for (const name of EXTENSION_FILES) {
     const fp = path.join(targetDir, name);
     if (fs.existsSync(fp)) {
       fs.rmSync(fp, { force: true });
@@ -26,9 +26,8 @@ export function uninstallExtensions({ userDir = resolveUserDir() } = {}) {
 }
 
 export function uninstallPlugin({ pluginsDir = resolvePluginsDir() } = {}) {
-  const resolvedPluginsDir = path.resolve(pluginsDir);
-  const targetDir = path.join(resolvedPluginsDir, 'prism-files');
-  if (path.basename(targetDir) !== 'prism-files') {
+  const targetDir = resolvePrismFilesTargetDir(pluginsDir);
+  if (path.basename(targetDir).toLowerCase() !== 'prism-files') {
     throw new Error(`Unsafe plugin target directory: ${targetDir}`);
   }
 
@@ -67,7 +66,7 @@ function printHelp() {
     'Usage: node uninstall.mjs [options]',
     '',
     'Options:',
-    '  --extensions-only    Uninstall only Anti-Claude user extensions (prism-suite.css, prism-suite.js)',
+    '  --extensions-only    Uninstall only Anti-Claude user extensions (prism-suite*.{css,js}: prism-suite.css, prism-suite.js, prism-suite-fx.css, prism-suite-fx.js, prism-suite-workflow.css, prism-suite-workflow.js)',
     '  --plugin-only        Uninstall only Antigravity prism-files plugin',
     '  --user-dir <dir>     Override Anti-Claude user dir (default: ~/.gemini/antigravity/anti-claude/user)',
     '  --plugin-dir <dir>   Override Antigravity plugins dir (default: ~/.gemini/config/plugins)',

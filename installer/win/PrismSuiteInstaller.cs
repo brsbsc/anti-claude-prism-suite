@@ -12,8 +12,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Anti-Claude Prism Suite 一键安装器")]
 [assembly: AssemblyDescription("Anti-Claude Prism Suite & Antigravity prism-files MCP App Installer")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.3.0.0")]
-[assembly: AssemblyFileVersion("0.3.0.0")]
+[assembly: AssemblyVersion("0.5.0.0")]
+[assembly: AssemblyFileVersion("0.5.0.0")]
 
 namespace AntiClaudePrismSuiteInstaller
 {
@@ -43,7 +43,15 @@ namespace AntiClaudePrismSuiteInstaller
     internal static class InstallerCore
     {
         private const string ManifestResourceName = "payload.manifest.txt";
-        private static readonly string[] ExtensionFileNames = new string[] { "prism-suite.css", "prism-suite.js" };
+        private static readonly string[] ExtensionFileNames = new string[]
+        {
+            "prism-suite.css",
+            "prism-suite.js",
+            "prism-suite-fx.css",
+            "prism-suite-fx.js",
+            "prism-suite-workflow.css",
+            "prism-suite-workflow.js"
+        };
 
         public static string GetDefaultExtensionsDir()
         {
@@ -72,6 +80,12 @@ namespace AntiClaudePrismSuiteInstaller
                 throw new ArgumentException("插件目标目录不能为空。");
             }
             string trimmed = rawPath.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (trimmed.Length == 2
+                && ((trimmed[0] >= 'A' && trimmed[0] <= 'Z') || (trimmed[0] >= 'a' && trimmed[0] <= 'z'))
+                && trimmed[1] == ':')
+            {
+                trimmed = trimmed + "\\";
+            }
             string full = Path.GetFullPath(trimmed);
             if (!string.Equals(Path.GetFileName(full), "prism-files", StringComparison.OrdinalIgnoreCase))
             {
@@ -170,15 +184,31 @@ namespace AntiClaudePrismSuiteInstaller
             {
                 Directory.CreateDirectory(parent);
             }
-            using (Stream src = asm.GetManifestResourceStream(resourceName))
+            string tmpPath = destPath + ".prism-tmp-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+            try
             {
-                if (src == null)
+                using (Stream src = asm.GetManifestResourceStream(resourceName))
                 {
-                    throw new InvalidOperationException("未找到内嵌资源：" + resourceName);
+                    if (src == null)
+                    {
+                        throw new InvalidOperationException("未找到内嵌资源：" + resourceName);
+                    }
+                    using (FileStream dst = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                    {
+                        src.CopyTo(dst);
+                        dst.Flush(true);
+                    }
                 }
-                using (FileStream dst = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                File.Copy(tmpPath, destPath, true);
+            }
+            finally
+            {
+                try
                 {
-                    src.CopyTo(dst);
+                    if (File.Exists(tmpPath)) File.Delete(tmpPath);
+                }
+                catch
+                {
                 }
             }
         }
@@ -255,14 +285,16 @@ namespace AntiClaudePrismSuiteInstaller
                 Directory.CreateDirectory(parentPluginsDir);
             }
 
-            if (Directory.Exists(targetDir))
-            {
-                log(string.Format("  [插件] 正在清理旧版本文件: {0}", targetDir));
-                Directory.Delete(targetDir, true);
-            }
+            bool existed = Directory.Exists(targetDir);
+            // Preserve root directory inode in-place so running MCP server processes (Windows/WSL) never lose cwd
             Directory.CreateDirectory(targetDir);
+            if (existed)
+            {
+                log(string.Format("  [插件] 正在原地增量更新（保留目录句柄）: {0}", targetDir));
+            }
 
             Assembly asm = Assembly.GetExecutingAssembly();
+            HashSet<string> expectedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             int count = 0;
             for (int i = 0; i < entries.Count; i++)
             {
@@ -271,12 +303,165 @@ namespace AntiClaudePrismSuiteInstaller
                 {
                     continue;
                 }
-                string dest = Path.Combine(targetDir, entry.RelativePath);
+                string dest = Path.GetFullPath(Path.Combine(targetDir, entry.RelativePath));
                 WriteResourceToFile(asm, entry.ResourceName, dest);
+                expectedFiles.Add(dest);
                 count++;
+            }
+
+            int pruned = PruneObsoletePluginEntries(targetDir, Path.GetFullPath(targetDir), expectedFiles, true);
+            if (pruned > 0)
+            {
+                log(string.Format("  [插件] 已清理 {0} 个旧版残留条目", pruned));
             }
             log(string.Format("[完成] Prism 文件工作台插件已部署至 {0}（共 {1} 个文件）", targetDir, count));
             return count;
+        }
+
+        private static bool IsReparsePoint(string path)
+        {
+            try
+            {
+                FileAttributes attrs = File.GetAttributes(path);
+                return (attrs & FileAttributes.ReparsePoint) != 0;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        private static bool IsInsideRoot(string fullPath, string rootFull)
+        {
+            string normRoot = rootFull.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return fullPath.StartsWith(normRoot, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static int PruneObsoletePluginEntries(string dirPath, string rootFull, HashSet<string> expectedFiles, bool isRoot)
+        {
+            int removed = 0;
+            try
+            {
+                if (!isRoot && IsReparsePoint(dirPath))
+                {
+                    return 0;
+                }
+                string[] files = Directory.GetFiles(dirPath);
+                for (int i = 0; i < files.Length; i++)
+                {
+                    string full = Path.GetFullPath(files[i]);
+                    if (!IsInsideRoot(full, rootFull) || IsReparsePoint(full))
+                    {
+                        continue;
+                    }
+                    if (!expectedFiles.Contains(full))
+                    {
+                        try
+                        {
+                            File.Delete(full);
+                            removed++;
+                        }
+                        catch
+                        {
+                            // Ignore transient lock on non-critical stale file
+                        }
+                    }
+                }
+                string[] subDirs = Directory.GetDirectories(dirPath);
+                for (int i = 0; i < subDirs.Length; i++)
+                {
+                    string subFull = Path.GetFullPath(subDirs[i]);
+                    if (!IsInsideRoot(subFull, rootFull) || IsReparsePoint(subFull))
+                    {
+                        continue;
+                    }
+                    removed += PruneObsoletePluginEntries(subFull, rootFull, expectedFiles, false);
+                }
+                if (!isRoot && Directory.GetFiles(dirPath).Length == 0 && Directory.GetDirectories(dirPath).Length == 0)
+                {
+                    try
+                    {
+                        Directory.Delete(dirPath, false);
+                        removed++;
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch
+            {
+            }
+            return removed;
+        }
+
+        public static string CheckDebugPortShortcutStatus()
+        {
+            try
+            {
+                List<string> searchRoots = new List<string>();
+                string[] candidates = new string[]
+                {
+                    Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory),
+                    Environment.GetFolderPath(Environment.SpecialFolder.Programs),
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms)
+                };
+                for (int i = 0; i < candidates.Length; i++)
+                {
+                    if (!string.IsNullOrEmpty(candidates[i]) && Directory.Exists(candidates[i]))
+                    {
+                        searchRoots.Add(candidates[i]);
+                    }
+                }
+
+                int foundShortcuts = 0;
+                int withDebugPort = 0;
+                for (int r = 0; r < searchRoots.Count; r++)
+                {
+                    string[] links;
+                    try
+                    {
+                        links = Directory.GetFiles(searchRoots[r], "*Antigravity*.lnk", SearchOption.AllDirectories);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+                    for (int k = 0; k < links.Length; k++)
+                    {
+                        foundShortcuts++;
+                        try
+                        {
+                            byte[] raw = File.ReadAllBytes(links[k]);
+                            string ascii = Encoding.ASCII.GetString(raw);
+                            string utf16 = Encoding.Unicode.GetString(raw);
+                            if (ascii.IndexOf("--remote-debugging-port", StringComparison.OrdinalIgnoreCase) >= 0
+                                || utf16.IndexOf("--remote-debugging-port", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                withDebugPort++;
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+
+                if (withDebugPort > 0)
+                {
+                    return string.Format("已检测到 {0}/{1} 个 Antigravity 快捷方式包含 --remote-debugging-port（支持自动重启后保留 Anti-Claude 扩展）", withDebugPort, foundShortcuts);
+                }
+                if (foundShortcuts > 0)
+                {
+                    return string.Format("检测到 {0} 个 Antigravity 快捷方式但未包含 --remote-debugging-port=0；若使用 Anti-Claude 扩展，建议通过 Anti-Claude 启动或补充该参数", foundShortcuts);
+                }
+                return "未在桌面/开始菜单扫描到 Antigravity 快捷方式（若通过 Anti-Claude 启动，切号自动重启时会自动保留调试端口参数）";
+            }
+            catch
+            {
+                return "快捷方式调试端口自检已跳过";
+            }
         }
 
         public static bool UninstallPlugin(string rawPluginTargetDir, Action<string> log)
@@ -566,7 +751,7 @@ namespace AntiClaudePrismSuiteInstaller
 
         private void InitializeUi()
         {
-            Text = "Anti-Claude Prism Suite 一键安装器 v0.3.0";
+            Text = "Anti-Claude Prism Suite 一键安装器 v0.5.0";
             Size = new Size(740, 660);
             MinimumSize = new Size(660, 580);
             StartPosition = FormStartPosition.CenterScreen;
@@ -584,14 +769,14 @@ namespace AntiClaudePrismSuiteInstaller
             header.Paint += PaintHeaderAccent;
 
             Label lblTitle = new Label();
-            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.3.0";
+            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.5.0";
             lblTitle.ForeColor = Color.White;
             lblTitle.Font = new Font("Microsoft YaHei UI", 13.5f, FontStyle.Bold);
             lblTitle.AutoSize = true;
             lblTitle.Location = new Point(22, 15);
 
             Label lblSubtitle = new Label();
-            lblSubtitle.Text = "一站式部署 Anti-Claude 前端棱镜扩展 与 Antigravity Prism 文件工作台 MCP App 插件（支持 Windows + WSL）";
+            lblSubtitle.Text = "一站式部署 Anti-Claude 棱镜扩展 与 Prism 工作台插件（文件 / 历史检索 / 多账号安全接力 · 原地热更保句柄）";
             lblSubtitle.ForeColor = Color.FromArgb(148, 163, 184);
             lblSubtitle.Font = new Font("Microsoft YaHei UI", 8.8f, FontStyle.Regular);
             lblSubtitle.AutoSize = true;
@@ -627,7 +812,7 @@ namespace AntiClaudePrismSuiteInstaller
             chkExtensions.Margin = new Padding(2, 6, 2, 4);
 
             chkWinPlugin = new CheckBox();
-            chkWinPlugin.Text = "安装 Prism 文件工作台 MCP App 插件（侧边栏文件树 / 预览编辑 / 内联定位卡片）";
+            chkWinPlugin.Text = "安装 Prism 工作台 MCP App 插件（文件树 / 键盘流 / 行号引用 / 历史检索 / 多账号接力）";
             chkWinPlugin.Checked = true;
             chkWinPlugin.AutoSize = true;
             chkWinPlugin.Margin = new Padding(2, 4, 2, 4);
@@ -834,6 +1019,7 @@ namespace AntiClaudePrismSuiteInstaller
             ThreadPool.QueueUserWorkItem(delegate
             {
                 WslDetectionResult wsl = InstallerCore.DetectWslPluginTargets();
+                string shortcutNote = InstallerCore.CheckDebugPortShortcutStatus();
                 if (!IsDisposed)
                 {
                     try
@@ -856,6 +1042,7 @@ namespace AntiClaudePrismSuiteInstaller
                                 lblWslStatus.ForeColor = Color.FromArgb(100, 116, 139);
                                 AppendLog("[检测] " + wsl.Summary);
                             }
+                            AppendLog("[自检] " + shortcutNote);
                         });
                     }
                     catch
@@ -912,7 +1099,7 @@ namespace AntiClaudePrismSuiteInstaller
 
             DialogResult confirm = MessageBox.Show(
                 this,
-                "确定要干净卸载已勾选的 Anti-Claude Prism Suite 组件吗？\n\n仅移除 prism-suite.css / prism-suite.js 与 prism-files 插件目录，绝不会影响您的其他扩展、插件或会话数据。",
+                "确定要干净卸载已勾选的 Anti-Claude Prism Suite 组件吗？\n\n仅移除 6 个扩展文件（prism-suite*.{css,js}：prism-suite.css / prism-suite.js / prism-suite-fx.css / prism-suite-fx.js / prism-suite-workflow.css / prism-suite-workflow.js）与 prism-files 插件目录，绝不会影响您的其他扩展、插件或会话数据。",
                 "确认干净卸载",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question);
@@ -1186,7 +1373,7 @@ namespace AntiClaudePrismSuiteInstaller
 
                     if (!string.IsNullOrEmpty(opts.TestPluginsDir))
                     {
-                        string pluginTarget = Path.Combine(Path.GetFullPath(opts.TestPluginsDir), "prism-files");
+                        string pluginTarget = InstallerCore.NormalizePrismFilesTarget(opts.TestPluginsDir);
                         if (opts.SilentInstall)
                         {
                             InstallerCore.InstallPlugin(pluginTarget, entries, consoleLog);

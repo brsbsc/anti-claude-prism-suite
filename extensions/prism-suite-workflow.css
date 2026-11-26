@@ -1,0 +1,375 @@
+/* ============================================================================
+ * Anti-Claude Prism Suite v0.5.0 — Workflow & i18n Module Styles (MIT)
+ * Clean-room original styles for:
+ *   1. Image Context Menu (#ag-ps-img-menu)
+ *   2. SSH Paste Auto-Parse Confirmation Status (.ag-ps-ssh-status)
+ *   3. Turn Hover Micro-Actions (Edit / Fork) & Inline Optimistic-Locked Editor
+ *   4. Popover Workflow Section Refinements
+ * ============================================================================ */
+
+/* ---- 1. Image Context Menu ---- */
+@keyframes agPsMenuIn {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+#ag-ps-img-menu {
+  position: fixed;
+  z-index: 99995;
+  min-width: 178px;
+  max-width: 248px;
+  padding: 5px;
+  border-radius: 10px;
+  background-color: var(--background, #FFFFFF);
+  background-color: color-mix(in srgb, var(--background, #FFFFFF) 92%, transparent);
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  color: var(--foreground, #141413);
+  border: 1px solid var(--sidebar-border, rgba(15, 23, 42, 0.12));
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.06);
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  font-size: 12px;
+  line-height: 1.4;
+  user-select: none;
+  animation: agPsMenuIn 120ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+
+html[data-ag-theme-mode="dark"] #ag-ps-img-menu,
+body.dark #ag-ps-img-menu {
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.28);
+}
+
+.ag-ps-img-menu-meta {
+  padding: 4px 8px 5px;
+  font-size: 10.5px;
+  color: var(--muted-foreground, #73726C);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ag-ps-img-menu-sep {
+  height: 1px;
+  margin: 4px 4px;
+  background-color: var(--sidebar-border, rgba(128, 128, 128, 0.16));
+}
+
+.ag-ps-img-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--foreground, #141413);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 110ms ease, color 110ms ease;
+}
+
+.ag-ps-img-menu-item:hover,
+.ag-ps-img-menu-item:focus-visible {
+  background-color: var(--secondary, rgba(128, 128, 128, 0.12));
+  outline: none;
+}
+
+.ag-ps-img-menu-item:focus-visible {
+  box-shadow: 0 0 0 1.5px var(--primary, #2563EB) inset;
+}
+
+.ag-ps-img-menu-item[disabled] {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.ag-ps-img-menu-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted-foreground, #73726C);
+}
+
+.ag-ps-img-menu-item:hover .ag-ps-img-menu-ico {
+  color: var(--primary, #2563EB);
+}
+
+/* ---- 2. SSH Paste Auto-Parser Status ---- */
+.ag-ps-ssh-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--primary, #2563EB);
+  background-color: var(--muted, rgba(37, 99, 235, 0.08));
+  border: 1px solid var(--sidebar-border, rgba(37, 99, 235, 0.18));
+}
+
+.ag-ps-ssh-status[data-tone="warn"] {
+  color: #B45309;
+  border-color: rgba(180, 83, 9, 0.25);
+}
+
+html[data-ag-theme-mode="dark"] .ag-ps-ssh-status[data-tone="warn"],
+body.dark .ag-ps-ssh-status[data-tone="warn"] {
+  color: #F59E0B;
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+/* ---- 3. Turn Hover Micro-Actions (Edit / Fork) ---- */
+.ag-ps-turn-host {
+  position: relative;
+}
+
+.ag-ps-turn-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+}
+
+.ag-ps-turn-host:hover .ag-ps-turn-actions,
+.ag-ps-turn-host:focus-within .ag-ps-turn-actions,
+.ag-ps-turn-actions:focus-within,
+.ag-ps-turn-actions[data-pinned="1"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  .ag-ps-turn-actions {
+    opacity: 0.85;
+    pointer-events: auto;
+  }
+}
+
+.ag-ps-turn-act-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 6px;
+  border: 1px solid var(--sidebar-border, rgba(128, 128, 128, 0.18));
+  background-color: var(--muted, rgba(128, 128, 128, 0.08));
+  color: var(--muted-foreground, #6B6964);
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.ag-ps-turn-act-btn:hover,
+.ag-ps-turn-act-btn:focus-visible {
+  background-color: var(--secondary, rgba(128, 128, 128, 0.16));
+  color: var(--foreground, #141413);
+  border-color: var(--primary, #2563EB);
+  outline: none;
+}
+
+.ag-ps-turn-act-btn[data-busy="1"] {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+/* ---- 4. In-Place Optimistic-Locked Message Editor ---- */
+.ag-ps-inline-editor {
+  margin-top: 6px;
+  padding: 8px 9px;
+  border-radius: 10px;
+  background-color: var(--background, #FFFFFF);
+  color: var(--foreground, #141413);
+  border: 1px solid var(--primary, #2563EB);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  font-size: 12.5px;
+}
+
+html[data-ag-theme-mode="dark"] .ag-ps-inline-editor,
+body.dark .ag-ps-inline-editor {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+}
+
+.ag-ps-inline-textarea {
+  display: block;
+  width: 100%;
+  min-height: 68px;
+  max-height: 240px;
+  padding: 7px 9px;
+  box-sizing: border-box;
+  border-radius: 7px;
+  border: 1px solid var(--sidebar-border, rgba(128, 128, 128, 0.22));
+  background-color: var(--muted, #F6F6F4);
+  color: var(--foreground, #141413);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+}
+
+.ag-ps-inline-textarea:focus {
+  border-color: var(--primary, #2563EB);
+  background-color: var(--background, #FFFFFF);
+}
+
+.ag-ps-inline-warn {
+  margin-top: 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #92400E;
+  background-color: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.32);
+}
+
+html[data-ag-theme-mode="dark"] .ag-ps-inline-warn,
+body.dark .ag-ps-inline-warn {
+  color: #FCD34D;
+  background-color: rgba(245, 158, 11, 0.14);
+  border-color: rgba(252, 211, 77, 0.28);
+}
+
+.ag-ps-inline-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.ag-ps-inline-hint {
+  font-size: 10.5px;
+  color: var(--muted-foreground, #73726C);
+}
+
+.ag-ps-inline-btns {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ag-ps-inline-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 25px;
+  padding: 0 9px;
+  border-radius: 6px;
+  border: 1px solid var(--sidebar-border, rgba(128, 128, 128, 0.22));
+  background-color: var(--muted, #F6F6F4);
+  color: var(--foreground, #141413);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 110ms ease, border-color 110ms ease, opacity 110ms ease;
+}
+
+.ag-ps-inline-btn:hover {
+  background-color: var(--secondary, #ECECE9);
+}
+
+.ag-ps-inline-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--primary, #2563EB);
+}
+
+.ag-ps-inline-btn[data-primary="1"] {
+  background-color: var(--primary, #2563EB);
+  border-color: var(--primary, #2563EB);
+  color: #FFFFFF;
+}
+
+.ag-ps-inline-btn[data-primary="1"]:hover {
+  opacity: 0.92;
+}
+
+.ag-ps-inline-btn[data-primary="1"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--background, #FFFFFF), 0 0 0 4px var(--primary, #2563EB);
+}
+
+/* ---- 5. Popover Workflow Section Fallback Helpers ---- */
+.ag-ps-wf-seg-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  background-color: var(--muted, rgba(128, 128, 128, 0.10));
+  border: 1px solid var(--sidebar-border, rgba(128, 128, 128, 0.14));
+  flex-shrink: 0;
+}
+
+.ag-ps-wf-seg-btn {
+  border: none;
+  border-radius: 5px;
+  padding: 2.5px 6px;
+  background: transparent;
+  color: var(--muted-foreground, #6B6964);
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 110ms ease, color 110ms ease;
+}
+
+.ag-ps-wf-seg-btn:hover,
+.ag-ps-wf-seg-btn:focus-visible {
+  color: var(--foreground, #141413);
+}
+
+.ag-ps-wf-seg-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1.5px var(--primary, #2563EB) inset;
+}
+
+.ag-ps-wf-seg-btn[data-selected="1"] {
+  background-color: var(--background, #FFFFFF);
+  color: var(--foreground, #141413);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  font-weight: 600;
+}
+
+/* ---- 6. Reduced Motion Guard ---- */
+@media (prefers-reduced-motion: reduce) {
+  #ag-ps-img-menu,
+  .ag-ps-img-menu-item,
+  .ag-ps-turn-actions,
+  .ag-ps-turn-act-btn,
+  .ag-ps-inline-btn,
+  .ag-ps-wf-seg-btn {
+    animation: none !important;
+    transition: none !important;
+  }
+}

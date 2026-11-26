@@ -76,6 +76,10 @@
       box-sizing: border-box;
     }
 
+    [hidden] {
+      display: none !important;
+    }
+
     html, body {
       margin: 0;
       padding: 0;
@@ -302,7 +306,18 @@
     }
 
     .btn:active:not(:disabled) {
-      transform: translateY(0.5px);
+      transform: scale(0.98) translateY(0.5px);
+    }
+
+    @keyframes pMenuIn {
+      from {
+        opacity: 0;
+        transform: translateY(-4px) scale(0.97);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
     }
 
     .btn:focus-visible {
@@ -331,6 +346,67 @@
       text-align: center;
       font-size: 12.5px;
       color: var(--color-text-tertiary, var(--p-text-muted));
+    }
+
+    .open-with-menu {
+      position: fixed;
+      z-index: 30;
+      min-width: 170px;
+      max-width: 230px;
+      max-height: 220px;
+      overflow-y: auto;
+      padding: 4px;
+      border-radius: 8px;
+      background: var(--color-background-primary, var(--p-bg));
+      border: 1px solid var(--color-border-primary, var(--p-border-strong));
+      box-shadow: var(--p-shadow);
+      transform-origin: top right;
+      animation: pMenuIn 130ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+    }
+
+    .open-with-group-label {
+      padding: 4px 8px 2px;
+      font-size: 10.5px;
+      font-weight: 600;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      user-select: none;
+    }
+
+    .open-with-item {
+      appearance: none;
+      width: 100%;
+      border: 0;
+      background: transparent;
+      color: var(--color-text-primary, var(--p-text));
+      font-family: inherit;
+      font-size: 12px;
+      text-align: left;
+      padding: 6px 8px;
+      border-radius: 5px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .open-with-item:hover,
+    .open-with-item:focus-visible {
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+      outline: none;
+    }
+
+    .open-with-item-tag {
+      font-size: 10px;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      flex-shrink: 0;
+    }
+
+    .open-with-empty {
+      padding: 8px 10px;
+      font-size: 11.5px;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      text-align: center;
     }
 
     .toast {
@@ -375,8 +451,9 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .file-row, .row-actions, .btn, .toast {
+      .file-row, .row-actions, .btn, .toast, .open-with-menu {
         transition: none !important;
+        animation: none !important;
       }
     }
   </style>
@@ -394,6 +471,7 @@
       <div class="empty-state">正在加载文件列表…</div>
     </div>
   </main>
+  <div id="open-with-menu" class="open-with-menu" role="menu" aria-label="本地打开方式" hidden></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script>
@@ -419,7 +497,14 @@
         items: [],
         platformLabel: 'Windows 资源管理器',
         nativeTabUnsupported: false,
-        loading: true
+        loading: true,
+        openTargets: {
+          loaded: false,
+          loading: false,
+          items: [],
+          menuOpen: false,
+          activeIndex: -1
+        }
       };
 
       const cardRoot = document.getElementById('card-root');
@@ -427,13 +512,30 @@
       const fileCountEl = document.getElementById('file-count');
       const headerHintEl = document.getElementById('header-hint');
       const listContainer = document.getElementById('list-container');
+      const openWithMenuEl = document.getElementById('open-with-menu');
       const toastEl = document.getElementById('toast');
 
+      const uiAbort = new AbortController();
+      const { signal } = uiAbort;
       let rpcCounter = 1;
       const pendingRequests = new Map();
       let toastTimer = null;
       let resizeTimer = null;
       let lastSentHeight = 0;
+      let resizeObserver = null;
+
+      window.addEventListener('pagehide', () => {
+        if (toastTimer) clearTimeout(toastTimer);
+        if (resizeTimer) clearTimeout(resizeTimer);
+        if (resizeObserver) {
+          try { resizeObserver.disconnect(); } catch {}
+        }
+        for (const pending of pendingRequests.values()) {
+          clearTimeout(pending.timer);
+        }
+        pendingRequests.clear();
+        uiAbort.abort();
+      }, { once: true });
 
       function escapeHtml(value) {
         return String(value ?? '')
@@ -454,6 +556,16 @@
         }, 2600);
       }
 
+      const HOST_VAR_BRIDGE = {
+        '--primary': '--p-accent',
+        '--background': '--p-bg',
+        '--secondary': '--p-bg-hover',
+        '--muted': '--p-bg-subtle',
+        '--foreground': '--p-text',
+        '--muted-foreground': '--p-text-muted',
+        '--sidebar-border': '--p-border'
+      };
+
       function applyHostContext(ctx) {
         if (!ctx || typeof ctx !== 'object') return;
         state.hostContext = { ...state.hostContext, ...ctx };
@@ -467,6 +579,8 @@
           for (const [k, v] of Object.entries(vars)) {
             if (typeof k === 'string' && k.startsWith('--') && typeof v === 'string' && v.trim()) {
               document.documentElement.style.setProperty(k, v);
+              const mapped = HOST_VAR_BRIDGE[k];
+              if (mapped) document.documentElement.style.setProperty(mapped, v);
             }
           }
         }
@@ -561,12 +675,126 @@
         }
       }
 
+      async function loadOpenTargets() {
+        if (state.openTargets.loaded || state.openTargets.loading) return state.openTargets.items;
+        state.openTargets.loading = true;
+        try {
+          const res = await callServerTool('list_open_targets', {});
+          state.openTargets.items = Array.isArray(res?.targets) ? res.targets : [];
+          state.openTargets.loaded = true;
+        } catch {
+          state.openTargets.items = [];
+        } finally {
+          state.openTargets.loading = false;
+          render();
+        }
+        return state.openTargets.items;
+      }
+
+      function closeOpenWithMenu() {
+        if (!state.openTargets.menuOpen) return;
+        state.openTargets.menuOpen = false;
+        state.openTargets.activeIndex = -1;
+        openWithMenuEl.hidden = true;
+        scheduleSizeSync();
+      }
+
+      function renderOpenWithMenu() {
+        const items = state.openTargets.items;
+        if (state.openTargets.loading) {
+          openWithMenuEl.innerHTML = '<div class="open-with-empty">正在检测本机程序…</div>';
+          return;
+        }
+        if (!items.length) {
+          openWithMenuEl.innerHTML = '<div class="open-with-empty">未检测到已安装的编辑器或终端</div>';
+          return;
+        }
+        const editors = items.filter((t) => t.kind === 'editor');
+        const terminals = items.filter((t) => t.kind === 'terminal');
+        const parts = [];
+        if (editors.length) {
+          parts.push('<div class="open-with-group-label">本地编辑器</div>');
+          for (const t of editors) {
+            parts.push(
+              `<button type="button" class="open-with-item" role="menuitem" data-target-id="${escapeHtml(t.id)}">` +
+                `<span>${escapeHtml(t.name)}</span>` +
+                `<span class="open-with-item-tag">${t.supportsLineCol ? '编辑器' : '应用'}</span>` +
+              `</button>`
+            );
+          }
+        }
+        if (terminals.length) {
+          parts.push('<div class="open-with-group-label">终端打开所在目录</div>');
+          for (const t of terminals) {
+            parts.push(
+              `<button type="button" class="open-with-item" role="menuitem" data-target-id="${escapeHtml(t.id)}">` +
+                `<span>${escapeHtml(t.name)}</span>` +
+                `<span class="open-with-item-tag">终端</span>` +
+              `</button>`
+            );
+          }
+        }
+        openWithMenuEl.innerHTML = parts.join('');
+      }
+
+      function positionOpenWithMenu(anchorBtn) {
+        const rect = anchorBtn.getBoundingClientRect();
+        const menuW = Math.max(176, openWithMenuEl.offsetWidth || 184);
+        const menuH = Math.min(220, openWithMenuEl.offsetHeight || 140);
+        const left = Math.min(window.innerWidth - menuW - 6, Math.max(6, rect.right - menuW));
+        let top = rect.bottom + 4;
+        if (top + menuH > window.innerHeight - 6 && rect.top - menuH - 4 > 6) {
+          top = rect.top - menuH - 4;
+        }
+        openWithMenuEl.style.left = `${Math.round(left)}px`;
+        openWithMenuEl.style.top = `${Math.round(Math.max(6, top))}px`;
+      }
+
+      async function toggleOpenWithMenu(idx, anchorBtn) {
+        if (state.openTargets.menuOpen && state.openTargets.activeIndex === idx) {
+          closeOpenWithMenu();
+          return;
+        }
+        state.openTargets.menuOpen = true;
+        state.openTargets.activeIndex = idx;
+        openWithMenuEl.hidden = false;
+        if (!state.openTargets.loaded) {
+          renderOpenWithMenu();
+          positionOpenWithMenu(anchorBtn);
+          scheduleSizeSync();
+          await loadOpenTargets();
+          if (!state.openTargets.menuOpen || state.openTargets.activeIndex !== idx) return;
+        }
+        renderOpenWithMenu();
+        positionOpenWithMenu(anchorBtn);
+        scheduleSizeSync();
+      }
+
+      async function invokeOpenWithTarget(targetId, item) {
+        closeOpenWithMenu();
+        if (!targetId || !item?.path) return;
+        try {
+          const res = await callServerTool('open_with_target', { targetId, path: item.path });
+          if (res && res.ok === false) {
+            showToast(res.error || '打开失败', true);
+            return;
+          }
+          showToast(`已通过 ${res?.targetName || targetId} 打开`);
+        } catch (err) {
+          showToast(err?.message || '打开失败', true);
+        }
+      }
+
       function scheduleSizeSync() {
         if (!state.initialized) return;
         if (resizeTimer) clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
-          const rect = cardRoot.getBoundingClientRect();
-          const h = Math.min(780, Math.max(48, Math.ceil(rect.height)));
+          const cardHeight = Math.ceil(cardRoot.getBoundingClientRect().height);
+          let menuBottom = 0;
+          if (state.openTargets.menuOpen && !openWithMenuEl.hidden) {
+            menuBottom = Math.ceil(openWithMenuEl.getBoundingClientRect().bottom + 10);
+          }
+          const h = Math.min(780, Math.max(48, Math.max(cardHeight, menuBottom)));
           if (h !== lastSentHeight) {
             lastSentHeight = h;
             sendNotification('ui/notifications/size-changed', { height: h });
@@ -601,6 +829,7 @@
           const iconSvg = KIND_ICONS[kind];
           const exists = item.exists !== false;
           const showOpen = !item.isDir && exists && Boolean(item.uri) && !state.nativeTabUnsupported;
+          const showOpenWith = exists && (!state.openTargets.loaded || state.openTargets.items.length > 0);
           const displayPath = item.relPath && item.relPath !== item.name ? item.relPath : item.path;
           return (
             `<li class="file-row${exists ? '' : ' is-missing'}" data-index="${idx}" tabindex="0" title="${escapeHtml(item.path)}">` +
@@ -615,6 +844,7 @@
               `<span class="file-size">${escapeHtml(item.sizeText || '')}</span>` +
               `<span class="row-actions">` +
                 `<button type="button" class="btn btn-primary" data-action="open" data-index="${idx}"${showOpen ? '' : ' hidden'}>打开</button>` +
+                `<button type="button" class="btn" data-action="open-with" data-index="${idx}" aria-haspopup="menu"${showOpenWith ? '' : ' hidden'}>打开方式 ▾</button>` +
                 `<button type="button" class="btn" data-action="reveal" data-index="${idx}">定位</button>` +
                 `<button type="button" class="btn" data-action="quote" data-index="${idx}"${canQuote ? '' : ' hidden'}>引用</button>` +
               `</span>` +
@@ -696,7 +926,7 @@
         } else if (msg.method === 'ui/notifications/tool-result') {
           applyToolResult(msg.params);
         }
-      });
+      }, { signal });
 
       listContainer.addEventListener('click', (event) => {
         const btn = event.target.closest('button[data-action]');
@@ -707,13 +937,50 @@
         if (!item) return;
         const action = btn.dataset.action;
         if (action === 'open') {
+          closeOpenWithMenu();
           openInNativeTab(item.uri);
+        } else if (action === 'open-with') {
+          toggleOpenWithMenu(idx, btn);
         } else if (action === 'reveal') {
+          closeOpenWithMenu();
           handleReveal(item);
         } else if (action === 'quote') {
+          closeOpenWithMenu();
           attachContext(`@${item.path}`);
         }
       });
+
+      openWithMenuEl.addEventListener('click', (event) => {
+        const itemBtn = event.target.closest('button[data-target-id]');
+        if (!itemBtn) return;
+        event.stopPropagation();
+        const targetId = itemBtn.dataset.targetId;
+        const item = state.items[state.openTargets.activeIndex];
+        if (targetId && item) {
+          invokeOpenWithTarget(targetId, item);
+        }
+      });
+
+      document.addEventListener('click', (event) => {
+        if (!state.openTargets.menuOpen) return;
+        if (!openWithMenuEl.contains(event.target) && !event.target.closest('button[data-action="open-with"]')) {
+          closeOpenWithMenu();
+        }
+      }, { signal });
+
+      window.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && state.openTargets.menuOpen) {
+          closeOpenWithMenu();
+        }
+      }, { signal });
+
+      let lastWindowWidth = window.innerWidth;
+      window.addEventListener('resize', () => {
+        if (window.innerWidth !== lastWindowWidth) {
+          lastWindowWidth = window.innerWidth;
+          if (state.openTargets.menuOpen) closeOpenWithMenu();
+        }
+      }, { signal });
 
       listContainer.addEventListener('dblclick', (event) => {
         if (event.target.closest('button[data-action]')) {
@@ -745,10 +1012,10 @@
       });
 
       if (typeof ResizeObserver === 'function') {
-        const observer = new ResizeObserver(() => {
+        resizeObserver = new ResizeObserver(() => {
           scheduleSizeSync();
         });
-        observer.observe(cardRoot);
+        resizeObserver.observe(cardRoot);
       }
 
       async function bootstrap() {
@@ -760,7 +1027,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.3.0' },
+            appInfo: { name: 'prism-files', version: '0.5.0' },
             appCapabilities: {}
           }, 12000);
           state.hostCapabilities = initRes?.hostCapabilities || {};
@@ -769,6 +1036,7 @@
           sendNotification('ui/notifications/initialized', {});
           render();
           scheduleSizeSync();
+          loadOpenTargets().catch(() => {});
         } catch (err) {
           state.initialized = true;
           state.loading = false;

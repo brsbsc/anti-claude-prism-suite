@@ -1,18 +1,28 @@
 {
-  "schema": 1,
+  "schema": 2,
   "updatedAt": "2026-11-25",
+  "principle": "Selective adoption only: inspect breaking host/credential changes first, surface useful/fun ideas for user approval, never copy-paste wholesale or import GPL-3.0 code.",
   "upstreams": {
     "antiClaude": {
       "repo": "hongqi7/Anti-Claude",
       "role": "host-runtime",
       "license": "MIT",
+      "absorptionPolicy": "compat-first-selective",
+      "adoptionBoundary": "仅追踪 user/extensions 加载钩子、getUsageSummary/translateText 等扩展契约变化，不打包反编译核心逻辑。",
       "baselineTag": "v3.1.7",
       "baselineCommit": "2cc8a1d",
-      "trackedPaths": [
+      "watchedPaths": [
         "core/daemon.mjs",
         "core/runtime.js",
+        "core/preload.js",
         "user/custom.js",
         "user/custom.css"
+      ],
+      "excludedPaths": [
+        "README",
+        "docs/",
+        "screenshots/",
+        ".github/"
       ],
       "requiredDaemonCapabilities": [
         "listUserExtensionFiles",
@@ -20,16 +30,62 @@
         "translateText"
       ]
     },
+    "agyPowertools": {
+      "repo": "WhiteBr1ck/agy-powertools",
+      "role": "feature-reference",
+      "license": "MIT",
+      "absorptionPolicy": "selective-feature-ideas",
+      "adoptionBoundary": "关注 Antigravity 凭据库路径变动与有趣轻量小工具/视觉创意；不照搬全盘重写与闭环强耦合逻辑。",
+      "baselineTag": "v2.16.2",
+      "baselineCommit": "463fe0a",
+      "watchedPaths": [
+        "lib/credential-vault.mjs",
+        "extensions/",
+        "scripts/",
+        "CHANGELOG.md"
+      ],
+      "excludedPaths": [
+        "dist/",
+        "media/",
+        "assets/",
+        ".github/"
+      ]
+    },
     "obsidianPrism": {
       "repo": "RMvdesi/obsidian-prism",
-      "role": "inspiration-reference-only",
+      "role": "inspiration-only",
       "license": "GPL-3.0",
-      "cleanRoomNote": "Reference UX ideas only; never copy GPL-3.0 source code into this MIT repository.",
+      "absorptionPolicy": "inspiration-only-no-code",
+      "adoptionBoundary": "Clean-Room 红线：仅提取排版/动效交互思路供用户选择，严禁复制或移植任何 GPL-3.0 源码。",
       "baselineTag": "v1.0.7",
-      "baselineCommit": "e294da1",
-      "trackedPaths": [
+      "baselineCommit": "2e27680",
+      "watchedPaths": [
         "CHANGELOG.md",
         "README.md"
+      ],
+      "excludedPaths": [
+        "src/",
+        "manifest.json",
+        "styles.css"
+      ]
+    },
+    "agySwitch": {
+      "repo": "anglee0323/agy-switch",
+      "role": "ecosystem-watch",
+      "license": "MIT",
+      "absorptionPolicy": "ecosystem-signal-only",
+      "adoptionBoundary": "仅观察 Antigravity 凭据目标名/OAuth 格式突变等底层信号，不引入外部 Electron/桌面重依赖。",
+      "baselineTag": "v4.10.18",
+      "baselineCommit": "f0bb80f",
+      "watchedPaths": [
+        "src/main/",
+        "electron/",
+        "CHANGELOG.md"
+      ],
+      "excludedPaths": [
+        "public/",
+        "dist/",
+        "assets/"
       ]
     }
   }

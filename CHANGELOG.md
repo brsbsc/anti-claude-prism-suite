@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.5.0 - 2026-11-26
+
+- **切号后自动安全重启 Antigravity + Windows 凭据库防 `exit 1` 加固与 `0ms` 多级缓存**：
+  - 新增 `plugin/server/relaunch-client.mjs` 与 app-only 工具 `accounts_relaunch_client`：脱离 WSL/MCP 进程树经 Explorer COM → WMI → `Start-Process` 三级投递优雅重启 Antigravity（快照原始 PID 绝不误杀新实例，自动探测并保留 `--remote-debugging-port=0` 扩展挂载参数），支持切后自动重启持久化开关与一键立即重启按钮；
+  - 根治 WSL2 下 `Windows 凭据管理器调用失败: exit 1`：安装器（`install.mjs` & `installer/win/PrismSuiteInstaller.cs`）升级为**原地增量覆盖保留根目录 inode**，守护进程启动即 `chdir(homedir)`，`account-vault.mjs` 新增 `resolveSafeExecCwd`、`resolveWslInteropEnv`、PowerShell 单次批量事务与 `120s/60s` 脱敏元数据缓存（实机热读取由 `~2200ms` 降至 `0ms`，`accounts.json` 外部 `mtime` 变更自动失效缓存），并支持对未捕获新号切走前自动建槽防丢。
+- **实时额度自动桥接 + `✦ 棱镜` 账号胶囊一键直达**：
+  - 主扩展 `prism-suite.js` 与工作台 `app.html` 建立脱敏 `postMessage` 双向通信桥（绝不传凭据）：主界面监测到的 5h / 7d 剩余百分比与重置倒计时自动增量同步写入当前账号卡片（配合 `prism_quota_sync`）；
+  - `✦ 棱镜` 控制面板顶部新增「当前账号 & 实时额度胶囊 + `⚡ 切号` 一键直达账号接力」入口，顶栏 `工作台` 按钮优先拉起右侧分屏并动态展示当前账号与额度摘要；工作台自动记忆上次停留页签（`lastTab`）。
+- **工作台 UI 精修、60fps 微动效、纯键盘流与代码行号区间引用**：
+  - `app.html` / `inline.html` 建立宿主 CSS 变量桥接、顶部 `2px` 流光进度条（SWR 静默刷新不闪白）、`requestAnimationFrame` 60fps 倒计时进度条、长列表 `content-visibility: auto`、手风琴记忆与窄分屏顶栏单行不折行；
+  - 「目录浏览」升级可点击路径面包屑 + `Ctrl/Cmd+L` 编辑双态、未截断目录 `0ms` 本地过滤（含中文 IME 保护）及 **`↑ / ↓ / Enter / Backspace` 纯键盘导航**；代码预览新增 **一键复制全文** 与 **点击行号 / `Shift+点击` 选中行区间生成 `@path#L10-L25` 精确引用给 AI**。
+- **Windows 图形安装器同步加固（`installer/win/PrismSuiteInstaller.cs`）**：
+  - 升级版本号与原地增量更新保 inode 策略，新增桌面/开始菜单快捷方式 `--remote-debugging-port=0` 只读自检提示。
+
+- **彻底修复小精灵遮挡输入区上方交互控件缺漏（`extensions/prism-suite`）**：
+  - 将障碍扫描范围从仅 3 层父容器扩大至主对话交互区域，覆盖输入区上方动态弹出的 `ask_question` 选择卡（麦克风 / 跳过 / 提交 ↵）、工具审批条与折叠控件；
+  - 新增障碍签名动态追踪与可用宽度评估，按钮密集时自动带着 `+N` 徽章平滑向下缩回藏起（`data-yield="1"`）并在卡片消失后探头回归；鼠标进入交互带即时触发闪避（`💨`）与收起浮窗，`.ag-ps-more-badge` 动态跟随安全空位绝不挡按钮。
+- **主备多账号半自动倒计时安全接力（默认关闭，物理隔离会话与凭据）**：
+  - 新增 `plugin/server/account-vault.mjs`：通过 OS 原生凭据管理器隔离命名空间（Windows `prism-suite:account:<id>`、WSL2 `prism-suite:wsl:<distro>:account:<id>`、macOS Keychain、Linux Secret Service）存取 OAuth 凭据，PowerShell 经 `-EncodedCommand` + `stdin` JSON 零插值调用 `advapi32.dll`，内存凭据用后 `.fill(0)` 清零，强校验 `id_token_email` 防串号并在异常时原子回滚；**100% 不触碰 Antigravity 本地 SQLite、`/brain/` 与 workspace**；
+  - 新增 `plugin/server/account-manager.mjs` 与 `scripts/prism-accounts.mjs`：提供 `switch.lock` 跨进程并发锁、主号唯一性、5h 跨家族提示、模型兼容守卫、主号恢复滞回提醒、`--dry-run` 预演及切前 4 要素交接快照；
+  - **Prism 工作台新增第 5 标签页「账号接力」**（所有账号工具严格标记 `visibility: ['app']` 对模型不可见）：支持显式安全确认开启、一键捕获主/备账号、5 秒可暂停/取消倒计时切号横幅、与切后重开回跳指引。
+- **零依赖槽位交接记忆 + 外部 `memory-mcp` 联动桥（`handoff-memory.mjs`）**：
+  - 随 `prism-files` MCP Server 向模型暴露 3 个轻量工具 `prism_memory_store` / `prism_memory_list` / `prism_memory_search`，按 `handoff:<project>:<slot>` **严格时间倒序**精确拉取最新进度，写入前自动脱敏私钥 / API Key / GitHub Token / JWT；
+  - 工作台支持一键复制标准化外部 `memory_store` 同步指令与切后 `接力` 续写提示，随仓附通用开源规则模板 `templates/multi-account-handoff.rule.md`。
+- **择优筛选版上游更新雷达（Upstream Radar）**：
+  - 升级 `upstream.json`（v2，同步 `plugin/upstream.json`）纳入 `hongqi7/Anti-Claude`、`WhiteBr1ck/agy-powertools`、`RMvdesi/obsidian-prism`、`anglee0323/agy-switch` 四个上游并各自明确边界；
+  - 升级 `plugin/server/upstream-radar.mjs` 与 `scripts/check-upstream.mjs`（Compare API + 三分类：`兼容性必看 / 实用新功能候选 / 建议跳过` + `--markdown` / `--sync-baseline` + GPL Clean-Room 警示），坚持**只吸收有益部分、供用户决定是否融合、绝不照搬照抄**；
+  - 工作台按需点击检查 + 新增 `.github/workflows/upstream-watch.yml` 每周定时巡检并在发现 `HIGH`/`MEDIUM` 变更时幂等更新唯一候选清单 Issue。
+
+## 0.4.1 - 2026-11-25
+
+- **全项目四模型联合审计加固（P0/P1/P2 全清）**：
+  - **Prism 文件工作台 2.0 安全边界升级**：`open_prism_files` 与同步文件接口全链路拦截未授权 UNC/SMB 与设备前缀；`searchTranscripts` 改为**先脱敏再匹配截取**（彻底杜绝私钥/Token 中段泄露）；`resolveHomeAndBrain` 对 `brainDir` 递归 `realpathSync` 归一化（防软链/联接点绕过只读保护）；`isSensitivePath` 拦截 Windows NTFS ADS（`::$DATA`）与尾随点/空格绕过；WSL UNC `.localhost`/`wsl$` 自动转换与 `.cmd` 显式参数安全启动；`inline.html`「打开方式 ▾」弹出时动态同步 iframe 高度防裁切；`app.html` Markdown 引用块递归上限 16 层。
+  - **核心总线 & 交互体验加固**：补齐 `unregisterPanelSection` / `unregisterOutlineAction`、去除 `setPref` 冗余二次渲染、大纲点击防外层误关且重构为无嵌套合规 HTML、思考译文盒弱引用精确清理、统一高优 `Escape` 浮层栈、`keepOverviewOpen` 限定仅 `/c/<id>` 会话路由生效、禁止原位编辑自动点击通用 `Undo/Revert`、修复 `cleanCopy` 对异步 `navigator.clipboard.writeText` 支持、修复安装器 `C:\` 盘符根路径与 `--plugin-dir` 嵌套问题。
+- **小精灵主动避障 + 指针闪避 + 防遮挡质感浮窗**：
+  - 新增输入框周边控件障碍检测，自动将小精灵停靠并漫游在安全区域；当鼠标指针靠近踩中胶囊 `^` / `×` 等按钮的小精灵时，触发短距灵动快跑让位（`💨` 微表情 + 穿透点击不挡操作）；
+  - 移除原生 `title` 提示，全面切换为正上方预留间隙、绝不遮挡指针的圆角毛玻璃状态浮窗（带运行中/待命状态色点）。
+- **手动切号自动回跳上次会话 + 5h/7d 额度交接提醒**：
+  - 默认零风险记住进入 `/settings` 前最后一个 `/c/<id>` 会话路由，停留在设置页时浮现「返回上次会话 ↩ / 留在设置」一键回跳条（可选开启安全倒计时自动回跳，绝不盲关未知弹窗、100% 保留全部会话记录）；
+  - 新增 5h ≤ 10%（建议先切另一模型家族）与 7d ≤ 5%（提示存交接并切备用号，一键复制交接指令）轻量化去重提醒条。
+
+## 0.4.0 - 2026-11-25
+
+- **模块化事件总线与零卡顿性能加固（`window.__agPrismBus v4`）**：
+  - 核心扩展 `prism-suite.js` 发布加载顺序无关的版本化总线（支持 `AbortController` 热重载无残留清理），将新功能清晰拆分为 `prism-suite-fx.{js,css}` 与 `prism-suite-workflow.{js,css}`；
+  - 新增 `<html>` 属性与 CSS 变量脏检查、已完成历史轮次 `WeakMap` 缓存、CJK 输入法组合态（`compositionstart/end`）与触屏拖动期防抖礼让；
+  - 新增主题自适应自定义悬浮提示（`data-ag-ps-tip`）与控制面板底部按需 **GitHub 新版本检查胶囊**。
+- **视觉特效、排版与侧栏细节（`prism-suite-fx`）**：
+  - **工作时输入框流光边框（Border Beam，默认关闭）**：基于单共享 `rAF` 调度器的 Canvas 2D 圆角矩形周长彗星流光，支持 `theme / gemini / aurora / prism / neon / quota` 6 套配色与「试用 3s」即时预览，空闲/隐藏/失焦严格 `0fps` 停帧；
+  - **输入框额度光环（默认关闭）**：0fps 静态 SVG 外框顺时针展示 `5h / 周 / 较低项` 剩余额度，工作时与流光边框自动平滑互斥切换；
+  - **ThinkingOrb 3D 粒子任务进度球（默认关闭）**：预分配 128 颗 Fibonacci 球面粒子随思考/工具/输出/完成态形变，悬停带视差倾角，收敛 1.2s 自动停帧，支持与像素萌宠共存或替换；
+  - **实用排版与交互**：用户消息气泡着色（5 色系 + `10%–100%` 滑条 + 自动对比度）、紧凑排版开关、后台完成窗口标题 `(N)` 未读数提醒、项目默认展示会话数、切换会话保持右侧概览展开、多轮对话侧边常驻圆点目录。
+- **效率工作流、多语言与会话分支（`prism-suite-workflow` + `scripts/fork-session.mjs`）**：
+  - **对话图片右键三连**：右键会话图片弹出主题菜单，支持「引用到输入框」「复制图片（PNG）」「保存图片」；
+  - **回复复制过滤折叠摘要**：点击回复复制按钮自动滤除已折叠思考/工具摘要，完整保留代码块与原生打勾动效；
+  - **SSH 粘贴自动解析**：在 SSH Host 弹窗粘贴 `ssh -p 端口 用户@主机` 自动提取并丢弃附带密码；
+  - **2.34–2.35 & Swarm 增量多语言补全**：支持 `关 / 简 / 繁 / 英` 切换与 `WeakMap` 无损还原，零全局 `MutationObserver`；
+  - **原位消息编辑补位 & 历史轮次分支**：轮次悬停提供快捷「编辑」（优先联动 Anti-Claude 原生 Undo 编辑，不可用时启动乐观锁原位编辑器）与「分支」（同步接入大纲抽屉，附零依赖回环 CDP 脚本 `scripts/fork-session.mjs`）。
+- **Prism 文件工作台 2.0（`prism-files` MCP App）**：
+  - **修复 Windows 含空格/逗号/盘符根目录资源管理器定位**：原生 `win32` 改用 `/select,"<path>"` + `windowsVerbatimArguments: true`，WSL 采用双参数 `['/select,', winPath]` 规避引号转义；
+  - **可选私网 LAN NAS/SMB 路径支持（默认关闭）**：开启前强制校验全部 DNS 解析 IP 与字面量均属 RFC1918 / Tailscale CGNAT / ULA / 环回 / `wsl$`，严格拦截公网主机防 NTLM 凭据泄漏；
+  - **「打开方式 ▾」动态探测本机编辑器与终端**：自动识别 VS Code、Cursor、Windsurf、Antigravity、Zed、JetBrains、Windows Terminal、Git Bash 等并支持 `#L:C` 行列号直达，Windows `.cmd/.bat` 经元字符拦截后显式经 `cmd.exe /d /s /c` 安全启动（规避 Node 22 `EINVAL`）；
+  - **跨历史会话脱敏全文检索**：工作台新增第 4 标签页 **`历史检索`**，在符号链接根牢笼与时间/体积预算内检索本地 `transcript.jsonl`（支持 `全部 / 正文 / 代码与命令` 筛选），自动脱敏 API Key / Token / 私钥片段。
+
 ## 0.3.0 - 2026-11-25
 
 - **全新融合 · Prism 文件工作台（原生 Antigravity MCP App 插件，零外部依赖）**：

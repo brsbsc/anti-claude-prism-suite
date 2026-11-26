@@ -1,0 +1,89 @@
+name: Upstream Radar Watch
+
+on:
+  schedule:
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+    inputs:
+      force_issue:
+        description: 'Even if only LOW updates exist, create/update tracking issue'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Upstream Radar (Selective Adoption)
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/check-upstream.mjs --force --json --markdown > radar-output.json
+          node -e '
+            const fs = require("node:fs");
+            const data = JSON.parse(fs.readFileSync("radar-output.json", "utf8"));
+            fs.writeFileSync("radar-report.md", data.markdown || "");
+            const high = Number(data.summary?.high || 0);
+            const med = Number(data.summary?.medium || 0);
+            const low = Number(data.summary?.low || 0);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `high=${high}\nmedium=${med}\nlow=${low}\n`);
+            if (process.env.GITHUB_STEP_SUMMARY) {
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, data.markdown || "");
+            }
+          '
+
+      - name: Create or update single upstream-watch Issue when HIGH or MEDIUM found
+        if: steps.check.outputs.high > 0 || steps.check.outputs.medium > 0 || github.event.inputs.force_issue == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('node:fs');
+            const body = fs.readFileSync('radar-report.md', 'utf8');
+            const labelName = 'upstream-watch';
+            try {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: labelName,
+                color: '0e8a16',
+                description: 'Selective upstream compatibility & feature candidates'
+              });
+            } catch (_) {}
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: labelName,
+              per_page: 5
+            });
+            const title = '[Upstream Radar] 上游更新候选评估清单（择优吸收 · 由人工决定是否融合）';
+            if (existing.data.length > 0) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                title,
+                body
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: [labelName]
+              });
+            }

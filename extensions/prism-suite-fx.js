@@ -1,0 +1,2844 @@
+/* ============================================================================
+ * Anti-Claude Prism Suite v0.5.0 — Visual FX & Layout Polish (Clean-Room, MIT)
+ * Architecture:
+ *   - Joins window.__agPrismBus (Frozen v4) safely regardless of script order
+ *   - Single shared requestAnimationFrame scheduler (true 0fps idle/hidden/reduced)
+ *   - Zero permanent document.body MutationObserver
+ *   - Zero per-frame layout reads (throttled ResizeObserver geometry cache)
+ *   - Zero per-frame particle allocations (pre-allocated 128-particle Fibonacci sphere)
+ *   - Full AbortController + bus.onCleanup disposal (zero leaks on hot-reload)
+ * ============================================================================ */
+(() => {
+  'use strict';
+
+  const INSTANCE_TOKEN = Symbol('agPrismFx');
+  if (typeof window.__agPrismFxDispose === 'function') {
+    try { window.__agPrismFxDispose(); } catch {}
+  }
+  window.__agPrismFxToken = INSTANCE_TOKEN;
+
+  function attachPrismModule(initFn) {
+    if (window.__agPrismBus && window.__agPrismBus.version >= 4) {
+      initFn(window.__agPrismBus);
+    } else {
+      window.__agPrismBusQueue = window.__agPrismBusQueue || [];
+      window.__agPrismBusQueue.push(initFn);
+    }
+  }
+
+  const FX_DEFAULTS = {
+    borderBeam: false,
+    borderBeamPalette: 'theme',   // 'theme' | 'gemini' | 'aurora' | 'prism' | 'neon' | 'quota'
+    quotaRing: false,
+    quotaRingPeriod: 'auto',      // 'auto' | 'weekly' | '5h'
+    thinkingOrb: false,
+    thinkingOrbMode: 'both',      // 'both' | 'replace'
+    bubbleTint: false,
+    bubbleTintPreset: 'accent',   // 'accent' | 'sky' | 'emerald' | 'amber' | 'violet'
+    bubbleTintStrength: 22,       // 10..100 integer %
+    compactLayout: false,
+    unreadBadge: true,
+    sidebarSessions: 'default',   // 'default' | '10' | 'all'
+    keepOverviewOpen: true,
+    alwaysOutlineRail: false,
+    switchReturnHelper: true,
+    switchAutoReturn: false,
+    autoDismissOnboarding: true,
+    quotaHandoffAlert: true
+  };
+
+  const BEAM_PALETTE_LABELS = [
+    { id: 'theme', label: '主题', dot: 'var(--primary, #2F75C3)' },
+    { id: 'gemini', label: 'Gemini', dot: 'linear-gradient(135deg,#4285F4,#C084FC)' },
+    { id: 'aurora', label: '极光', dot: 'linear-gradient(135deg,#10B981,#3B82F6)' },
+    { id: 'prism', label: '棱镜', dot: 'linear-gradient(135deg,#F43F5E,#F59E0B,#3B82F6)' },
+    { id: 'neon', label: '霓虹', dot: 'linear-gradient(135deg,#22D3EE,#E879F9)' },
+    { id: 'quota', label: '额度', dot: 'linear-gradient(135deg,#10B981,#F59E0B,#EF4444)' }
+  ];
+
+  const BUBBLE_PRESETS = [
+    { id: 'accent', label: '主题色', light: null, dark: null, swatch: 'var(--primary, #2F75C3)' },
+    { id: 'sky', label: '天蓝', light: '#0284C7', dark: '#38BDF8', swatch: '#0EA5E9' },
+    { id: 'emerald', label: '翡翠', light: '#059669', dark: '#10B981', swatch: '#10B981' },
+    { id: 'amber', label: '琥珀', light: '#D97706', dark: '#F59E0B', swatch: '#F59E0B' },
+    { id: 'violet', label: '紫罗兰', light: '#7C3AED', dark: '#8B5CF6', swatch: '#8B5CF6' }
+  ];
+
+  const ORB_STAGE_LABELS = {
+    idle: '待命',
+    thinking: '深度思考中',
+    tools: '工具执行中',
+    streaming: '实时输出中',
+    done: '已完成'
+  };
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function clampInt(val, min, max, fallback) {
+    const n = Math.round(Number(val));
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(min, Math.min(max, n));
+  }
+
+  function parseCssColorToRgb(colorStr) {
+    const s = String(colorStr || '').trim();
+    const hex = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    if (hex) {
+      let h = hex[1];
+      if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+      return [
+        parseInt(h.slice(0, 2), 16),
+        parseInt(h.slice(2, 4), 16),
+        parseInt(h.slice(4, 6), 16)
+      ];
+    }
+    const rgb = s.match(/^rgba?\(\s*([\d.]+)\s*[,\s]\s*([\d.]+)\s*[,\s]\s*([\d.]+)/i);
+    if (rgb) {
+      return [
+        Math.max(0, Math.min(255, Math.round(Number(rgb[1]) || 0))),
+        Math.max(0, Math.min(255, Math.round(Number(rgb[2]) || 0))),
+        Math.max(0, Math.min(255, Math.round(Number(rgb[3]) || 0)))
+      ];
+    }
+    return [47, 117, 195];
+  }
+
+  function relativeLuminance(rgb) {
+    const ch = (c) => {
+      const v = c / 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * ch(rgb[0]) + 0.7152 * ch(rgb[1]) + 0.0722 * ch(rgb[2]);
+  }
+
+  function lerpRgb(stops, t, out) {
+    const n = stops.length;
+    if (n === 1) {
+      out[0] = stops[0][0];
+      out[1] = stops[0][1];
+      out[2] = stops[0][2];
+      return;
+    }
+    const clamped = t < 0 ? 0 : t > 1 ? 1 : t;
+    const scaled = clamped * (n - 1);
+    const idx = Math.min(n - 2, Math.floor(scaled));
+    const frac = scaled - idx;
+    const a = stops[idx];
+    const b = stops[idx + 1];
+    out[0] = (a[0] + (b[0] - a[0]) * frac) | 0;
+    out[1] = (a[1] + (b[1] - a[1]) * frac) | 0;
+    out[2] = (a[2] + (b[2] - a[2]) * frac) | 0;
+  }
+
+  function shiftRgb(rgb, delta) {
+    return [
+      Math.max(0, Math.min(255, rgb[0] + delta)),
+      Math.max(0, Math.min(255, rgb[1] + delta)),
+      Math.max(0, Math.min(255, rgb[2] + delta))
+    ];
+  }
+
+  function initFxModule(bus) {
+    if (window.__agPrismFxToken !== INSTANCE_TOKEN) return;
+
+    let disposed = false;
+    const ac = new AbortController();
+    const { signal } = ac;
+
+    bus.registerDefaults(FX_DEFAULTS);
+
+    function getPrefs() {
+      const p = (bus.getPrefs && bus.getPrefs()) || {};
+      return Object.assign({}, FX_DEFAULTS, p);
+    }
+
+    function setAttr(el, attr, val) {
+      if (!el) return;
+      if (val == null || val === '') {
+        if (el.hasAttribute(attr)) el.removeAttribute(attr);
+      } else if (typeof bus.setAttrIfChanged === 'function') {
+        bus.setAttrIfChanged(el, attr, String(val));
+      } else if (el.getAttribute(attr) !== String(val)) {
+        el.setAttribute(attr, String(val));
+      }
+    }
+
+    function setStyleVar(el, prop, val) {
+      if (!el || !el.style) return;
+      if (val == null || val === '') {
+        if (el.style.getPropertyValue(prop)) el.style.removeProperty(prop);
+      } else if (typeof bus.setStyleVarIfChanged === 'function') {
+        bus.setStyleVarIfChanged(el, prop, String(val));
+      } else if (el.style.getPropertyValue(prop) !== String(val)) {
+        el.style.setProperty(prop, String(val));
+      }
+    }
+
+    function safeIsBusy() {
+      try { return Boolean(bus.isBusy && bus.isBusy()); } catch { return false; }
+    }
+
+    function safeIsDark() {
+      try { return Boolean(bus.isDark && bus.isDark()); } catch { return false; }
+    }
+
+    function safeIsTyping() {
+      try { return Boolean(bus.isTyping && bus.isTyping()); } catch { return false; }
+    }
+
+    function safeGetComposerEl() {
+      try {
+        const el = bus.getComposerEl && bus.getComposerEl();
+        if (el && el.isConnected) return el;
+      } catch {}
+      const fallback = document.getElementById('antigravity.agentSidePanelInputBox');
+      return fallback && fallback.isConnected ? fallback : null;
+    }
+
+    function safeGetViewportEl() {
+      try {
+        const el = bus.getViewportEl && bus.getViewportEl();
+        if (el && el.isConnected) return el;
+      } catch {}
+      const fallback = document.querySelector('[data-testid="autoscroll-viewport"]');
+      return fallback && fallback.isConnected ? fallback : null;
+    }
+
+    function safeGetThemeAccent() {
+      try {
+        const c = bus.getThemeAccent && bus.getThemeAccent();
+        if (c && typeof c === 'string' && c.trim()) return c.trim();
+      } catch {}
+      try {
+        const v = getComputedStyle(document.documentElement).getPropertyValue('--primary').trim();
+        if (v) return v;
+      } catch {}
+      return '#2F75C3';
+    }
+
+    function safeGetQuotaState() {
+      try {
+        const q = bus.getQuotaState && bus.getQuotaState();
+        if (q && typeof q === 'object') return q;
+      } catch {}
+      return { pct5h: null, pct7d: null, minPct: null };
+    }
+
+    function safeToast(msg) {
+      try { if (typeof bus.showToast === 'function') bus.showToast(msg); } catch {}
+    }
+
+    function safeRefreshPopover() {
+      try { if (typeof bus.refreshPopover === 'function') bus.refreshPopover(); } catch {}
+    }
+
+    /* ---- Reduced Motion & Visibility / Focus State ---- */
+    const motionQuery = typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-reduced-motion: reduce)')
+      : null;
+    let reducedMotion = Boolean(motionQuery && motionQuery.matches);
+    let windowFocused = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+
+    if (motionQuery && typeof motionQuery.addEventListener === 'function') {
+      motionQuery.addEventListener('change', (e) => {
+        if (disposed) return;
+        reducedMotion = Boolean(e.matches);
+        if (reducedMotion) {
+          stopScheduler();
+          clearBeamCanvas();
+          if (orbCanvas && getPrefs().thinkingOrb) renderThinkingOrbFrame(0, performance.now(), true);
+        } else {
+          ensureScheduler();
+        }
+      }, { signal });
+    }
+
+    /* ========================================================================
+     * 1. Shared Composer Geometry Cache (Throttled ResizeObserver, 0 layout/frame)
+     * ======================================================================== */
+    const MAX_BEAM_CANVAS_PX = 1400;
+    const BEAM_INSET = 2; // matches CSS inset: -2px
+
+    let composerHost = null;
+    let composerRO = null;
+    let resizeThrottleTimer = 0;
+
+    const geo = {
+      w: 0,
+      h: 0,
+      radius: 14,
+      cssW: 0,
+      cssH: 0,
+      dpr: 1,
+      pxW: 0,
+      pxH: 0,
+      pad: 2.25,
+      rw: 0,
+      rh: 0,
+      rad: 12,
+      perim: 0,
+      segs: new Float64Array(8),
+      cum: new Float64Array(9)
+    };
+
+    function recomputePerimeterSegments() {
+      const pad = geo.pad;
+      const rw = Math.max(8, geo.cssW - pad * 2);
+      const rh = Math.max(8, geo.cssH - pad * 2);
+      const rad = Math.max(2, Math.min(geo.radius + 1.5, rw * 0.5 - 1, rh * 0.5 - 1));
+      const straightW = Math.max(0, rw - rad * 2);
+      const straightH = Math.max(0, rh - rad * 2);
+      const arc = 0.5 * Math.PI * rad;
+
+      geo.rw = rw;
+      geo.rh = rh;
+      geo.rad = rad;
+
+      const s = geo.segs;
+      s[0] = straightW; // top
+      s[1] = arc;       // top-right
+      s[2] = straightH; // right
+      s[3] = arc;       // bottom-right
+      s[4] = straightW; // bottom
+      s[5] = arc;       // bottom-left
+      s[6] = straightH; // left
+      s[7] = arc;       // top-left
+
+      let acc = 0;
+      geo.cum[0] = 0;
+      for (let i = 0; i < 8; i++) {
+        acc += s[i];
+        geo.cum[i + 1] = acc;
+      }
+      geo.perim = acc;
+    }
+
+    function measureComposerNow() {
+      if (disposed || !composerHost || !composerHost.isConnected) return false;
+      const rect = composerHost.getBoundingClientRect();
+      const w = Math.round(rect.width);
+      const h = Math.round(rect.height);
+      if (w < 40 || h < 24) return false;
+
+      let radius = 14;
+      try {
+        const cs = getComputedStyle(composerHost);
+        const parsed = parseFloat(cs.borderTopLeftRadius);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          radius = parsed;
+        } else if (composerHost.firstElementChild) {
+          const innerR = parseFloat(getComputedStyle(composerHost.firstElementChild).borderTopLeftRadius);
+          if (Number.isFinite(innerR) && innerR > 0) radius = innerR;
+        }
+      } catch {}
+
+      const cssW = w + BEAM_INSET * 2;
+      const cssH = h + BEAM_INSET * 2;
+      const baseDpr = Math.min(2, window.devicePixelRatio || 1);
+      const maxDim = Math.max(1, cssW, cssH);
+      const dpr = Math.min(baseDpr, MAX_BEAM_CANVAS_PX / maxDim);
+      const pxW = Math.max(1, Math.min(MAX_BEAM_CANVAS_PX, Math.round(cssW * dpr)));
+      const pxH = Math.max(1, Math.min(MAX_BEAM_CANVAS_PX, Math.round(cssH * dpr)));
+
+      const changed = (
+        geo.w !== w ||
+        geo.h !== h ||
+        Math.abs(geo.radius - radius) > 0.5 ||
+        geo.pxW !== pxW ||
+        geo.pxH !== pxH
+      );
+
+      geo.w = w;
+      geo.h = h;
+      geo.radius = radius;
+      geo.cssW = cssW;
+      geo.cssH = cssH;
+      geo.dpr = dpr;
+      geo.pxW = pxW;
+      geo.pxH = pxH;
+      recomputePerimeterSegments();
+
+      if (changed) {
+        applyBeamCanvasSize();
+        applyQuotaRingGeometry();
+      }
+      return true;
+    }
+
+    function scheduleThrottledMeasure() {
+      if (disposed || resizeThrottleTimer) return;
+      resizeThrottleTimer = setTimeout(() => {
+        resizeThrottleTimer = 0;
+        measureComposerNow();
+      }, 120);
+    }
+
+    function attachComposerHost(el) {
+      if (composerHost === el) return;
+      detachComposerHost();
+      if (!el || !el.isConnected) return;
+      composerHost = el;
+      setAttr(composerHost, 'data-ag-ps-fx-host', '1');
+      if (typeof ResizeObserver === 'function') {
+        composerRO = new ResizeObserver(() => scheduleThrottledMeasure());
+        composerRO.observe(composerHost);
+      }
+      measureComposerNow();
+    }
+
+    function detachComposerHost() {
+      if (resizeThrottleTimer) {
+        clearTimeout(resizeThrottleTimer);
+        resizeThrottleTimer = 0;
+      }
+      if (composerRO) {
+        try { composerRO.disconnect(); } catch {}
+        composerRO = null;
+      }
+      if (composerHost) {
+        try { composerHost.removeAttribute('data-ag-ps-fx-host'); } catch {}
+        composerHost = null;
+      }
+    }
+
+    /* ========================================================================
+     * 2. Border Beam (Canvas 2D Rounded-Rect Perimeter Comet)
+     * ======================================================================== */
+    let beamCanvas = null;
+    let beamCtx = null;
+    let beamPhase = 0;
+    let beamAlpha = 0;
+    let beamPreviewUntil = 0;
+    let beamPreviewTimer = 0;
+    let beamPaletteCacheKey = '';
+    let beamPaletteStops = [[66, 133, 244], [123, 97, 255], [56, 189, 248]];
+
+    // Pre-allocated scratch buffers (zero per-frame allocations)
+    const ptA = { x: 0, y: 0 };
+    const ptB = { x: 0, y: 0 };
+    const rgbScratch = [0, 0, 0];
+
+    function samplePerimeter(dist, out) {
+      const perim = geo.perim;
+      if (perim <= 0) {
+        out.x = 0;
+        out.y = 0;
+        return;
+      }
+      let s = dist % perim;
+      if (s < 0) s += perim;
+
+      const x0 = geo.pad;
+      const y0 = geo.pad;
+      const x1 = x0 + geo.rw;
+      const y1 = y0 + geo.rh;
+      const r = geo.rad;
+      const cum = geo.cum;
+
+      if (s <= cum[1]) {
+        // Top straight: left -> right
+        out.x = x0 + r + (s - cum[0]);
+        out.y = y0;
+      } else if (s <= cum[2]) {
+        // Top-right arc: -PI/2 -> 0
+        const a = -Math.PI * 0.5 + (s - cum[1]) / r;
+        out.x = x1 - r + Math.cos(a) * r;
+        out.y = y0 + r + Math.sin(a) * r;
+      } else if (s <= cum[3]) {
+        // Right straight: top -> bottom
+        out.x = x1;
+        out.y = y0 + r + (s - cum[2]);
+      } else if (s <= cum[4]) {
+        // Bottom-right arc: 0 -> PI/2
+        const a = (s - cum[3]) / r;
+        out.x = x1 - r + Math.cos(a) * r;
+        out.y = y1 - r + Math.sin(a) * r;
+      } else if (s <= cum[5]) {
+        // Bottom straight: right -> left
+        out.x = x1 - r - (s - cum[4]);
+        out.y = y1;
+      } else if (s <= cum[6]) {
+        // Bottom-left arc: PI/2 -> PI
+        const a = Math.PI * 0.5 + (s - cum[5]) / r;
+        out.x = x0 + r + Math.cos(a) * r;
+        out.y = y1 - r + Math.sin(a) * r;
+      } else if (s <= cum[7]) {
+        // Left straight: bottom -> top
+        out.x = x0;
+        out.y = y1 - r - (s - cum[6]);
+      } else {
+        // Top-left arc: PI -> 3PI/2
+        const a = Math.PI + (s - cum[7]) / r;
+        out.x = x0 + r + Math.cos(a) * r;
+        out.y = y0 + r + Math.sin(a) * r;
+      }
+    }
+
+    function resolveBeamPaletteStops(prefs) {
+      const pal = prefs.borderBeamPalette || 'theme';
+      let key = pal;
+      let accent = '';
+      let qTier = '';
+
+      if (pal === 'theme') {
+        accent = safeGetThemeAccent();
+        key = `theme:${accent}`;
+      } else if (pal === 'quota') {
+        const pct = selectQuotaPercent(prefs);
+        qTier = pct == null ? 'ok' : pct >= 50 ? 'ok' : pct >= 20 ? 'warn' : 'danger';
+        key = `quota:${qTier}`;
+      }
+
+      if (key === beamPaletteCacheKey) return beamPaletteStops;
+      beamPaletteCacheKey = key;
+
+      if (pal === 'gemini') {
+        beamPaletteStops = [[66, 133, 244], [123, 97, 255], [192, 132, 252], [56, 189, 248]];
+      } else if (pal === 'aurora') {
+        beamPaletteStops = [[16, 185, 129], [6, 182, 212], [59, 130, 246], [139, 92, 246]];
+      } else if (pal === 'prism') {
+        beamPaletteStops = [[244, 63, 94], [245, 158, 11], [16, 185, 129], [59, 130, 246], [139, 92, 246]];
+      } else if (pal === 'neon') {
+        beamPaletteStops = [[34, 211, 238], [232, 121, 249], [244, 114, 182], [56, 189, 248]];
+      } else if (pal === 'quota') {
+        if (qTier === 'danger') {
+          beamPaletteStops = [[239, 68, 68], [248, 113, 113], [251, 146, 60]];
+        } else if (qTier === 'warn') {
+          beamPaletteStops = [[245, 158, 11], [251, 191, 36], [249, 115, 22]];
+        } else {
+          beamPaletteStops = [[16, 185, 129], [52, 211, 153], [6, 182, 212]];
+        }
+      } else {
+        const base = parseCssColorToRgb(accent);
+        beamPaletteStops = [
+          shiftRgb(base, -28),
+          base,
+          shiftRgb(base, 46),
+          [255, 255, 255]
+        ];
+      }
+      return beamPaletteStops;
+    }
+
+    function applyBeamCanvasSize() {
+      if (!beamCanvas || geo.pxW <= 0 || geo.pxH <= 0) return;
+      if (beamCanvas.width !== geo.pxW) beamCanvas.width = geo.pxW;
+      if (beamCanvas.height !== geo.pxH) beamCanvas.height = geo.pxH;
+    }
+
+    function ensureBeamCanvas() {
+      if (!composerHost || !composerHost.isConnected) return null;
+      if (beamCanvas && beamCanvas.parentElement === composerHost) return beamCanvas;
+      if (beamCanvas) beamCanvas.remove();
+      beamCanvas = document.createElement('canvas');
+      beamCanvas.className = 'ag-ps-beam-canvas';
+      beamCanvas.setAttribute('aria-hidden', 'true');
+      beamCanvas.setAttribute('data-ag-i18n-ignore', '1');
+      beamCtx = beamCanvas.getContext('2d', { alpha: true });
+      composerHost.appendChild(beamCanvas);
+      applyBeamCanvasSize();
+      return beamCanvas;
+    }
+
+    function clearBeamCanvas() {
+      if (beamCtx && beamCanvas) {
+        beamCtx.setTransform(1, 0, 0, 1, 0, 0);
+        beamCtx.clearRect(0, 0, beamCanvas.width, beamCanvas.height);
+      }
+      if (beamCanvas) setAttr(beamCanvas, 'data-active', '');
+    }
+
+    function drawRoundedRectPath(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.arcTo(x + w, y, x + w, y + r, r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+      ctx.lineTo(x + r, y + h);
+      ctx.arcTo(x, y + h, x, y + h - r, r);
+      ctx.lineTo(x, y + r);
+      ctx.arcTo(x, y, x + r, y, r);
+      ctx.closePath();
+    }
+
+    function drawCometTrail(ctx, stops, headDist, tailLen, alphaScale, widthScale, segCount) {
+      const step = tailLen / segCount;
+      ctx.lineCap = 'round';
+      for (let i = 0; i < segCount; i++) {
+        const frac0 = i / segCount;
+        const frac1 = (i + 1) / segCount;
+        const d0 = headDist - tailLen + i * step;
+        const d1 = d0 + step;
+        samplePerimeter(d0, ptA);
+        samplePerimeter(d1, ptB);
+
+        // Smooth cubic ease-in opacity from tail tip to bright comet head
+        const fade = frac1 * frac1;
+        lerpRgb(stops, frac1, rgbScratch);
+        const r = rgbScratch[0];
+        const g = rgbScratch[1];
+        const b = rgbScratch[2];
+
+        // Soft outer halo stroke
+        ctx.strokeStyle = `rgba(${r},${g},${b},${(fade * 0.28 * alphaScale).toFixed(3)})`;
+        ctx.lineWidth = (1.6 + frac1 * 3.8) * widthScale;
+        ctx.beginPath();
+        ctx.moveTo(ptA.x, ptA.y);
+        ctx.lineTo(ptB.x, ptB.y);
+        ctx.stroke();
+
+        // Crisp luminous core stroke
+        ctx.strokeStyle = `rgba(${r},${g},${b},${(fade * 0.92 * alphaScale).toFixed(3)})`;
+        ctx.lineWidth = (0.7 + frac1 * 1.75) * widthScale;
+        ctx.beginPath();
+        ctx.moveTo(ptA.x, ptA.y);
+        ctx.lineTo(ptB.x, ptB.y);
+        ctx.stroke();
+      }
+
+      // Specular comet head glint
+      samplePerimeter(headDist, ptB);
+      lerpRgb(stops, 1, rgbScratch);
+      ctx.fillStyle = `rgba(255,255,255,${(0.72 * alphaScale).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(ptB.x, ptB.y, 1.55 * widthScale, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function isBeamPreviewActive(nowMs) {
+      return nowMs < beamPreviewUntil;
+    }
+
+    function isBeamTargetActive(prefs, nowMs) {
+      const preview = isBeamPreviewActive(nowMs);
+      if (preview) return windowFocused;
+      return Boolean(prefs.borderBeam) && lastBusy;
+    }
+
+    function renderBorderBeamFrame(dt, nowMs, prefs) {
+      const targetActive = isBeamTargetActive(prefs, nowMs);
+      const rate = targetActive ? 5.5 : 4.5;
+      const targetAlpha = targetActive ? 1 : 0;
+      beamAlpha += (targetAlpha - beamAlpha) * Math.min(1, dt * rate);
+      if (Math.abs(targetAlpha - beamAlpha) < 0.004) beamAlpha = targetAlpha;
+
+      if (beamAlpha <= 0.004) {
+        clearBeamCanvas();
+        return false;
+      }
+
+      if (!beamCanvas || !beamCtx || geo.perim <= 0) return false;
+
+      setAttr(beamCanvas, 'data-active', '1');
+      beamPhase = (beamPhase + dt * 0.25) % 1;
+
+      const ctx = beamCtx;
+      const scaleX = beamCanvas.width / Math.max(1, geo.cssW);
+      const scaleY = beamCanvas.height / Math.max(1, geo.cssH);
+
+      ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+      ctx.clearRect(0, 0, geo.cssW, geo.cssH);
+
+      const stops = resolveBeamPaletteStops(prefs);
+
+      // Subtle soft inner perimeter glow
+      lerpRgb(stops, 0.5, rgbScratch);
+      ctx.strokeStyle = `rgba(${rgbScratch[0]},${rgbScratch[1]},${rgbScratch[2]},${(0.14 * beamAlpha).toFixed(3)})`;
+      ctx.lineWidth = 1.25;
+      drawRoundedRectPath(ctx, geo.pad, geo.pad, geo.rw, geo.rh, geo.rad);
+      ctx.stroke();
+
+      // Primary luminous comet
+      const head1 = beamPhase * geo.perim;
+      drawCometTrail(ctx, stops, head1, geo.perim * 0.30, beamAlpha, 1.0, 26);
+
+      // Counter-balanced secondary comet on opposite perimeter
+      const head2 = ((beamPhase + 0.5) % 1) * geo.perim;
+      drawCometTrail(ctx, stops, head2, geo.perim * 0.17, beamAlpha * 0.46, 0.85, 16);
+
+      return true;
+    }
+
+    function triggerBeamPreview() {
+      const nowMs = Date.now();
+      beamPreviewUntil = nowMs + 3000;
+      const host = safeGetComposerEl();
+      if (host) {
+        attachComposerHost(host);
+        ensureBeamCanvas();
+      }
+      syncQuotaRingSuppression(nowMs);
+      if (reducedMotion) {
+        safeToast('系统已开启减少动态效果，流光动画已跳过');
+      } else {
+        ensureScheduler();
+        safeToast('流光边框预览 3 秒 ✨');
+      }
+      if (beamPreviewTimer) clearTimeout(beamPreviewTimer);
+      beamPreviewTimer = setTimeout(() => {
+        beamPreviewTimer = 0;
+        if (disposed) return;
+        syncQuotaRingSuppression(Date.now());
+        safeRefreshPopover();
+      }, 3060);
+      safeRefreshPopover();
+    }
+
+    /* ========================================================================
+     * 3. Quota Ring (Static 0fps SVG Overlay + Mutual Exclusion with Border Beam)
+     * ======================================================================== */
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    let qRingWrap = null;
+    let qRingSvg = null;
+    let qRingTrack = null;
+    let qRingArc = null;
+
+    function selectQuotaPercent(prefs) {
+      const q = safeGetQuotaState();
+      const valid = (v) => {
+        const n = Number(v);
+        return v != null && v !== '' && Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : null;
+      };
+      const p5 = valid(q.pct5h);
+      const p7 = valid(q.pct7d);
+      const pMin = valid(q.minPct);
+
+      const period = prefs.quotaRingPeriod || 'auto';
+      if (period === '5h') return p5 != null ? p5 : pMin != null ? pMin : p7;
+      if (period === 'weekly') return p7 != null ? p7 : pMin != null ? pMin : p5;
+      if (pMin != null) return pMin;
+      if (p5 != null && p7 != null) return Math.min(p5, p7);
+      return p5 != null ? p5 : p7;
+    }
+
+    function ensureQuotaRingEl() {
+      if (!composerHost || !composerHost.isConnected) return null;
+      if (qRingWrap && qRingWrap.parentElement === composerHost) return qRingWrap;
+      if (qRingWrap) qRingWrap.remove();
+
+      qRingWrap = document.createElement('div');
+      qRingWrap.className = 'ag-ps-quota-ring';
+      qRingWrap.setAttribute('aria-hidden', 'true');
+      qRingWrap.setAttribute('data-ag-i18n-ignore', '1');
+
+      qRingSvg = document.createElementNS(SVG_NS, 'svg');
+      qRingSvg.setAttribute('preserveAspectRatio', 'none');
+
+      qRingTrack = document.createElementNS(SVG_NS, 'rect');
+      qRingTrack.setAttribute('class', 'ag-ps-qring-track');
+      qRingTrack.setAttribute('pathLength', '100');
+
+      qRingArc = document.createElementNS(SVG_NS, 'rect');
+      qRingArc.setAttribute('class', 'ag-ps-qring-arc');
+      qRingArc.setAttribute('pathLength', '100');
+
+      qRingSvg.appendChild(qRingTrack);
+      qRingSvg.appendChild(qRingArc);
+      qRingWrap.appendChild(qRingSvg);
+      composerHost.appendChild(qRingWrap);
+
+      applyQuotaRingGeometry();
+      return qRingWrap;
+    }
+
+    function applyQuotaRingGeometry() {
+      if (!qRingSvg || !qRingTrack || !qRingArc || geo.w < 40 || geo.h < 24) return;
+      const svgW = geo.w + 3;
+      const svgH = geo.h + 3;
+      const pad = 1.5;
+      const rw = Math.max(4, svgW - pad * 2);
+      const rh = Math.max(4, svgH - pad * 2);
+      const rx = Math.max(2, Math.min(geo.radius + 1, rw * 0.5, rh * 0.5));
+
+      qRingSvg.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
+      for (const rect of [qRingTrack, qRingArc]) {
+        rect.setAttribute('x', String(pad));
+        rect.setAttribute('y', String(pad));
+        rect.setAttribute('width', String(rw));
+        rect.setAttribute('height', String(rh));
+        rect.setAttribute('rx', String(rx));
+        rect.setAttribute('ry', String(rx));
+      }
+    }
+
+    function syncQuotaRingSuppression(nowMs) {
+      if (!qRingWrap) return;
+      const prefs = getPrefs();
+      const beamActive = (Boolean(prefs.borderBeam) && lastBusy) || isBeamPreviewActive(nowMs);
+      setAttr(qRingWrap, 'data-suppressed', beamActive ? '1' : '');
+    }
+
+    function syncQuotaRing() {
+      const prefs = getPrefs();
+      if (!prefs.quotaRing) {
+        if (qRingWrap) {
+          qRingWrap.remove();
+          qRingWrap = null;
+          qRingSvg = null;
+          qRingTrack = null;
+          qRingArc = null;
+        }
+        return;
+      }
+      if (!composerHost || !composerHost.isConnected) return;
+      ensureQuotaRingEl();
+      applyQuotaRingGeometry();
+
+      const pct = selectQuotaPercent(prefs);
+      if (pct == null) {
+        setAttr(qRingWrap, 'data-visible', '');
+        return;
+      }
+      const tier = pct >= 50 ? 'ok' : pct >= 20 ? 'warn' : 'danger';
+      const offset = Math.max(0, Math.min(100, 100 - pct));
+      setAttr(qRingWrap, 'data-tier', tier);
+      setAttr(qRingWrap, 'data-visible', '1');
+      setStyleVar(qRingWrap, '--ag-ps-qring-offset', offset.toFixed(2));
+      syncQuotaRingSuppression(Date.now());
+    }
+
+    /* ========================================================================
+     * 4. ThinkingOrb 3D 128-Particle Fibonacci Sphere (Zero Per-Frame Allocs)
+     * ======================================================================== */
+    const ORB_COUNT = 128;
+    const ORB_SIZE = 34;
+    const ORB_CONVERGE_MS = 1200;
+
+    // Pre-allocate 128 particle objects once
+    const ORB_PARTICLES = new Array(ORB_COUNT);
+    const ORB_ORDER = new Int16Array(ORB_COUNT);
+    const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+
+    for (let i = 0; i < ORB_COUNT; i++) {
+      const y = 1 - ((i + 0.5) / ORB_COUNT) * 2;
+      const radAtY = Math.sqrt(Math.max(0, 1 - y * y));
+      const theta = GOLDEN_ANGLE * i;
+      const bx = Math.cos(theta) * radAtY;
+      const bz = Math.sin(theta) * radAtY;
+      ORB_PARTICLES[i] = {
+        bx,
+        by: y,
+        bz,
+        phase: (i * 0.61803398875) * Math.PI * 2,
+        ringBand: i % 3,
+        ringAngle: (i / ORB_COUNT) * Math.PI * 2,
+        px: 0,
+        py: 0,
+        pz: 0
+      };
+      ORB_ORDER[i] = i;
+    }
+
+    let orbHost = null;
+    let orbDock = null;
+    let orbDockAc = null;
+    let orbBtn = null;
+    let orbCanvas = null;
+    let orbCtx = null;
+    let orbPill = null;
+    let orbStage = 'idle';
+    let orbDoneUntil = 0;
+    let orbTime = 0;
+    let orbRotY = 0;
+    let orbRotX = 0.25;
+    let orbHovering = false;
+    let orbTargetTiltX = 0;
+    let orbTargetTiltY = 0;
+    let orbTiltX = 0;
+    let orbTiltY = 0;
+    let orbMorphTools = 0;
+    let orbMorphStream = 0;
+    let orbMorphEnergy = 0;
+    let orbColorR = 96;
+    let orbColorG = 165;
+    let orbColorB = 250;
+
+    function detectOrbStage(busy, nowMs) {
+      if (!busy) {
+        return nowMs < orbDoneUntil ? 'done' : 'idle';
+      }
+      const vp = safeGetViewportEl();
+      const scope = vp || document;
+      if (scope.querySelector('.animate-shimmer-text, [data-testid*="tool"][data-status="running"]')) {
+        return 'tools';
+      }
+      const triggers = scope.querySelectorAll('[data-testid="thinking-collapsible-trigger"]');
+      if (triggers.length) {
+        const lastTxt = (triggers[triggers.length - 1].textContent || '').trim();
+        if (lastTxt && !/\d+\s*s\b|\d+\s*秒|已思考|Thought\s+for/i.test(lastTxt)) {
+          return 'thinking';
+        }
+      }
+      return 'streaming';
+    }
+
+    function getStageTargetColor(stage) {
+      if (stage === 'tools') return [245, 158, 11];     // Amber gold
+      if (stage === 'streaming') return [16, 185, 129]; // Emerald cyan
+      if (stage === 'done') return [52, 211, 153];      // Soft mint
+      if (stage === 'thinking') {
+        const acc = parseCssColorToRgb(safeGetThemeAccent());
+        return [
+          Math.min(255, Math.round(acc[0] * 0.72 + 124 * 0.28)),
+          Math.min(255, Math.round(acc[1] * 0.72 + 92 * 0.28)),
+          Math.min(255, Math.round(acc[2] * 0.72 + 252 * 0.28))
+        ];
+      }
+      return parseCssColorToRgb(safeGetThemeAccent());
+    }
+
+    function safeGetOrbHostEl() {
+      const inputBox = document.getElementById('antigravity.agentSidePanelInputBox');
+      if (inputBox && inputBox.isConnected) return inputBox;
+      if (composerHost && composerHost.isConnected) return composerHost;
+      return safeGetComposerEl();
+    }
+
+    function updateOrbButtonTip() {
+      if (!orbBtn) return;
+      const label = ORB_STAGE_LABELS[orbStage] || ORB_STAGE_LABELS.idle;
+      const busyState = lastBusy || orbStage === 'thinking' || orbStage === 'tools' || orbStage === 'streaming';
+      setAttr(orbBtn, 'data-ag-ps-tip', `ThinkingOrb · ${label}`);
+      setAttr(orbBtn, 'data-ag-ps-tip-status', busyState ? 'busy' : 'idle');
+    }
+
+    function ensureOrbDock() {
+      const host = safeGetOrbHostEl();
+      if (!host || !host.isConnected) return null;
+      if (orbDock && orbDock.parentElement === host) return orbDock;
+      if (orbDock || orbDockAc) removeOrbDock();
+
+      orbHost = host;
+      setAttr(orbHost, 'data-ag-ps-orb-host', '1');
+      orbDockAc = new AbortController();
+      const orbSignal = orbDockAc.signal;
+
+      orbDock = document.createElement('div');
+      orbDock.id = 'ag-ps-orb-dock';
+      orbDock.setAttribute('data-ag-i18n-ignore', '1');
+      orbDock.setAttribute('data-stage', orbStage);
+
+      orbBtn = document.createElement('button');
+      orbBtn.id = 'ag-ps-orb-btn';
+      orbBtn.type = 'button';
+      orbBtn.className = 'ag-ps-orb-btn';
+      orbBtn.setAttribute('aria-label', 'ThinkingOrb 任务进度球');
+      updateOrbButtonTip();
+
+      orbCanvas = document.createElement('canvas');
+      orbCanvas.className = 'ag-ps-orb-canvas';
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      orbCanvas.width = Math.round(ORB_SIZE * dpr);
+      orbCanvas.height = Math.round(ORB_SIZE * dpr);
+      orbCtx = orbCanvas.getContext('2d', { alpha: true });
+
+      orbPill = document.createElement('span');
+      orbPill.className = 'ag-ps-orb-pill';
+      orbPill.textContent = ORB_STAGE_LABELS[orbStage] || ORB_STAGE_LABELS.idle;
+
+      orbBtn.addEventListener('pointermove', (e) => {
+        if (disposed || reducedMotion) return;
+        const rect = orbBtn.getBoundingClientRect();
+        const nx = ((e.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+        const ny = ((e.clientY - rect.top) / Math.max(1, rect.height)) * 2 - 1;
+        orbHovering = true;
+        orbTargetTiltY = Math.max(-1, Math.min(1, nx)) * 0.55;
+        orbTargetTiltX = Math.max(-1, Math.min(1, -ny)) * 0.55;
+        ensureScheduler();
+      }, { signal: orbSignal, passive: true });
+
+      orbBtn.addEventListener('pointerleave', () => {
+        orbHovering = false;
+        orbTargetTiltX = 0;
+        orbTargetTiltY = 0;
+        if (!reducedMotion) ensureScheduler();
+      }, { signal: orbSignal, passive: true });
+
+      orbBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const label = ORB_STAGE_LABELS[orbStage] || ORB_STAGE_LABELS.idle;
+        safeToast(`ThinkingOrb · ${label}`);
+      }, { signal: orbSignal });
+
+      orbBtn.appendChild(orbCanvas);
+      orbDock.appendChild(orbBtn);
+      orbDock.appendChild(orbPill);
+      host.appendChild(orbDock);
+
+      // Paint an immediate crisp static frame so idle looks sharp at 0fps
+      renderThinkingOrbFrame(0, Date.now(), true);
+      return orbDock;
+    }
+
+    function removeOrbDock() {
+      if (orbDockAc) {
+        orbDockAc.abort();
+        orbDockAc = null;
+      }
+      if (orbDock) {
+        orbDock.remove();
+        orbDock = null;
+        orbBtn = null;
+        orbCanvas = null;
+        orbCtx = null;
+        orbPill = null;
+      }
+      if (orbHost) {
+        try { orbHost.removeAttribute('data-ag-ps-orb-host'); } catch {}
+        orbHost = null;
+      }
+      orbHovering = false;
+      orbTargetTiltX = 0;
+      orbTargetTiltY = 0;
+      orbTiltX = 0;
+      orbTiltY = 0;
+    }
+
+    function syncThinkingOrbMount() {
+      const prefs = getPrefs();
+      const html = document.documentElement;
+      const replaceMascot = Boolean(prefs.thinkingOrb) && prefs.thinkingOrbMode === 'replace';
+      setAttr(html, 'data-ag-ps-orb-replace', replaceMascot ? '1' : '');
+
+      if (!prefs.thinkingOrb) {
+        removeOrbDock();
+        return;
+      }
+      const host = safeGetOrbHostEl();
+      if (!host || !host.isConnected) {
+        removeOrbDock();
+        return;
+      }
+      ensureOrbDock();
+      updateOrbStageLabel(Date.now());
+      updateOrbButtonTip();
+    }
+
+    function updateOrbStageLabel(nowMs) {
+      const nextStage = detectOrbStage(lastBusy, nowMs);
+      if (nextStage !== orbStage) {
+        orbStage = nextStage;
+        if (orbDock) setAttr(orbDock, 'data-stage', orbStage);
+        if (orbPill) orbPill.textContent = ORB_STAGE_LABELS[orbStage] || ORB_STAGE_LABELS.idle;
+        updateOrbButtonTip();
+        if (reducedMotion && orbCanvas && getPrefs().thinkingOrb) {
+          renderThinkingOrbFrame(0, nowMs, true);
+        }
+      } else if (orbBtn) {
+        updateOrbButtonTip();
+      }
+    }
+
+    function orbNeedsRaf(prefs, nowMs) {
+      if (!prefs.thinkingOrb || !orbCanvas || !orbCanvas.isConnected) return false;
+      if (lastBusy) return true;
+      if (nowMs < orbDoneUntil) return true;
+      if (windowFocused && (orbHovering || Math.abs(orbTiltX) > 0.004 || Math.abs(orbTiltY) > 0.004)) {
+        return true;
+      }
+      return false;
+    }
+
+    function renderThinkingOrbFrame(dt, nowMs, isStaticSnapshot) {
+      if (!orbCtx || !orbCanvas) return;
+
+      const stage = orbStage;
+      const doneProgress = stage === 'done' && orbDoneUntil > nowMs
+        ? Math.max(0, Math.min(1, (orbDoneUntil - nowMs) / ORB_CONVERGE_MS))
+        : 0;
+
+      const wantTools = stage === 'tools' ? 1 : 0;
+      const wantStream = stage === 'streaming' ? 1 : 0;
+      const wantEnergy = stage === 'thinking' || stage === 'tools' || stage === 'streaming'
+        ? 1
+        : stage === 'done'
+          ? doneProgress * doneProgress
+          : 0;
+
+      const k = isStaticSnapshot ? 1 : Math.min(1, dt * 5.2);
+      orbMorphTools += (wantTools - orbMorphTools) * k;
+      orbMorphStream += (wantStream - orbMorphStream) * k;
+      orbMorphEnergy += (wantEnergy - orbMorphEnergy) * k;
+
+      const tiltK = isStaticSnapshot ? 1 : Math.min(1, dt * 8.5);
+      orbTiltX += (orbTargetTiltX - orbTiltX) * tiltK;
+      orbTiltY += (orbTargetTiltY - orbTiltY) * tiltK;
+      if (!orbHovering && Math.abs(orbTiltX) <= 0.004) orbTiltX = 0;
+      if (!orbHovering && Math.abs(orbTiltY) <= 0.004) orbTiltY = 0;
+
+      const targetRgb = getStageTargetColor(stage);
+      const ck = isStaticSnapshot ? 1 : Math.min(1, dt * 4.2);
+      orbColorR += (targetRgb[0] - orbColorR) * ck;
+      orbColorG += (targetRgb[1] - orbColorG) * ck;
+      orbColorB += (targetRgb[2] - orbColorB) * ck;
+
+      const spinSpeed = stage === 'tools'
+        ? 1.55
+        : stage === 'streaming'
+          ? 1.25
+          : stage === 'thinking'
+            ? 0.85
+            : 0.55 * orbMorphEnergy;
+
+      if (!isStaticSnapshot) {
+        orbTime += dt * (0.8 + orbMorphEnergy * 1.4);
+        orbRotY += dt * spinSpeed;
+        orbRotX = 0.25 + Math.sin(orbTime * 0.45) * 0.16 * orbMorphEnergy;
+      }
+
+      const rx = orbRotX + orbTiltX;
+      const ry = orbRotY + orbTiltY;
+      const cosY = Math.cos(ry);
+      const sinY = Math.sin(ry);
+      const cosX = Math.cos(rx);
+      const sinX = Math.sin(rx);
+
+      // Compute 3D transformed positions in-place (zero allocations)
+      for (let i = 0; i < ORB_COUNT; i++) {
+        const p = ORB_PARTICLES[i];
+        let x = p.bx;
+        let y = p.by;
+        let z = p.bz;
+
+        // Organic thinking breath modulation
+        if (orbMorphEnergy > 0.005) {
+          const wave = Math.sin(p.phase + orbTime * 2.6 + p.by * 3.1) * 0.11 * orbMorphEnergy;
+          const rScale = 1 + wave;
+          x *= rScale;
+          y *= rScale;
+          z *= rScale;
+        }
+
+        // Tools state: dual precision orbital rings around a compact core
+        if (orbMorphTools > 0.005) {
+          let tx, ty, tz;
+          if (p.ringBand === 0) {
+            tx = p.bx * 0.52;
+            ty = p.by * 0.52;
+            tz = p.bz * 0.52;
+          } else {
+            const ang = p.ringAngle + orbTime * (p.ringBand === 1 ? 1.8 : -1.5);
+            const ringR = 1.08;
+            const c = Math.cos(ang) * ringR;
+            const s = Math.sin(ang) * ringR;
+            if (p.ringBand === 1) {
+              tx = c;
+              ty = s * 0.42;
+              tz = s * 0.91;
+            } else {
+              tx = c * 0.91;
+              ty = -c * 0.42;
+              tz = s;
+            }
+          }
+          x += (tx - x) * orbMorphTools;
+          y += (ty - y) * orbMorphTools;
+          z += (tz - z) * orbMorphTools;
+        }
+
+        // Streaming state: lively radial pulse flow along latitude bands
+        if (orbMorphStream > 0.005) {
+          const pulse = 1 + Math.sin(p.by * 5.2 - orbTime * 5.0) * 0.14 * orbMorphStream;
+          x *= pulse;
+          z *= pulse;
+        }
+
+        // Rotate around Y then X
+        const x1 = x * cosY + z * sinY;
+        const z1 = -x * sinY + z * cosY;
+        const y2 = y * cosX - z1 * sinX;
+        const z2 = y * sinX + z1 * cosX;
+
+        p.px = x1;
+        p.py = y2;
+        p.pz = z2;
+      }
+
+      // Insertion sort pre-allocated index array back-to-front by pz (zero allocations)
+      for (let i = 1; i < ORB_COUNT; i++) {
+        const keyIdx = ORB_ORDER[i];
+        const keyZ = ORB_PARTICLES[keyIdx].pz;
+        let j = i - 1;
+        while (j >= 0 && ORB_PARTICLES[ORB_ORDER[j]].pz > keyZ) {
+          ORB_ORDER[j + 1] = ORB_ORDER[j];
+          j--;
+        }
+        ORB_ORDER[j + 1] = keyIdx;
+      }
+
+      const dpr = orbCanvas.width / ORB_SIZE;
+      const ctx = orbCtx;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, ORB_SIZE, ORB_SIZE);
+
+      const cx = ORB_SIZE * 0.5;
+      const cy = ORB_SIZE * 0.5;
+      const baseR = 11.4;
+      const cr = orbColorR | 0;
+      const cg = orbColorG | 0;
+      const cb = orbColorB | 0;
+      const dark = safeIsDark();
+
+      // Subtle ambient core glow
+      const glowAlpha = 0.12 + orbMorphEnergy * 0.18;
+      const grad = ctx.createRadialGradient(cx, cy, 1, cx, cy, baseR * 1.35);
+      grad.addColorStop(0, `rgba(${cr},${cg},${cb},${glowAlpha.toFixed(3)})`);
+      grad.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, baseR * 1.35, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Render 128 depth-sorted particles
+      for (let i = 0; i < ORB_COUNT; i++) {
+        const p = ORB_PARTICLES[ORB_ORDER[i]];
+        const persp = 2.55 / (2.55 - p.pz * 0.85);
+        const sx = cx + p.px * baseR * persp;
+        const sy = cy + p.py * baseR * persp;
+        const depth01 = (p.pz + 1.2) / 2.4; // ~0 (back) .. ~1 (front)
+        const clampedD = depth01 < 0 ? 0 : depth01 > 1 ? 1 : depth01;
+        const dotR = 0.58 + clampedD * 0.82;
+        const baseAlpha = dark ? 0.24 : 0.28;
+        const alpha = (baseAlpha + clampedD * (0.58 + orbMorphEnergy * 0.14));
+
+        // Brighter specular tint on frontmost particles
+        const lift = clampedD > 0.72 ? (clampedD - 0.72) * (dark ? 220 : 120) : 0;
+        const pr = Math.min(255, (cr + lift) | 0);
+        const pg = Math.min(255, (cg + lift) | 0);
+        const pb = Math.min(255, (cb + lift) | 0);
+
+        ctx.fillStyle = `rgba(${pr},${pg},${pb},${Math.min(1, alpha).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(sx, sy, dotR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    /* ========================================================================
+     * 5. Single Shared rAF Scheduler (Drives Border Beam + ThinkingOrb -> 0fps Idle)
+     * ======================================================================== */
+    let sharedRafId = 0;
+    let lastRafTs = 0;
+    let lastBusy = safeIsBusy();
+
+    function stopScheduler() {
+      if (sharedRafId) {
+        cancelAnimationFrame(sharedRafId);
+        sharedRafId = 0;
+      }
+      lastRafTs = 0;
+    }
+
+    function shouldRunScheduler(nowMs) {
+      if (disposed || reducedMotion || document.hidden) return false;
+      const prefs = getPrefs();
+      const beamActive = isBeamTargetActive(prefs, nowMs);
+      const beamNeed = Boolean(beamCanvas && beamCanvas.isConnected) && (beamActive || beamAlpha > 0.004);
+      const orbNeed = orbNeedsRaf(prefs, nowMs);
+      return beamNeed || orbNeed;
+    }
+
+    function ensureScheduler() {
+      if (sharedRafId || disposed) return;
+      if (shouldRunScheduler(Date.now())) {
+        lastRafTs = 0;
+        sharedRafId = requestAnimationFrame(onSharedRaf);
+      }
+    }
+
+    function onSharedRaf(ts) {
+      sharedRafId = 0;
+      if (disposed || reducedMotion || document.hidden) {
+        lastRafTs = 0;
+        return;
+      }
+      const dt = lastRafTs ? Math.min(0.05, Math.max(0.001, (ts - lastRafTs) / 1000)) : 0.016;
+      lastRafTs = ts;
+
+      const nowMs = Date.now();
+      const prefs = getPrefs();
+
+      let keepRunning = false;
+
+      if (beamCanvas && beamCanvas.isConnected) {
+        const beamStillDrawing = renderBorderBeamFrame(dt, nowMs, prefs);
+        if (beamStillDrawing) keepRunning = true;
+      }
+
+      if (prefs.thinkingOrb && orbCanvas && orbCanvas.isConnected) {
+        updateOrbStageLabel(nowMs);
+        const orbWant = orbNeedsRaf(prefs, nowMs);
+        if (orbWant) {
+          renderThinkingOrbFrame(dt, nowMs, false);
+          keepRunning = true;
+        } else {
+          // Final crisp converged snapshot before stopping at 0fps
+          renderThinkingOrbFrame(dt, nowMs, true);
+        }
+      }
+
+      if (keepRunning && shouldRunScheduler(nowMs)) {
+        sharedRafId = requestAnimationFrame(onSharedRaf);
+      } else {
+        lastRafTs = 0;
+      }
+    }
+
+    /* ========================================================================
+     * 6. User Bubble Tinting & Compact Layout
+     * ======================================================================== */
+    function resolveBubbleColor(prefs) {
+      const presetId = prefs.bubbleTintPreset || 'accent';
+      const dark = safeIsDark();
+      if (presetId === 'accent') {
+        return safeGetThemeAccent();
+      }
+      const item = BUBBLE_PRESETS.find((p) => p.id === presetId);
+      if (item) return dark ? item.dark : item.light;
+      return safeGetThemeAccent();
+    }
+
+    function applyBubbleTintAndCompact(strengthOverride) {
+      const prefs = getPrefs();
+      const html = document.documentElement;
+      if (!html) return;
+
+      // Compact layout
+      setAttr(html, 'data-ag-ps-compact', prefs.compactLayout ? '1' : '');
+
+      // User bubble tinting
+      if (!prefs.bubbleTint) {
+        setAttr(html, 'data-ag-ps-bubble-tint', '');
+        setAttr(html, 'data-ag-ps-bubble-contrast', '');
+        setStyleVar(html, '--ag-ps-bubble-color', '');
+        setStyleVar(html, '--ag-ps-bubble-mix', '');
+        return;
+      }
+
+      const strength = clampInt(
+        strengthOverride !== undefined ? strengthOverride : prefs.bubbleTintStrength,
+        10,
+        100,
+        22
+      );
+      const color = resolveBubbleColor(prefs);
+      setAttr(html, 'data-ag-ps-bubble-tint', '1');
+      setStyleVar(html, '--ag-ps-bubble-color', color);
+      setStyleVar(html, '--ag-ps-bubble-mix', `${strength}%`);
+
+      if (strength >= 70) {
+        const lum = relativeLuminance(parseCssColorToRgb(color));
+        setAttr(html, 'data-ag-ps-bubble-contrast', lum < 0.56 ? 'light' : 'dark');
+      } else {
+        setAttr(html, 'data-ag-ps-bubble-contrast', '');
+      }
+    }
+
+    /* ========================================================================
+     * 7. Unread Badge (Background Completion Title "(N)" Counter)
+     * ======================================================================== */
+    let unreadCount = 0;
+    let titleHasBadge = false;
+    let wasBusyForUnread = lastBusy;
+    let hiddenPollTimer = 0;
+
+    function stripTitleBadge(title) {
+      return String(title || '').replace(/^\(\d+\)\s*/, '');
+    }
+
+    function applyUnreadBadgeTitle() {
+      if (unreadCount <= 0) return;
+      const clean = stripTitleBadge(document.title);
+      document.title = `(${unreadCount}) ${clean}`;
+      titleHasBadge = true;
+    }
+
+    function clearUnreadBadge() {
+      if (unreadCount > 0 || titleHasBadge) {
+        unreadCount = 0;
+        titleHasBadge = false;
+        const clean = stripTitleBadge(document.title);
+        if (document.title !== clean) document.title = clean;
+      }
+    }
+
+    function stopHiddenUnreadPoll() {
+      if (hiddenPollTimer) {
+        clearInterval(hiddenPollTimer);
+        hiddenPollTimer = 0;
+      }
+    }
+
+    function checkUnreadTransition(busyNow) {
+      const prefs = getPrefs();
+      if (!prefs.unreadBadge) {
+        clearUnreadBadge();
+        wasBusyForUnread = busyNow;
+        stopHiddenUnreadPoll();
+        return;
+      }
+      if (wasBusyForUnread && !busyNow && document.hidden) {
+        unreadCount += 1;
+        applyUnreadBadgeTitle();
+        stopHiddenUnreadPoll();
+      }
+      wasBusyForUnread = busyNow;
+    }
+
+    /* ========================================================================
+     * 8. Keep Overview Open Across Conversation Route Switches
+     * ======================================================================== */
+    const CONV_ROUTE_RE = /^\/c\/[^/]+/;
+    let userWantedOverviewOpen = null;
+    let autoClickingOverview = false;
+    let overviewRestoreTimer = 0;
+    let lastRestoredRoute = '';
+
+    function isConversationRoute(pathname) {
+      return CONV_ROUTE_RE.test(pathname != null ? pathname : (window.location.pathname || ''));
+    }
+
+    function isOverviewOpenNow() {
+      const panel = document.querySelector('[data-testid="overview-panel"]');
+      if (!panel || !panel.isConnected) return false;
+      if (panel.hidden || panel.getAttribute('aria-hidden') === 'true') return false;
+      return panel.offsetWidth > 20;
+    }
+
+    document.addEventListener('click', (e) => {
+      if (disposed || autoClickingOverview || !isConversationRoute()) return;
+      const btn = e.target && e.target.closest && e.target.closest('[data-testid="toggle-overview-panel"]');
+      if (!btn) return;
+      setTimeout(() => {
+        if (!disposed && isConversationRoute()) {
+          userWantedOverviewOpen = isOverviewOpenNow();
+        }
+      }, 150);
+    }, { capture: true, signal });
+
+    function scheduleKeepOverviewOnRoute() {
+      const prefs = getPrefs();
+      if (!isConversationRoute()) {
+        if (overviewRestoreTimer) {
+          clearTimeout(overviewRestoreTimer);
+          overviewRestoreTimer = 0;
+        }
+        return;
+      }
+      if (!prefs.keepOverviewOpen || userWantedOverviewOpen !== true) return;
+      const routeKey = window.location.pathname + window.location.search;
+      if (routeKey === lastRestoredRoute) return;
+
+      if (overviewRestoreTimer) clearTimeout(overviewRestoreTimer);
+      overviewRestoreTimer = setTimeout(() => {
+        overviewRestoreTimer = 0;
+        if (disposed || !isConversationRoute() || !getPrefs().keepOverviewOpen || userWantedOverviewOpen !== true) return;
+        if (isOverviewOpenNow()) {
+          lastRestoredRoute = routeKey;
+          return;
+        }
+        const toggleBtn = document.querySelector('[data-testid="toggle-overview-panel"]');
+        if (toggleBtn && toggleBtn.isConnected) {
+          lastRestoredRoute = routeKey;
+          autoClickingOverview = true;
+          try { toggleBtn.click(); } catch {}
+          setTimeout(() => { autoClickingOverview = false; }, 120);
+        }
+      }, 240);
+    }
+
+    /* ========================================================================
+     * 9. Sidebar Sessions ('default' | '10' | 'all') — Zero Body Observer
+     * ======================================================================== */
+    const SHOW_MORE_RE = /^(show\s+more|load\s+more|see\s+more|view\s+all|显示更多|展开更多|加载更多|查看全部)/i;
+    let lastAutoExpandAt = 0;
+    let autoExpandCount = 0;
+
+    function clearHiddenSessionMarks() {
+      document.querySelectorAll('[data-ag-ps-sess-hidden="1"]').forEach((el) => {
+        el.removeAttribute('data-ag-ps-sess-hidden');
+      });
+    }
+
+    function findSidebarContainers() {
+      const candidates = document.querySelectorAll('aside, nav, [data-testid*="sidebar"], [class*="sidebar"]');
+      const results = [];
+      for (let i = 0; i < candidates.length; i++) {
+        const el = candidates[i];
+        if (!el.isConnected) continue;
+        const links = el.querySelectorAll('a[href*="/c/"]');
+        if (links.length >= 2) results.push({ container: el, links });
+      }
+      return results;
+    }
+
+    function syncSidebarSessions() {
+      const prefs = getPrefs();
+      const mode = prefs.sidebarSessions || 'default';
+      const html = document.documentElement;
+      setAttr(html, 'data-ag-ps-sidebar-sessions', mode === 'default' ? '' : mode);
+
+      if (mode === 'default') {
+        clearHiddenSessionMarks();
+        autoExpandCount = 0;
+        return;
+      }
+
+      const sidebars = findSidebarContainers();
+      if (!sidebars.length) return;
+
+      if (mode === '10') {
+        autoExpandCount = 0;
+        const curPath = window.location.pathname;
+        for (let s = 0; s < sidebars.length; s++) {
+          const { links } = sidebars[s];
+          let visibleCount = 0;
+          for (let i = 0; i < links.length; i++) {
+            const link = links[i];
+            const row = link.closest('li, [role="listitem"], [data-testid*="session"], [data-testid*="conversation"]') || link;
+            const href = link.getAttribute('href') || '';
+            const isCurrent = link.getAttribute('aria-current') === 'page' || (curPath && href && curPath.endsWith(href));
+            if (visibleCount < 10 || isCurrent) {
+              if (row.hasAttribute('data-ag-ps-sess-hidden')) row.removeAttribute('data-ag-ps-sess-hidden');
+              visibleCount++;
+            } else {
+              setAttr(row, 'data-ag-ps-sess-hidden', '1');
+            }
+          }
+        }
+        return;
+      }
+
+      if (mode === 'all') {
+        clearHiddenSessionMarks();
+        const now = Date.now();
+        if (autoExpandCount < 6 && now - lastAutoExpandAt > 1800) {
+          for (let s = 0; s < sidebars.length; s++) {
+            const btns = sidebars[s].container.querySelectorAll('button');
+            for (let b = 0; b < btns.length; b++) {
+              const btn = btns[b];
+              if (btn.disabled || btn.offsetParent === null) continue;
+              const txt = (btn.textContent || '').trim();
+              if (SHOW_MORE_RE.test(txt)) {
+                lastAutoExpandAt = now;
+                autoExpandCount++;
+                try { btn.click(); } catch {}
+                return;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    /* ========================================================================
+     * 10. Always-On Outline Dot Rail (Lightweight Sync + Passive Viewport Scroll)
+     * ======================================================================== */
+    let railEl = null;
+    let railTipEl = null;
+    let railScrollVp = null;
+    let railScrollAc = null;
+    let railScrollRaf = 0;
+    let railTurnSig = '';
+    let railTurnNodes = [];
+    let railActiveIdx = -1;
+
+    function getUserTurns() {
+      const nodes = document.querySelectorAll('[data-testid="user-message-content"]');
+      const out = [];
+      for (let i = 0; i < nodes.length; i++) {
+        const n = nodes[i];
+        if (n && n.isConnected && (n.textContent || '').trim().length > 0) {
+          out.push(n);
+        }
+      }
+      return out;
+    }
+
+    function detectCurrentTurnIndex(turns) {
+      if (!turns.length) return -1;
+      const vp = safeGetViewportEl();
+      const vpRect = vp ? vp.getBoundingClientRect() : { top: 0, height: window.innerHeight };
+      const anchorY = vpRect.top + vpRect.height * 0.35;
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < turns.length; i++) {
+        const r = turns[i].getBoundingClientRect();
+        const d = Math.abs(r.top - anchorY);
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+      return bestIdx;
+    }
+
+    function hideRailTip() {
+      if (railTipEl) setAttr(railTipEl, 'data-show', '');
+    }
+
+    function showRailTip(dotBtn, idx, text) {
+      if (!railTipEl || !dotBtn) return;
+      railTipEl.textContent = '';
+      const badge = document.createElement('span');
+      badge.className = 'ag-ps-rail-tip-idx';
+      badge.textContent = `#${idx + 1}`;
+      railTipEl.appendChild(badge);
+      railTipEl.appendChild(document.createTextNode(text.slice(0, 48)));
+
+      const rect = dotBtn.getBoundingClientRect();
+      const tipRight = Math.max(16, window.innerWidth - rect.left + 10);
+      const tipTop = Math.max(12, Math.min(window.innerHeight - 40, Math.round(rect.top + rect.height * 0.5 - 14)));
+      railTipEl.style.right = `${tipRight}px`;
+      railTipEl.style.left = 'auto';
+      railTipEl.style.top = `${tipTop}px`;
+      setAttr(railTipEl, 'data-show', '1');
+    }
+
+    function updateRailActiveDot() {
+      if (!railEl || !railTurnNodes.length) return;
+      const idx = detectCurrentTurnIndex(railTurnNodes);
+      if (idx === railActiveIdx) return;
+      railActiveIdx = idx;
+      const dots = railEl.children;
+      for (let i = 0; i < dots.length; i++) {
+        if (i === idx) dots[i].setAttribute('aria-current', 'true');
+        else dots[i].removeAttribute('aria-current');
+      }
+    }
+
+    function positionOutlineRail() {
+      if (!railEl) return;
+      const vp = safeGetViewportEl();
+      if (vp) {
+        const rect = vp.getBoundingClientRect();
+        if (rect.width > 120) {
+          const rightPx = Math.max(10, Math.round(window.innerWidth - rect.right + 14));
+          railEl.style.right = `${rightPx}px`;
+          return;
+        }
+      }
+      railEl.style.right = '14px';
+    }
+
+    function detachRailScroll() {
+      if (railScrollRaf) {
+        cancelAnimationFrame(railScrollRaf);
+        railScrollRaf = 0;
+      }
+      if (railScrollAc) {
+        railScrollAc.abort();
+        railScrollAc = null;
+      }
+      railScrollVp = null;
+    }
+
+    function attachRailScroll(vp) {
+      if (railScrollVp === vp && railScrollAc) return;
+      detachRailScroll();
+      if (!vp || !vp.isConnected) return;
+      railScrollVp = vp;
+      railScrollAc = new AbortController();
+      vp.addEventListener('scroll', () => {
+        if (disposed || railScrollRaf || document.hidden) return;
+        railScrollRaf = requestAnimationFrame(() => {
+          railScrollRaf = 0;
+          if (!disposed) updateRailActiveDot();
+        });
+      }, { passive: true, signal: railScrollAc.signal });
+    }
+
+    function removeOutlineRail() {
+      detachRailScroll();
+      if (railEl) {
+        railEl.remove();
+        railEl = null;
+      }
+      if (railTipEl) {
+        railTipEl.remove();
+        railTipEl = null;
+      }
+      railTurnSig = '';
+      railTurnNodes = [];
+      railActiveIdx = -1;
+    }
+
+    function ensureOutlineRailEls() {
+      if (!railEl && document.body) {
+        railEl = document.createElement('nav');
+        railEl.id = 'ag-ps-outline-rail';
+        railEl.setAttribute('aria-label', '对话轮次圆点目录');
+        railEl.setAttribute('data-ag-i18n-ignore', '1');
+
+        railEl.addEventListener('click', (e) => {
+          const dot = e.target && e.target.closest && e.target.closest('.ag-ps-rail-dot');
+          if (!dot) return;
+          const idx = Number(dot.getAttribute('data-rail-idx'));
+          const target = railTurnNodes[idx];
+          if (!target || !target.isConnected) return;
+          const bubble = target.closest('[data-testid="user-message-bubble"]') || target.closest('[data-testid="user-message"]') || target;
+          bubble.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'center' });
+          bubble.classList.remove('ag-ps-turn-pulse');
+          void bubble.offsetWidth;
+          bubble.classList.add('ag-ps-turn-pulse');
+          setTimeout(() => bubble.classList.remove('ag-ps-turn-pulse'), 1500);
+          const preview = (target.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 34);
+          safeToast(`第 ${idx + 1} / ${railTurnNodes.length} 轮 · ${preview}`);
+          railActiveIdx = -1;
+          updateRailActiveDot();
+        }, { signal });
+
+        railEl.addEventListener('pointerover', (e) => {
+          const dot = e.target && e.target.closest && e.target.closest('.ag-ps-rail-dot');
+          if (!dot) return;
+          const idx = Number(dot.getAttribute('data-rail-idx'));
+          const target = railTurnNodes[idx];
+          if (!target) return;
+          const txt = (target.textContent || '').replace(/\s+/g, ' ').trim();
+          showRailTip(dot, idx, txt);
+        }, { signal });
+
+        railEl.addEventListener('pointerleave', hideRailTip, { signal });
+        document.body.appendChild(railEl);
+      }
+
+      if (!railTipEl && document.body) {
+        railTipEl = document.createElement('div');
+        railTipEl.id = 'ag-ps-rail-tip';
+        railTipEl.setAttribute('data-ag-i18n-ignore', '1');
+        document.body.appendChild(railTipEl);
+      }
+    }
+
+    function syncOutlineRail() {
+      const prefs = getPrefs();
+      if (!prefs.alwaysOutlineRail) {
+        removeOutlineRail();
+        return;
+      }
+
+      const turns = getUserTurns();
+      if (turns.length < 2) {
+        if (railEl) setAttr(railEl, 'data-show', '');
+        hideRailTip();
+        detachRailScroll();
+        railTurnNodes = turns;
+        railTurnSig = '';
+        return;
+      }
+
+      ensureOutlineRailEls();
+      if (!railEl) return;
+
+      const firstHead = (turns[0].textContent || '').trim().slice(0, 18);
+      const lastHead = (turns[turns.length - 1].textContent || '').trim().slice(0, 18);
+      const sig = `${turns.length}|${firstHead}|${lastHead}`;
+      railTurnNodes = turns;
+
+      if (sig !== railTurnSig) {
+        railTurnSig = sig;
+        railActiveIdx = -1;
+        const frag = document.createDocumentFragment();
+        for (let i = 0; i < turns.length; i++) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'ag-ps-rail-dot';
+          btn.setAttribute('data-rail-idx', String(i));
+          btn.setAttribute('aria-label', `跳转到第 ${i + 1} 轮`);
+          frag.appendChild(btn);
+        }
+        railEl.textContent = '';
+        railEl.appendChild(frag);
+      }
+
+      positionOutlineRail();
+      setAttr(railEl, 'data-show', '1');
+      updateRailActiveDot();
+      attachRailScroll(safeGetViewportEl());
+    }
+
+    /* ========================================================================
+     * 10b. Safe Manual Account-Switch Return Helper (Zero Credentials / Zero Modal Clicks)
+     * ======================================================================== */
+    const LAST_CONV_STORAGE_KEY = 'ag_prism_last_conv_v1';
+    const VALID_CONV_PATH_RE = /^\/c\/[A-Za-z0-9_-]{8,}/;
+    const SAFE_CONV_PATH_RE = /^\/c\/[A-Za-z0-9_-]{8,}(?:\/[A-Za-z0-9_-]+)*$/;
+    const SETTINGS_ROUTE_RE = /^\/settings(?:\/|$)/;
+    const LAST_CONV_MAX_AGE_MS = 4 * 60 * 60 * 1000;
+
+    let returnBarEl = null;
+    let returnBarAc = null;
+    let returnBarPath = '';
+    let returnBarCountdownEl = null;
+    let returnBarDismissedForVisit = false;
+    let wasOnSettingsRoute = false;
+    let returnCountdownTimer = 0;
+    let returnCountdownSec = 0;
+    let returnNavFallbackTimer = 0;
+    let lastSavedConvPath = '';
+    let lastSavedConvAt = 0;
+    let lastOnboardingDismissAt = 0;
+    let onboardingRetryTimer = 0;
+
+    function isSafeConvPath(p) {
+      return typeof p === 'string' && VALID_CONV_PATH_RE.test(p) && SAFE_CONV_PATH_RE.test(p);
+    }
+
+    function saveLastConversationPath(pathname) {
+      if (!isSafeConvPath(pathname)) return;
+      const now = Date.now();
+      if (pathname === lastSavedConvPath && now - lastSavedConvAt < 15000) return;
+      lastSavedConvPath = pathname;
+      lastSavedConvAt = now;
+      const payload = JSON.stringify({ path: pathname, ts: now });
+      try { sessionStorage.setItem(LAST_CONV_STORAGE_KEY, payload); } catch {}
+      try { localStorage.setItem(LAST_CONV_STORAGE_KEY, payload); } catch {}
+    }
+
+    function loadLastConversationRecord() {
+      const now = Date.now();
+      const storages = [];
+      try { storages.push(sessionStorage); } catch {}
+      try { storages.push(localStorage); } catch {}
+      for (let i = 0; i < storages.length; i++) {
+        try {
+          const raw = storages[i].getItem(LAST_CONV_STORAGE_KEY);
+          if (!raw) continue;
+          const parsed = JSON.parse(raw);
+          if (!parsed || !isSafeConvPath(parsed.path)) continue;
+          const ts = Number(parsed.ts);
+          if (!Number.isFinite(ts)) continue;
+          const age = now - ts;
+          if (age <= LAST_CONV_MAX_AGE_MS && age >= -60000) {
+            return { path: parsed.path, ts };
+          }
+        } catch {}
+      }
+      return null;
+    }
+
+    function hasOpenModalDialog() {
+      const dialogs = document.querySelectorAll('[role="dialog"]');
+      for (let i = 0; i < dialogs.length; i++) {
+        const d = dialogs[i];
+        if (!d || !d.isConnected) continue;
+        if (d.hidden || d.getAttribute('aria-hidden') === 'true') continue;
+        if (d.offsetWidth > 0 || d.offsetHeight > 0 || d.getClientRects().length > 0) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function formatShortConvBadge(path) {
+      const seg = String(path || '').replace(/^\/c\//, '').split('/')[0] || '';
+      if (!seg) return '#conv';
+      return seg.length > 10 ? `#${seg.slice(0, 8)}` : `#${seg}`;
+    }
+
+    function stopReturnCountdown() {
+      if (returnCountdownTimer) {
+        clearInterval(returnCountdownTimer);
+        returnCountdownTimer = 0;
+      }
+      returnCountdownSec = 0;
+      if (returnBarCountdownEl) {
+        returnBarCountdownEl.textContent = '';
+        setAttr(returnBarCountdownEl, 'data-active', '');
+      }
+    }
+
+    function removeReturnBar() {
+      stopReturnCountdown();
+      if (returnBarAc) {
+        returnBarAc.abort();
+        returnBarAc = null;
+      }
+      if (returnBarEl) {
+        returnBarEl.remove();
+        returnBarEl = null;
+      }
+      returnBarCountdownEl = null;
+      returnBarPath = '';
+    }
+
+    function findNativeSidebarConvLink(targetPath) {
+      const links = document.querySelectorAll('a[href*="/c/"]');
+      for (let i = 0; i < links.length; i++) {
+        const a = links[i];
+        if (!a || !a.isConnected) continue;
+        const rawHref = a.getAttribute('href') || '';
+        if (rawHref === targetPath) return a;
+        try {
+          const parsed = new URL(a.href, window.location.origin);
+          if (parsed.origin === window.location.origin && parsed.pathname === targetPath) {
+            return a;
+          }
+        } catch {}
+      }
+      return null;
+    }
+
+    function navigateToSavedConv(savedPath) {
+      if (!isSafeConvPath(savedPath)) return;
+      returnBarDismissedForVisit = true;
+      removeReturnBar();
+
+      if (returnNavFallbackTimer) {
+        clearTimeout(returnNavFallbackTimer);
+        returnNavFallbackTimer = 0;
+      }
+      if (onboardingRetryTimer) {
+        clearTimeout(onboardingRetryTimer);
+        onboardingRetryTimer = 0;
+      }
+
+      const nativeLink = findNativeSidebarConvLink(savedPath);
+      if (nativeLink) {
+        try { nativeLink.click(); } catch {}
+      } else {
+        try {
+          window.history.pushState(null, '', savedPath);
+          window.dispatchEvent(new PopStateEvent('popstate'));
+        } catch {}
+      }
+
+      returnNavFallbackTimer = setTimeout(() => {
+        returnNavFallbackTimer = 0;
+        if (disposed) return;
+        if (window.location.pathname !== savedPath) {
+          try { window.location.assign(savedPath); } catch {}
+        }
+      }, 180);
+    }
+
+    function startReturnCountdown(savedPath) {
+      if (disposed || returnCountdownTimer) return;
+      if (!returnBarEl || !returnBarEl.isConnected || !returnBarCountdownEl) return;
+      if (!getPrefs().switchAutoReturn || document.hidden || hasOpenModalDialog()) return;
+
+      returnCountdownSec = 3;
+      returnBarCountdownEl.textContent = `${returnCountdownSec}s 后自动返回`;
+      setAttr(returnBarCountdownEl, 'data-active', '1');
+
+      returnCountdownTimer = setInterval(() => {
+        if (
+          disposed ||
+          !returnBarEl ||
+          !returnBarEl.isConnected ||
+          !SETTINGS_ROUTE_RE.test(window.location.pathname || '') ||
+          !getPrefs().switchReturnHelper ||
+          !getPrefs().switchAutoReturn
+        ) {
+          stopReturnCountdown();
+          return;
+        }
+        if (document.hidden || hasOpenModalDialog()) {
+          stopReturnCountdown();
+          return;
+        }
+        returnCountdownSec -= 1;
+        if (returnCountdownSec <= 0) {
+          stopReturnCountdown();
+          navigateToSavedConv(savedPath);
+          return;
+        }
+        if (returnBarCountdownEl) {
+          returnBarCountdownEl.textContent = `${returnCountdownSec}s 后自动返回`;
+        }
+      }, 1000);
+    }
+
+    function mountReturnBar(savedPath) {
+      if (!document.body || !isSafeConvPath(savedPath)) return;
+      if (returnBarEl && returnBarEl.isConnected && returnBarPath === savedPath) {
+        if (getPrefs().switchAutoReturn) {
+          if (hasOpenModalDialog() || document.hidden) {
+            stopReturnCountdown();
+          } else if (!returnCountdownTimer && !returnBarDismissedForVisit) {
+            startReturnCountdown(savedPath);
+          }
+        } else {
+          stopReturnCountdown();
+        }
+        return;
+      }
+
+      removeReturnBar();
+      returnBarAc = new AbortController();
+      const barSignal = returnBarAc.signal;
+      returnBarPath = savedPath;
+
+      returnBarEl = document.createElement('div');
+      returnBarEl.id = 'ag-ps-return-bar';
+      returnBarEl.setAttribute('role', 'status');
+      returnBarEl.setAttribute('data-ag-i18n-ignore', '1');
+
+      const dot = document.createElement('span');
+      dot.className = 'ag-ps-return-dot';
+      dot.setAttribute('aria-hidden', 'true');
+
+      const text = document.createElement('span');
+      text.className = 'ag-ps-return-text';
+      text.textContent = '检测到位于设置页 · 可快速返回上次会话';
+
+      const badge = document.createElement('span');
+      badge.className = 'ag-ps-return-badge';
+      badge.textContent = formatShortConvBadge(savedPath);
+
+      returnBarCountdownEl = document.createElement('span');
+      returnBarCountdownEl.className = 'ag-ps-return-countdown';
+
+      const actions = document.createElement('div');
+      actions.className = 'ag-ps-return-actions';
+
+      const primaryBtn = document.createElement('button');
+      primaryBtn.type = 'button';
+      primaryBtn.className = 'ag-ps-return-btn-primary';
+      primaryBtn.textContent = '返回上次会话 ↩';
+      primaryBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        navigateToSavedConv(savedPath);
+      }, { signal: barSignal });
+
+      const relayBtn = document.createElement('button');
+      relayBtn.type = 'button';
+      relayBtn.className = 'ag-ps-return-btn-ghost';
+      relayBtn.textContent = '⚡ 账号接力';
+      relayBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (typeof bus.openWorkbench === 'function') {
+          bus.openWorkbench('accounts');
+        }
+      }, { signal: barSignal });
+
+      const stayBtn = document.createElement('button');
+      stayBtn.type = 'button';
+      stayBtn.className = 'ag-ps-return-btn-ghost';
+      stayBtn.textContent = '留在设置';
+      stayBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        returnBarDismissedForVisit = true;
+        removeReturnBar();
+      }, { signal: barSignal });
+
+      actions.appendChild(primaryBtn);
+      actions.appendChild(relayBtn);
+      actions.appendChild(stayBtn);
+
+      returnBarEl.appendChild(dot);
+      returnBarEl.appendChild(text);
+      returnBarEl.appendChild(badge);
+      returnBarEl.appendChild(returnBarCountdownEl);
+      returnBarEl.appendChild(actions);
+      document.body.appendChild(returnBarEl);
+
+      if (getPrefs().switchAutoReturn && !document.hidden && !hasOpenModalDialog()) {
+        startReturnCountdown(savedPath);
+      }
+    }
+
+    function tryDismissOnboardingDialog() {
+      const now = Date.now();
+      if (now - lastOnboardingDismissAt < 2500) return false;
+      const dialogs = document.querySelectorAll('[role="dialog"]');
+      for (let i = 0; i < dialogs.length; i++) {
+        const d = dialogs[i];
+        if (!d || !d.isConnected) continue;
+        if (d.hidden || d.getAttribute('aria-hidden') === 'true') continue;
+        if (d.offsetWidth <= 0 && d.offsetHeight <= 0 && d.getClientRects().length === 0) continue;
+        const txt = String(d.textContent || '');
+        const matchesEn = txt.includes('One last thing before getting started') && txt.includes('You are in control');
+        const matchesZh = txt.includes('开始使用前的最后一步') && txt.includes('由你掌控');
+        if (!matchesEn && !matchesZh) continue;
+
+        const buttons = d.querySelectorAll('button');
+        for (let j = 0; j < buttons.length; j++) {
+          const btn = buttons[j];
+          if (!btn || btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
+          const bTxt = String(btn.textContent || '').replace(/\s+/g, ' ').trim();
+          if (/^(Continue|继续|繼續)$/i.test(bTxt)) {
+            lastOnboardingDismissAt = now;
+            try { btn.click(); } catch {}
+            safeToast('已自动确认 Antigravity 登录欢迎框');
+            if (onboardingRetryTimer) clearTimeout(onboardingRetryTimer);
+            onboardingRetryTimer = setTimeout(() => {
+              onboardingRetryTimer = 0;
+              if (!disposed) syncSwitchReturnHelper();
+            }, 220);
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    function syncSwitchReturnHelper() {
+      if (getPrefs().autoDismissOnboarding) {
+        tryDismissOnboardingDialog();
+      }
+      const pathname = window.location.pathname || '';
+      if (isSafeConvPath(pathname)) {
+        saveLastConversationPath(pathname);
+        wasOnSettingsRoute = false;
+        returnBarDismissedForVisit = false;
+        removeReturnBar();
+        return;
+      }
+
+      const onSettings = SETTINGS_ROUTE_RE.test(pathname);
+      if (!onSettings) {
+        wasOnSettingsRoute = false;
+        returnBarDismissedForVisit = false;
+        removeReturnBar();
+        return;
+      }
+
+      if (!wasOnSettingsRoute) {
+        wasOnSettingsRoute = true;
+        returnBarDismissedForVisit = false;
+      }
+
+      const prefs = getPrefs();
+      if (!prefs.switchReturnHelper || returnBarDismissedForVisit) {
+        removeReturnBar();
+        return;
+      }
+
+      const rec = loadLastConversationRecord();
+      if (!rec || rec.path === pathname) {
+        removeReturnBar();
+        return;
+      }
+
+      mountReturnBar(rec.path);
+    }
+
+    /* ========================================================================
+     * 10c. 5h / 7d Quota Handoff Nudge (Live Bus Quota + 30m Session Cooldown)
+     * ======================================================================== */
+    const QUOTA_NUDGE_DISMISS_KEY = 'ag_prism_quota_nudge_dismiss_v1';
+    const QUOTA_NUDGE_COOLDOWN_MS = 30 * 60 * 1000;
+    const HANDOFF_PROMPT_TEXT = '准备切号：请按固定 4 要素整理当前交接记录并写入 memory（1. 槽位标识与精确时间戳；2. 实际工作目录；3. Git 分支、最新 commit 及未提交改动；4. 已通过的验证证据与下一步直接动作）。';
+
+    let quotaNudgeEl = null;
+    let quotaNudgeAc = null;
+    let quotaNudgeSig = '';
+    const quotaNudgeDismissMem = { '7d': 0, '5h': 0 };
+
+    function readQuotaDismissTs(winKey) {
+      let ts = quotaNudgeDismissMem[winKey] || 0;
+      try {
+        const raw = sessionStorage.getItem(QUOTA_NUDGE_DISMISS_KEY);
+        if (raw) {
+          const map = JSON.parse(raw);
+          const stored = Number(map && map[winKey]);
+          if (Number.isFinite(stored) && stored > ts) ts = stored;
+        }
+      } catch {}
+      return ts;
+    }
+
+    function isQuotaNudgeDismissed(winKey) {
+      const ts = readQuotaDismissTs(winKey);
+      return ts > 0 && Date.now() - ts < QUOTA_NUDGE_COOLDOWN_MS;
+    }
+
+    function markQuotaNudgeDismissed(winKey) {
+      const now = Date.now();
+      quotaNudgeDismissMem[winKey] = now;
+      try {
+        let map = {};
+        const raw = sessionStorage.getItem(QUOTA_NUDGE_DISMISS_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') map = parsed;
+        }
+        map[winKey] = now;
+        sessionStorage.setItem(QUOTA_NUDGE_DISMISS_KEY, JSON.stringify(map));
+      } catch {}
+    }
+
+    function formatQuotaPct(n) {
+      const rounded = Math.round(n * 10) / 10;
+      return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+    }
+
+    function copyHandoffPrompt() {
+      const onDone = (ok) => {
+        safeToast(ok ? '已复制切号交接指令，粘贴发送即可' : '复制失败，请手动输入“准备切号”');
+      };
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        navigator.clipboard.writeText(HANDOFF_PROMPT_TEXT).then(
+          () => onDone(true),
+          () => {
+            onDone(fallbackCopyText(HANDOFF_PROMPT_TEXT));
+          }
+        );
+        return;
+      }
+      onDone(fallbackCopyText(HANDOFF_PROMPT_TEXT));
+    }
+
+    function fallbackCopyText(text) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        return Boolean(ok);
+      } catch {
+        return false;
+      }
+    }
+
+    function removeQuotaNudge() {
+      if (quotaNudgeAc) {
+        quotaNudgeAc.abort();
+        quotaNudgeAc = null;
+      }
+      if (quotaNudgeEl) {
+        quotaNudgeEl.remove();
+        quotaNudgeEl = null;
+      }
+      quotaNudgeSig = '';
+    }
+
+    function mountQuotaNudge(winKey, pct) {
+      if (!document.body) return;
+      const pctStr = formatQuotaPct(pct);
+      const sig = `${winKey}:${pctStr}`;
+      if (quotaNudgeEl && quotaNudgeEl.isConnected && quotaNudgeSig === sig) return;
+
+      removeQuotaNudge();
+      quotaNudgeAc = new AbortController();
+      const nudgeSignal = quotaNudgeAc.signal;
+      quotaNudgeSig = sig;
+
+      quotaNudgeEl = document.createElement('div');
+      quotaNudgeEl.id = 'ag-ps-quota-nudge';
+      quotaNudgeEl.setAttribute('role', 'status');
+      quotaNudgeEl.setAttribute('data-tier', winKey);
+      quotaNudgeEl.setAttribute('data-ag-i18n-ignore', '1');
+
+      const dot = document.createElement('span');
+      dot.className = 'ag-ps-nudge-dot';
+      dot.setAttribute('aria-hidden', 'true');
+
+      const text = document.createElement('span');
+      text.className = 'ag-ps-nudge-text';
+      text.textContent = winKey === '7d'
+        ? `7d 额度仅剩 ${pctStr}% · 建议保存交接后切备用号`
+        : `5h 额度仅剩 ${pctStr}% · 可先切换另一模型家族继续`;
+
+      const actions = document.createElement('div');
+      actions.className = 'ag-ps-nudge-actions';
+
+      const switchBtn = document.createElement('button');
+      switchBtn.type = 'button';
+      switchBtn.className = 'ag-ps-nudge-btn-switch';
+      switchBtn.textContent = '⚡ 去切号';
+      switchBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (typeof bus.openWorkbench === 'function') {
+          bus.openWorkbench('accounts');
+        }
+      }, { signal: nudgeSignal });
+      actions.appendChild(switchBtn);
+
+      if (winKey === '7d') {
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'ag-ps-nudge-btn-copy';
+        copyBtn.textContent = '复制交接指令';
+        copyBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          copyHandoffPrompt();
+        }, { signal: nudgeSignal });
+        actions.appendChild(copyBtn);
+      }
+
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'ag-ps-nudge-btn-close';
+      closeBtn.textContent = '关闭';
+      closeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        markQuotaNudgeDismissed(winKey);
+        removeQuotaNudge();
+      }, { signal: nudgeSignal });
+      actions.appendChild(closeBtn);
+
+      quotaNudgeEl.appendChild(dot);
+      quotaNudgeEl.appendChild(text);
+      quotaNudgeEl.appendChild(actions);
+      document.body.appendChild(quotaNudgeEl);
+    }
+
+    function syncQuotaHandoffNudge() {
+      const prefs = getPrefs();
+      if (!prefs.quotaHandoffAlert) {
+        removeQuotaNudge();
+        return;
+      }
+      const q = safeGetQuotaState();
+      const pct7d = typeof q.pct7d === 'number' && Number.isFinite(q.pct7d) ? q.pct7d : null;
+      const pct5h = typeof q.pct5h === 'number' && Number.isFinite(q.pct5h) ? q.pct5h : null;
+
+      if (pct7d !== null && pct7d <= 5) {
+        if (!isQuotaNudgeDismissed('7d')) {
+          mountQuotaNudge('7d', pct7d);
+          return;
+        }
+      } else if (pct5h !== null && pct5h <= 10) {
+        if (!isQuotaNudgeDismissed('5h')) {
+          mountQuotaNudge('5h', pct5h);
+          return;
+        }
+      }
+      removeQuotaNudge();
+    }
+
+    /* ========================================================================
+     * 11. Unified State Sync & Event Wiring
+     * ======================================================================== */
+    function syncComposerOverlays() {
+      const prefs = getPrefs();
+      const nowMs = Date.now();
+      const needComposerOverlay = Boolean(
+        prefs.borderBeam ||
+        prefs.quotaRing ||
+        isBeamPreviewActive(nowMs)
+      );
+
+      if (!needComposerOverlay) {
+        beamAlpha = 0;
+        if (beamCanvas) {
+          beamCanvas.remove();
+          beamCanvas = null;
+          beamCtx = null;
+        }
+        syncQuotaRing();
+        detachComposerHost();
+      } else {
+        const host = safeGetComposerEl();
+        if (!host) {
+          detachComposerHost();
+        } else {
+          attachComposerHost(host);
+          if (prefs.borderBeam || isBeamPreviewActive(nowMs)) {
+            ensureBeamCanvas();
+          } else if (beamCanvas && beamAlpha <= 0.004) {
+            beamCanvas.remove();
+            beamCanvas = null;
+            beamCtx = null;
+          }
+          syncQuotaRing();
+        }
+      }
+
+      syncThinkingOrbMount();
+
+      if (!needComposerOverlay && !prefs.thinkingOrb) {
+        stopScheduler();
+      }
+    }
+
+    function syncAll(reason) {
+      if (disposed) return;
+
+      const nowMs = Date.now();
+      const busy = safeIsBusy();
+      const prevBusy = lastBusy;
+      lastBusy = busy;
+
+      if (prevBusy && !busy) {
+        orbDoneUntil = nowMs + ORB_CONVERGE_MS;
+      }
+
+      checkUnreadTransition(busy);
+      applyBubbleTintAndCompact();
+      syncSwitchReturnHelper();
+
+      if (reason === 'route') {
+        autoExpandCount = 0;
+        scheduleKeepOverviewOnRoute();
+      } else if (userWantedOverviewOpen === null && isConversationRoute()) {
+        if (document.querySelector('[data-testid="overview-panel"]')) {
+          userWantedOverviewOpen = isOverviewOpenNow();
+        }
+      }
+
+      // Avoid non-urgent DOM scans while actively typing unless busy/prefs/route
+      const deferDomScan = reason === 'tick' && safeIsTyping() && !busy;
+      if (!deferDomScan) {
+        syncComposerOverlays();
+        syncSidebarSessions();
+        syncOutlineRail();
+        syncQuotaHandoffNudge();
+      } else {
+        syncQuotaRingSuppression(nowMs);
+      }
+
+      if (orbDock) updateOrbStageLabel(nowMs);
+      syncQuotaRingSuppression(nowMs);
+
+      if (shouldRunScheduler(nowMs)) {
+        ensureScheduler();
+      }
+    }
+
+    // Window focus / blur / visibility handlers via AbortController
+    function onVisibilityOrFocusChange() {
+      if (disposed) return;
+      windowFocused = typeof document.hasFocus === 'function' ? document.hasFocus() : !document.hidden;
+      if (document.hidden) {
+        stopScheduler();
+        stopReturnCountdown();
+        // Lightweight background poll ONLY when busy & unreadBadge enabled so hidden completion is never missed
+        if (getPrefs().unreadBadge && (lastBusy || safeIsBusy()) && !hiddenPollTimer) {
+          wasBusyForUnread = true;
+          hiddenPollTimer = setInterval(() => {
+            if (disposed || !document.hidden) {
+              stopHiddenUnreadPoll();
+              return;
+            }
+            const busyNow = safeIsBusy();
+            lastBusy = busyNow;
+            checkUnreadTransition(busyNow);
+          }, 2600);
+        }
+      } else {
+        stopHiddenUnreadPoll();
+        clearUnreadBadge();
+        syncAll('visibility');
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVisibilityOrFocusChange, { signal });
+    window.addEventListener('focus', () => {
+      if (disposed) return;
+      windowFocused = true;
+      clearUnreadBadge();
+      if (shouldRunScheduler(Date.now())) ensureScheduler();
+    }, { signal });
+
+    window.addEventListener('blur', () => {
+      if (disposed) return;
+      windowFocused = false;
+      if (!shouldRunScheduler(Date.now())) stopScheduler();
+    }, { signal });
+
+    window.addEventListener('resize', () => {
+      if (disposed) return;
+      scheduleThrottledMeasure();
+      if (railEl) positionOutlineRail();
+    }, { passive: true, signal });
+
+    // Subscribe to Frozen v4 Bus events
+    const unsub = bus.subscribe((ev) => {
+      if (disposed) return;
+      const type = typeof ev === 'string' ? ev : (ev && ev.type) || 'tick';
+      if (type === 'theme') {
+        beamPaletteCacheKey = '';
+        applyBubbleTintAndCompact();
+        if (orbCanvas && getPrefs().thinkingOrb && !sharedRafId) {
+          renderThinkingOrbFrame(0, Date.now(), true);
+        }
+        return;
+      }
+      if (type === 'visibility') {
+        onVisibilityOrFocusChange();
+        return;
+      }
+      syncAll(type);
+    });
+
+    /* ========================================================================
+     * 12. Popover Panel Section Registration (id: 'fx', order: 10)
+     * ======================================================================== */
+    bus.registerPanelSection({
+      id: 'fx',
+      order: 10,
+      title: '视觉特效与排版',
+      render(rawPrefs) {
+        const p = Object.assign({}, FX_DEFAULTS, rawPrefs || {});
+        const previewing = isBeamPreviewActive(Date.now());
+        const strength = clampInt(p.bubbleTintStrength, 10, 100, 22);
+
+        const beamChips = BEAM_PALETTE_LABELS.map((item) => {
+          const sel = (p.borderBeamPalette || 'theme') === item.id ? '1' : '0';
+          return `<button type="button" class="ag-ps-fx-chip" data-fx-beam-palette="${escapeHtml(item.id)}" data-selected="${sel}"><span class="ag-ps-fx-dot" style="background:${escapeHtml(item.dot)}"></span>${escapeHtml(item.label)}</button>`;
+        }).join('');
+
+        const bubbleSwatches = BUBBLE_PRESETS.map((item) => {
+          const sel = (p.bubbleTintPreset || 'accent') === item.id ? '1' : '0';
+          return `<button type="button" class="ag-ps-fx-swatch-btn" data-fx-bubble-preset="${escapeHtml(item.id)}" data-selected="${sel}" style="background:${escapeHtml(item.swatch)}" data-ag-ps-tip="${escapeHtml(item.label)}" aria-label="${escapeHtml(item.label)}"></button>`;
+        }).join('');
+
+        return `
+          <div class="ag-ps-toggle-list">
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="模型生成时在输入框边缘流动彗星光带，空闲自动 0fps">
+                <span>输入框流光边框</span>
+                <span class="ag-ps-toggle-sub">工作态流光 · 与额度光环互斥</span>
+              </div>
+              <div class="ag-ps-fx-inline">
+                <button type="button" class="ag-ps-fx-preview-btn" data-fx-beam-preview="1" data-active="${previewing ? '1' : '0'}">试用 3s</button>
+                <button type="button" class="ag-ps-switch" data-fx-toggle="borderBeam" data-on="${p.borderBeam ? '1' : '0'}" aria-label="输入框流光边框"></button>
+              </div>
+            </div>
+            ${
+              p.borderBeam
+                ? `<div class="ag-ps-subpanel">
+                    <div class="ag-ps-toggle-sub">流光色系</div>
+                    <div class="ag-ps-fx-chip-grid">${beamChips}</div>
+                  </div>`
+                : ''
+            }
+
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="静态 SVG 描边显示剩余额度，流光激活时自动优雅让位">
+                <span>输入框额度光环</span>
+                <span class="ag-ps-toggle-sub">静态 0fps · 绿 / 琥珀 / 红三阶</span>
+              </div>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="quotaRing" data-on="${p.quotaRing ? '1' : '0'}" aria-label="输入框额度光环"></button>
+            </div>
+            ${
+              p.quotaRing
+                ? `<div class="ag-ps-subpanel">
+                    <div class="ag-ps-toggle-row">
+                      <span class="ag-ps-toggle-sub">追踪周期</span>
+                      <div class="ag-ps-seg-group">
+                        <button type="button" class="ag-ps-seg-btn" data-fx-qring-period="auto" data-selected="${p.quotaRingPeriod === 'auto' ? '1' : '0'}">自动</button>
+                        <button type="button" class="ag-ps-seg-btn" data-fx-qring-period="weekly" data-selected="${p.quotaRingPeriod === 'weekly' ? '1' : '0'}">周额度</button>
+                        <button type="button" class="ag-ps-seg-btn" data-fx-qring-period="5h" data-selected="${p.quotaRingPeriod === '5h' ? '1' : '0'}">5h</button>
+                      </div>
+                    </div>
+                  </div>`
+                : ''
+            }
+
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="128 粒子 3D 球体随思考/工具/输出实时变形，结束后 1.2s 自动停帧">
+                <span>ThinkingOrb 粒子球</span>
+                <span class="ag-ps-toggle-sub">3D 实时态变形 · 悬停视差</span>
+              </div>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="thinkingOrb" data-on="${p.thinkingOrb ? '1' : '0'}" aria-label="ThinkingOrb 粒子球"></button>
+            </div>
+            ${
+              p.thinkingOrb
+                ? `<div class="ag-ps-subpanel">
+                    <div class="ag-ps-toggle-row">
+                      <span class="ag-ps-toggle-sub">与像素伙伴</span>
+                      <div class="ag-ps-seg-group">
+                        <button type="button" class="ag-ps-seg-btn" data-fx-orb-mode="both" data-selected="${p.thinkingOrbMode !== 'replace' ? '1' : '0'}">左右共存</button>
+                        <button type="button" class="ag-ps-seg-btn" data-fx-orb-mode="replace" data-selected="${p.thinkingOrbMode === 'replace' ? '1' : '0'}">替换伙伴</button>
+                      </div>
+                    </div>
+                  </div>`
+                : ''
+            }
+
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="为用户提问气泡添加主题融合色调，浓度 ≥70% 自动反白保证可读性">
+                <span>用户消息气泡着色</span>
+                <span class="ag-ps-toggle-sub">柔和融合 · 高浓度自动对比字色</span>
+              </div>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="bubbleTint" data-on="${p.bubbleTint ? '1' : '0'}" aria-label="用户消息气泡着色"></button>
+            </div>
+            ${
+              p.bubbleTint
+                ? `<div class="ag-ps-subpanel">
+                    <div class="ag-ps-toggle-row">
+                      <span class="ag-ps-toggle-sub">色调</span>
+                      <div class="ag-ps-fx-swatch-row">${bubbleSwatches}</div>
+                    </div>
+                    <div class="ag-ps-toggle-row">
+                      <span class="ag-ps-toggle-sub">浓度</span>
+                      <div class="ag-ps-range-wrap">
+                        <input type="range" class="ag-ps-range" data-fx-bubble-strength="1" min="10" max="100" step="2" value="${strength}" aria-label="气泡着色浓度" />
+                        <span class="ag-ps-range-val" data-fx-bubble-strength-val="1">${strength}%</span>
+                        <button type="button" class="ag-ps-mini-reset" data-fx-bubble-reset="1" ${strength === 22 ? 'disabled' : ''}>复位</button>
+                      </div>
+                    </div>
+                  </div>`
+                : ''
+            }
+
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="收紧正文行高至 1.42 与段落间距，完整保留你偏好的字号">
+                <span>紧凑排版</span>
+                <span class="ag-ps-toggle-sub">行高 1.42 · 同屏信息密度更高</span>
+              </div>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="compactLayout" data-on="${p.compactLayout ? '1' : '0'}" aria-label="紧凑排版"></button>
+            </div>
+
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="多轮对话时在视口右侧常驻纤细圆点目录，悬停预览、点击直达">
+                <span>常驻轮次圆点目录</span>
+                <span class="ag-ps-toggle-sub">2 轮以上自动显现 · 零干扰</span>
+              </div>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="alwaysOutlineRail" data-on="${p.alwaysOutlineRail ? '1' : '0'}" aria-label="常驻轮次圆点目录"></button>
+            </div>
+
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="标签页在后台完成回复时，自动在窗口标题显示 (N) 未读计数">
+                <span>后台完成标题提醒</span>
+                <span class="ag-ps-toggle-sub">切回窗口自动清零标题角标</span>
+              </div>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="unreadBadge" data-on="${p.unreadBadge ? '1' : '0'}" aria-label="后台完成标题提醒"></button>
+            </div>
+
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="记住你上次展开右侧概览面板的状态，切换会话后自动保持展开">
+                <span>切会话保持概览展开</span>
+                <span class="ag-ps-toggle-sub">避免切换对话反复折叠</span>
+              </div>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="keepOverviewOpen" data-on="${p.keepOverviewOpen ? '1' : '0'}" aria-label="切会话保持概览展开"></button>
+            </div>
+
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="控制左侧会话列表展示数量或自动展开全部历史会话">
+                <span>侧边栏会话数</span>
+                <span class="ag-ps-toggle-sub">轻量同步 · 无全局监听开销</span>
+              </div>
+              <div class="ag-ps-seg-group">
+                <button type="button" class="ag-ps-seg-btn" data-fx-sidebar-sessions="default" data-selected="${p.sidebarSessions === 'default' ? '1' : '0'}">默认</button>
+                <button type="button" class="ag-ps-seg-btn" data-fx-sidebar-sessions="10" data-selected="${p.sidebarSessions === '10' ? '1' : '0'}">10条</button>
+                <button type="button" class="ag-ps-seg-btn" data-fx-sidebar-sessions="all" data-selected="${p.sidebarSessions === 'all' ? '1' : '0'}">全部</button>
+              </div>
+            </div>
+
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="记住最近会话路由，手动前往设置页切换账号后在顶部提供一键返回，绝不触碰凭据或自动点击弹窗">
+                <span>设置页快速返回会话</span>
+                <span class="ag-ps-toggle-sub">切号后一键回原会话 · 零盲点</span>
+              </div>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="switchReturnHelper" data-on="${p.switchReturnHelper ? '1' : '0'}" aria-label="设置页快速返回会话"></button>
+            </div>
+            ${
+              p.switchReturnHelper
+                ? `<div class="ag-ps-subpanel">
+                    <div class="ag-ps-toggle-row">
+                      <span class="ag-ps-toggle-sub" data-ag-ps-tip="仅在设置页且当前无任何弹窗时启动 3 秒可取消倒计时自动返回">无弹窗 3s 倒计时返回</span>
+                      <button type="button" class="ag-ps-switch" data-fx-toggle="switchAutoReturn" data-on="${p.switchAutoReturn ? '1' : '0'}" aria-label="无弹窗 3s 倒计时返回"></button>
+                    </div>
+                    <div class="ag-ps-toggle-row">
+                      <span class="ag-ps-toggle-sub" data-ag-ps-tip="仅精确匹配官方 One last thing... 欢迎框并点 Continue，不改隐私勾选">自动确认登录欢迎弹窗</span>
+                      <button type="button" class="ag-ps-switch" data-fx-toggle="autoDismissOnboarding" data-on="${p.autoDismissOnboarding ? '1' : '0'}" aria-label="自动确认登录欢迎弹窗"></button>
+                    </div>
+                  </div>`
+                : ''
+            }
+
+            <div class="ag-ps-toggle-row">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="实时读取可见额度：7d ≤ 5% 提示保存交接并支持复制指令，5h ≤ 10% 提示切换另一模型家族（30 分钟防重）">
+                <span>5h / 7d 低额度交接提醒</span>
+                <span class="ag-ps-toggle-sub">7d≤5% 切号提示 · 5h≤10% 换模型</span>
+              </div>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="quotaHandoffAlert" data-on="${p.quotaHandoffAlert ? '1' : '0'}" aria-label="5h / 7d 低额度交接提醒"></button>
+            </div>
+          </div>
+        `;
+      },
+
+      onClick(e) {
+        if (disposed) return false;
+        const target = e && e.target;
+        if (!target || typeof target.closest !== 'function') return false;
+
+        const previewBtn = target.closest('[data-fx-beam-preview]');
+        if (previewBtn) {
+          triggerBeamPreview();
+          return true;
+        }
+
+        const toggleBtn = target.closest('[data-fx-toggle]');
+        if (toggleBtn) {
+          const key = toggleBtn.getAttribute('data-fx-toggle');
+          if (key && Object.prototype.hasOwnProperty.call(FX_DEFAULTS, key)) {
+            const cur = getPrefs();
+            bus.setPref(key, !cur[key]);
+            return true;
+          }
+          return false;
+        }
+
+        const beamPalBtn = target.closest('[data-fx-beam-palette]');
+        if (beamPalBtn) {
+          const val = beamPalBtn.getAttribute('data-fx-beam-palette');
+          if (val) {
+            beamPaletteCacheKey = '';
+            bus.setPref('borderBeamPalette', val);
+            return true;
+          }
+          return false;
+        }
+
+        const qPeriodBtn = target.closest('[data-fx-qring-period]');
+        if (qPeriodBtn) {
+          const val = qPeriodBtn.getAttribute('data-fx-qring-period');
+          if (val) {
+            bus.setPref('quotaRingPeriod', val);
+            return true;
+          }
+          return false;
+        }
+
+        const orbModeBtn = target.closest('[data-fx-orb-mode]');
+        if (orbModeBtn) {
+          const val = orbModeBtn.getAttribute('data-fx-orb-mode') === 'replace' ? 'replace' : 'both';
+          bus.setPref('thinkingOrbMode', val);
+          return true;
+        }
+
+        const bubblePresetBtn = target.closest('[data-fx-bubble-preset]');
+        if (bubblePresetBtn) {
+          const val = bubblePresetBtn.getAttribute('data-fx-bubble-preset');
+          if (val) {
+            bus.setPref('bubbleTintPreset', val);
+            return true;
+          }
+          return false;
+        }
+
+        const bubbleResetBtn = target.closest('[data-fx-bubble-reset]');
+        if (bubbleResetBtn) {
+          bus.setPref('bubbleTintStrength', 22);
+          return true;
+        }
+
+        const sessBtn = target.closest('[data-fx-sidebar-sessions]');
+        if (sessBtn) {
+          const val = sessBtn.getAttribute('data-fx-sidebar-sessions');
+          if (val === 'default' || val === '10' || val === 'all') {
+            autoExpandCount = 0;
+            bus.setPref('sidebarSessions', val);
+            return true;
+          }
+        }
+        return false;
+      },
+
+      onInput(e) {
+        if (disposed) return false;
+        const target = e && e.target;
+        const slider = target && target.closest && target.closest('[data-fx-bubble-strength]');
+        if (!slider) return false;
+        const val = clampInt(slider.value, 10, 100, 22);
+        applyBubbleTintAndCompact(val);
+        const root = slider.closest('#ag-ps-popover') || document;
+        const valEl = root.querySelector('[data-fx-bubble-strength-val]');
+        if (valEl) valEl.textContent = `${val}%`;
+        const resetBtn = root.querySelector('[data-fx-bubble-reset]');
+        if (resetBtn) resetBtn.disabled = val === 22;
+        return true;
+      },
+
+      onChange(e) {
+        if (disposed) return false;
+        const target = e && e.target;
+        const slider = target && target.closest && target.closest('[data-fx-bubble-strength]');
+        if (!slider) return false;
+        const val = clampInt(slider.value, 10, 100, 22);
+        bus.setPref('bubbleTintStrength', val);
+        return true;
+      }
+    });
+
+    /* ========================================================================
+     * 13. Clean Disposal (Hot-Reload & Uninstall Safe)
+     * ======================================================================== */
+    function dispose() {
+      if (disposed) return;
+      disposed = true;
+
+      stopScheduler();
+      stopHiddenUnreadPoll();
+      ac.abort();
+
+      if (beamPreviewTimer) {
+        clearTimeout(beamPreviewTimer);
+        beamPreviewTimer = 0;
+      }
+      if (overviewRestoreTimer) {
+        clearTimeout(overviewRestoreTimer);
+        overviewRestoreTimer = 0;
+      }
+      if (returnNavFallbackTimer) {
+        clearTimeout(returnNavFallbackTimer);
+        returnNavFallbackTimer = 0;
+      }
+      if (onboardingRetryTimer) {
+        clearTimeout(onboardingRetryTimer);
+        onboardingRetryTimer = 0;
+      }
+      if (typeof unsub === 'function') {
+        try { unsub(); } catch {}
+      }
+      try { bus.unregisterPanelSection?.('fx'); } catch {}
+
+      clearUnreadBadge();
+      clearHiddenSessionMarks();
+      removeOutlineRail();
+      removeOrbDock();
+      removeReturnBar();
+      removeQuotaNudge();
+
+      if (beamCanvas) {
+        beamCanvas.remove();
+        beamCanvas = null;
+        beamCtx = null;
+      }
+      if (qRingWrap) {
+        qRingWrap.remove();
+        qRingWrap = null;
+        qRingSvg = null;
+        qRingTrack = null;
+        qRingArc = null;
+      }
+
+      detachComposerHost();
+
+      const html = document.documentElement;
+      if (html) {
+        html.removeAttribute('data-ag-ps-orb-replace');
+        html.removeAttribute('data-ag-ps-bubble-tint');
+        html.removeAttribute('data-ag-ps-bubble-contrast');
+        html.removeAttribute('data-ag-ps-compact');
+        html.removeAttribute('data-ag-ps-sidebar-sessions');
+        html.style.removeProperty('--ag-ps-bubble-color');
+        html.style.removeProperty('--ag-ps-bubble-mix');
+      }
+
+      if (window.__agPrismFxDispose === dispose) {
+        delete window.__agPrismFxDispose;
+      }
+    }
+
+    window.__agPrismFxDispose = dispose;
+    if (typeof bus.onCleanup === 'function') {
+      bus.onCleanup(dispose);
+    }
+
+    // Initial sync
+    syncAll('init');
+  }
+
+  attachPrismModule(initFxModule);
+})();
