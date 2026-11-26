@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.5 - 2026-11-26
+
+- **新增「✨ Prism Suite 官方一键更新（推荐）」**：
+  - 在 [plugin/server/upstream-radar.mjs](plugin/server/upstream-radar.mjs) 与 [plugin/server/index.mjs](plugin/server/index.mjs) 新增 app-only 工具 `prism_self_update_check` / `prism_self_update_apply`：仅放行官方仓库 GitHub Release 资产、强制校验 `.sha256` 摘要防篡改，校验通过后静默执行 `--silent-install` 原地升级 Windows 扩展 + Windows/WSL 插件（保留目录 inode），完成后提供一键重启 Antigravity 生效按钮；macOS / 原生 Linux 自动走官方 Release 源码包原地升级。
+- **上游更新雷达全面中文化（人话摘要 + 进阶分区）**：
+  - 将上游仓库与每条 commit 自动转换为通俗中文说明与中文标签（`有重要更新 / 有常规更新 / 已同步`、`新功能 / 修复 / 安全`，支持实时轻量中译 + 离线本地领域词典兜底，原始 commit SHA 与英文原文退至悬停提示）；
+  - 在 [plugin/ui/app.html](plugin/ui/app.html) 重构为「🚀 版本更新与上游动态」双层布局：顶部主推「Prism Suite 一键更新」，下方将「上游生态动态」清晰标注为面向进阶用户的可选参考区。
+
 ## 0.5.4 - 2026-11-26
 
 - **修复「账号接力」页签展开手风琴后被压扁裁切且无滚动条的问题**：

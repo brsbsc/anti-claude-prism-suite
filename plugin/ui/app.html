@@ -2026,6 +2026,11 @@
           lastSwitchResult: null,
           memories: [],
           editingQuotaId: '',
+          selfUpdateChecking: false,
+          selfUpdateApplying: false,
+          selfUpdateConfirmRepair: false,
+          selfUpdateInfo: null,
+          selfUpdateResult: null,
           radarLoading: false,
           radarReport: null,
           openSections: {
@@ -3920,6 +3925,9 @@
 
       function formatAccountErrorMessage(errOrMsg, fallback = '操作失败') {
         const msg = String(errOrMsg?.message || errOrMsg || '').trim() || fallback;
+        if (/prism_self_update_(?:check|apply).*not found|permission_denied.*prism_self_update/i.test(msg)) {
+          return '后台 prism-files 插件进程还是旧版（尚未加载一键自更新工具）；请先重启一次 Antigravity 后再点「检查更新 / 一键更新」。';
+        }
         if (/accounts_relaunch_client.*not found|permission_denied.*accounts_relaunch_client/i.test(msg)) {
           return '后台 prism-files 插件进程还是旧版（尚未加载自动重启工具）；请先手动重启一次 Antigravity（或点顶部更新重启），重启后每次切号即可全自动重启生效。';
         }
@@ -4038,7 +4046,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.5.4，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.5.5，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -4329,60 +4337,127 @@
           );
         }
 
+        // Section: Prism Suite 1-Click Self-Update + Human-Readable Upstream Radar
+        const suInfo = st.selfUpdateInfo;
+        const suRes = st.selfUpdateResult;
+        const selfUpdateHighlightsHtml = (suInfo?.highlights || []).length
+          ? `<ul class="radar-list">${suInfo.highlights.map((h) => `<li>${escapeHtml(h)}</li>`).join('')}</ul>`
+          : '';
+        let selfUpdateStatusHtml = '<p class="relay-sub">不想折腾上游代码？直接点「检查更新」即可一键升级到我们已整合测试的最新正式版（自动原地更新插件与扩展，完整保留会话与配置）。</p>';
+        if (st.selfUpdateApplying) {
+          selfUpdateStatusHtml = '<p class="relay-sub">正在下载官方安装包、校验 SHA-256 并静默原地更新插件与扩展，请稍候…</p>';
+        } else if (suRes?.ok) {
+          selfUpdateStatusHtml =
+            `<div class="relay-card is-accent" style="padding:8px 10px;">` +
+              `<div class="relay-card-head">` +
+                `<span class="relay-title">✅ 已更新至 ${escapeHtml(suRes.updatedTo || '最新版本')}</span>` +
+                `<button type="button" class="mini-btn is-primary" data-acc-action="relaunch-now">🚀 立即重启 Antigravity 生效</button>` +
+              `</div>` +
+              `<p class="relay-sub">${escapeHtml(suRes.message || '插件与扩展已原地升级完成，重启 Antigravity 后全面生效。')}</p>` +
+            `</div>`;
+        } else if (suInfo?.ok) {
+          const verPill = suInfo.hasUpdate
+            ? `<span class="pill pill-warn">发现新版本 ${escapeHtml(suInfo.latestTag)}</span>`
+            : `<span class="pill pill-ok">已是最新 v${escapeHtml(suInfo.currentVersion)}</span>`;
+          selfUpdateStatusHtml =
+            `<div class="relay-sub" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">` +
+              `<span>当前 <code>v${escapeHtml(suInfo.currentVersion)}</code> · 最新 <code>${escapeHtml(suInfo.latestTag)}</code></span>` +
+              verPill +
+              (suInfo.publishedAt ? `<span>发布于 ${escapeHtml(suInfo.publishedAt)}</span>` : '') +
+            `</div>` +
+            selfUpdateHighlightsHtml;
+        }
+
+        const selfUpdateBoxHtml =
+          `<div class="relay-card is-account-slot" style="padding:9px 11px;">` +
+            `<div class="relay-card-head">` +
+              `<span class="relay-title">✨ Prism Suite 一键更新（推荐）</span>` +
+              `<div class="search-card-actions">` +
+                `<button type="button" class="mini-btn ${suInfo?.hasUpdate ? '' : 'is-primary'}" data-acc-action="self-update-check" ${st.selfUpdateChecking || st.selfUpdateApplying ? 'disabled' : ''}>${st.selfUpdateChecking ? '检查中…' : '检查更新'}</button>` +
+                (suInfo?.hasUpdate
+                  ? `<button type="button" class="mini-btn is-primary" data-acc-action="self-update-apply" ${st.selfUpdateApplying ? 'disabled' : ''}>${st.selfUpdateApplying ? '更新中…' : `🚀 一键更新到 ${escapeHtml(suInfo.latestTag)}`}</button>`
+                  : (suInfo?.ok
+                    ? (st.selfUpdateConfirmRepair
+                      ? `<button type="button" class="mini-btn is-primary" data-acc-action="self-update-repair" ${st.selfUpdateApplying ? 'disabled' : ''}>确认修复重装 ${escapeHtml(suInfo.latestTag)}</button>` +
+                        `<button type="button" class="mini-btn" data-acc-action="self-update-repair-cancel">取消</button>`
+                      : `<button type="button" class="mini-btn" data-acc-action="self-update-repair-ask" ${st.selfUpdateApplying ? 'disabled' : ''}>修复重装</button>`)
+                    : '')) +
+              `</div>` +
+            `</div>` +
+            selfUpdateStatusHtml +
+          `</div>`;
+
         const rad = st.radarReport;
-        let radarBodyHtml = '<p class="relay-sub">闭环顺序：① 只读侦察（不改代码） → ② 勾选想要融合的功能 → ③ 让 AI 融合后点「同步基线」归绿。</p>';
+        let radarBodyHtml = '<p class="relay-sub">普通用户直接用上方「一键更新」即可；若你想抢先挑选上游某个新特性让 AI 融合，再点「检查上游动向」勾选对应中文条目。</p>';
         if (st.radarLoading) {
-          radarBodyHtml = '<p class="relay-sub">正在比对上游 Release 与关键路径变更…</p>';
+          radarBodyHtml = '<p class="relay-sub">正在比对上游版本并生成中文更新摘要…</p>';
         } else if (rad && Array.isArray(rad.results)) {
+          const renderZhItem = (r, c, checked) => {
+            const tag = escapeHtml(c.tagZh || '更新');
+            const zhText = escapeHtml(c.summaryZh || c.message || '');
+            const rawTip = escapeHtml(`提交 ${c.sha || '-'} · 原文：${c.message || ''}`);
+            return (
+              `<label class="radar-pick-row" title="${rawTip}">` +
+                `<input type="checkbox" class="radar-pick-cb" ${checked ? 'checked ' : ''}data-key="${escapeHtml(r.key)}" data-repo="${escapeHtml(r.repo)}" data-sha="${escapeHtml(c.sha)}" data-msg="${escapeHtml(c.message)}">` +
+                `<span><span class="pill" style="margin-right:4px;font-size:10px;">${tag}</span>${zhText}</span>` +
+              `</label>`
+            );
+          };
           radarBodyHtml = rad.results.map((r) => {
             const lvl = r.impactLevel === 'HIGH'
-              ? '<span class="pill pill-danger">HIGH</span>'
+              ? '<span class="pill pill-danger">有重要更新</span>'
               : r.impactLevel === 'MEDIUM'
-                ? '<span class="pill pill-warn">MEDIUM</span>'
+                ? '<span class="pill pill-warn">有常规更新</span>'
                 : r.impactLevel === 'UP_TO_DATE'
                   ? '<span class="pill pill-ok">已同步</span>'
-                  : `<span class="pill">${escapeHtml(r.impactLevel || '')}</span>`;
+                  : r.impactLevel === 'LOW'
+                    ? '<span class="pill">小幅变动</span>'
+                    : `<span class="pill">${escapeHtml(r.impactLevel || '')}</span>`;
             const compatHtml = (r.compatFixes || []).length
-              ? `<div style="margin-top:3px;"><strong style="font-size:11px;">兼容性 / 安全必看：</strong>` +
-                r.compatFixes.map((c) =>
-                  `<label class="radar-pick-row"><input type="checkbox" class="radar-pick-cb" checked data-key="${escapeHtml(r.key)}" data-repo="${escapeHtml(r.repo)}" data-sha="${escapeHtml(c.sha)}" data-msg="${escapeHtml(c.message)}"><span><code>${escapeHtml(c.sha)}</code> ${escapeHtml(c.message)}</span></label>`
-                ).join('') + `</div>`
+              ? `<div style="margin-top:4px;"><strong style="font-size:11px;">🛡️ 兼容性 / 安全必看：</strong>` +
+                r.compatFixes.map((c) => renderZhItem(r, c, true)).join('') + `</div>`
               : '';
             const featHtml = (r.featureCandidates || []).length
-              ? `<div style="margin-top:3px;"><strong style="font-size:11px;">实用 / 有趣新功能候选：</strong>` +
-                r.featureCandidates.map((c) =>
-                  `<label class="radar-pick-row"><input type="checkbox" class="radar-pick-cb" data-key="${escapeHtml(r.key)}" data-repo="${escapeHtml(r.repo)}" data-sha="${escapeHtml(c.sha)}" data-msg="${escapeHtml(c.message)}"><span><code>${escapeHtml(c.sha)}</code> ${escapeHtml(c.message)}</span></label>`
-                ).join('') + `</div>`
+              ? `<div style="margin-top:4px;"><strong style="font-size:11px;">✨ 实用新功能候选：</strong>` +
+                r.featureCandidates.map((c) => renderZhItem(r, c, false)).join('') + `</div>`
               : '';
             const rowActions = r.hasUpdate
-              ? `<button type="button" class="mini-btn" data-acc-action="radar-copy-picked" data-key="${escapeHtml(r.key)}" data-repo="${escapeHtml(r.repo)}">复制已选融合指令</button>` +
-                `<button type="button" class="mini-btn is-primary" data-acc-action="radar-sync-key" data-key="${escapeHtml(r.key)}">同步基线</button>`
+              ? `<button type="button" class="mini-btn" data-acc-action="radar-copy-picked" data-key="${escapeHtml(r.key)}" data-repo="${escapeHtml(r.repo)}">复制融合指令</button>` +
+                `<button type="button" class="mini-btn is-primary" data-acc-action="radar-sync-key" data-key="${escapeHtml(r.key)}">标为已同步</button>`
               : '';
+            const titleLabel = r.displayNameZh || r.repo;
             return (
               `<div class="radar-item">` +
-                `<div class="relay-card-head"><div class="search-card-meta"><strong>${escapeHtml(r.repo)}</strong>${lvl}</div><div class="search-card-actions">${rowActions}</div></div>` +
-                `<div class="relay-sub">基线 ${escapeHtml(r.baselineTag || r.baselineCommit || '-')} → 最新 ${escapeHtml(r.latestTag || r.latestCommit || '-')} (${escapeHtml(r.license || '')})</div>` +
+                `<div class="relay-card-head"><div class="search-card-meta"><strong title="${escapeHtml(r.repo)}">${escapeHtml(titleLabel)}</strong>${lvl}</div><div class="search-card-actions">${rowActions}</div></div>` +
+                `<div class="relay-sub">当前基线 ${escapeHtml(r.baselineTag || r.baselineCommit || '-')} → 上游最新 ${escapeHtml(r.latestTag || r.latestCommit || '-')} (${escapeHtml(r.license || '')})${r.roleZh ? ` · ${escapeHtml(r.roleZh)}` : ''}</div>` +
                 compatHtml + featHtml +
               `</div>`
             );
           }).join('');
         }
-        const radarBadge = st.radarLoading
-          ? '<span class="pill">检查中</span>'
-          : (rad?.summary?.high ? `<span class="pill pill-danger">HIGH ${rad.summary.high}</span>` : (rad ? '<span class="pill pill-ok">已侦察</span>' : '<span class="pill">待检</span>'));
-        const radarOpen = Boolean(st.openSections?.radar || st.radarLoading || rad);
+        const radarBadge = st.selfUpdateApplying
+          ? '<span class="pill pill-warn">更新中</span>'
+          : suRes?.ok
+            ? `<span class="pill pill-ok">已更新 ${escapeHtml(suRes.updatedTo || '')}</span>`
+            : suInfo?.hasUpdate
+              ? `<span class="pill pill-warn">新版本 ${escapeHtml(suInfo.latestTag)}</span>`
+              : st.radarLoading
+                ? '<span class="pill">检查中</span>'
+                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.5.5</span>');
+        const radarOpen = Boolean(st.openSections?.radar || st.radarLoading || rad || st.selfUpdateChecking || st.selfUpdateApplying || suInfo || suRes);
         parts.push(
           `<details class="relay-accordion" data-sec="radar" ${radarOpen ? 'open' : ''}>` +
             `<summary>` +
-              `<span>🛰️ 上游更新雷达（先选功能再融合 · 同步归绿）</span>` +
+              `<span>🚀 版本更新与上游动态（一键升级 / 进阶参考）</span>` +
               `<span class="relay-acc-summary-right">${radarBadge}<span class="relay-acc-chevron" aria-hidden="true">▸</span></span>` +
             `</summary>` +
             `<div class="relay-acc-body">` +
-              `<div class="relay-card-head">` +
-                `<span class="relay-sub">追踪上游更新并按兼容性/候选功能择优融合</span>` +
+              selfUpdateBoxHtml +
+              `<div class="relay-card-head" style="margin-top:4px;padding-top:6px;border-top:1px dashed var(--color-border-secondary, var(--p-border));">` +
+                `<span class="relay-title" style="font-size:11.5px;">🔭 上游生态动态（进阶参考 · 悬停可看英文原文）</span>` +
                 `<div class="search-card-actions">` +
                   (rad?.markdown ? `<button type="button" class="mini-btn" data-acc-action="radar-copy">复制简报</button>` : '') +
-                  `<button type="button" class="mini-btn is-primary" data-acc-action="radar-check" ${st.radarLoading ? 'disabled' : ''}>${st.radarLoading ? '检查中…' : '检查上游动向'}</button>` +
+                  `<button type="button" class="mini-btn" data-acc-action="radar-check" ${st.radarLoading ? 'disabled' : ''}>${st.radarLoading ? '检查中…' : '检查上游动向'}</button>` +
                 `</div>` +
               `</div>` +
               radarBodyHtml +
@@ -4755,6 +4830,35 @@
             await callServerTool('handoff_memory_remove', { id: btn.dataset.id });
             showToast('已删除该条交接记忆');
             await loadAccountsTab();
+          } else if (act === 'self-update-check') {
+            appState.accounts.selfUpdateChecking = true;
+            appState.accounts.selfUpdateConfirmRepair = false;
+            appState.accounts.openSections.radar = true;
+            renderAccounts();
+            const info = await callServerTool('prism_self_update_check', {});
+            appState.accounts.selfUpdateChecking = false;
+            appState.accounts.selfUpdateInfo = info;
+            renderAccounts();
+            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.5.5'}`);
+          } else if (act === 'self-update-repair-ask') {
+            appState.accounts.selfUpdateConfirmRepair = true;
+            renderAccounts();
+          } else if (act === 'self-update-repair-cancel') {
+            appState.accounts.selfUpdateConfirmRepair = false;
+            renderAccounts();
+          } else if (act === 'self-update-apply' || act === 'self-update-repair') {
+            const isForce = act === 'self-update-repair';
+            appState.accounts.selfUpdateApplying = true;
+            appState.accounts.selfUpdateConfirmRepair = false;
+            appState.accounts.openSections.radar = true;
+            setTopProgress(true);
+            renderAccounts();
+            const res = await callServerTool('prism_self_update_apply', { force: isForce });
+            appState.accounts.selfUpdateApplying = false;
+            setTopProgress(false);
+            if (res && !res.skipped) appState.accounts.selfUpdateResult = res;
+            renderAccounts();
+            showToast(res?.message || `已更新至 ${res?.updatedTo || '最新版本'}，请重启 Antigravity 生效`);
           } else if (act === 'radar-check') {
             appState.accounts.radarLoading = true;
             renderAccounts();
@@ -4762,7 +4866,7 @@
             appState.accounts.radarLoading = false;
             appState.accounts.radarReport = rep;
             renderAccounts();
-            showToast(`上游检查完成：HIGH ${rep?.summary?.high ?? 0} / MEDIUM ${rep?.summary?.medium ?? 0}`);
+            showToast(`上游检查完成：重要更新 ${rep?.summary?.high ?? 0} 项 / 常规更新 ${rep?.summary?.medium ?? 0} 项`);
           } else if (act === 'radar-copy-picked') {
             const key = btn.dataset.key;
             const repo = btn.dataset.repo;
@@ -4787,6 +4891,9 @@
           }
         } catch (err) {
           appState.accounts.radarLoading = false;
+          appState.accounts.selfUpdateChecking = false;
+          appState.accounts.selfUpdateApplying = false;
+          setTopProgress(false);
           showToast(formatAccountErrorMessage(err, '操作失败'), true);
           renderAccounts();
         }
@@ -5460,7 +5567,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.5.4' },
+            appInfo: { name: 'prism-files', version: '0.5.5' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};

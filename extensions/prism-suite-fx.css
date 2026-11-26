@@ -39,9 +39,16 @@
   opacity: 1;
 }
 
-/* Mutual exclusion: fade out Quota Ring cleanly while Border Beam is active or previewing */
+/* Mutual exclusion: fade out Quota Ring during active generation or 3s beam preview; coexist cleanly as inner ring during ambient border beam */
 .ag-ps-quota-ring[data-suppressed="1"] {
   opacity: 0 !important;
+}
+
+.ag-ps-quota-ring[data-coexist="1"][data-visible="1"] {
+  inset: 1px;
+  width: calc(100% - 2px);
+  height: calc(100% - 2px);
+  opacity: 0.78;
 }
 
 .ag-ps-quota-ring svg {

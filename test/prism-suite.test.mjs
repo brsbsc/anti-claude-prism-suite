@@ -33,6 +33,7 @@ import {
   cleanPowerShellError
 } from '../plugin/server/account-vault.mjs';
 import { createAccountManager, parseQuotaText, computeEffectiveQuota, readLocalAntigravityQuotaCache } from '../plugin/server/account-manager.mjs';
+import { localizeCommitLocally, checkPrismSelfUpdate, applyPrismSelfUpdate } from '../plugin/server/upstream-radar.mjs';
 import { createClientRelauncher } from '../plugin/server/relaunch-client.mjs';
 import { createHandoffMemoryStore, redactMemoryText } from '../plugin/server/handoff-memory.mjs';
 import {
@@ -1234,7 +1235,135 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.equal(mainAcc.effectiveQuota.families.claude.pct5h, 100);
     assert.equal(freshAcc.effectiveQuota, null, 'Unmatched email snapshot must never bleed into another account');
 
-    // 5. Static contract checks for persistent module registry, button-scoped focus, bridge ping/pong/ack, and v0.5.2 release consistency
+    // 5. v0.5.5 Chinese commit humanizer + SHA-256 verified self-update (tamper rejection + happy path)
+    const zh1 = localizeCommitLocally('feat(v3.1.9): support dragging and pasting local files & folders in Project composer');
+    assert.equal(zh1.tagZh, '新功能');
+    assert.match(zh1.summaryZh, /拖拽|粘贴|本地文件/);
+    const zh2 = localizeCommitLocally('fix(launcher): extend Windows .lnk helper timeout to 15s and pass full env in CI test');
+    assert.equal(zh2.tagZh, '修复');
+    assert.match(zh2.summaryZh, /快捷方式|超时/);
+
+    const fakeExeBytes = Buffer.from('MZ-fake-prism-installer-payload-v0.9.9');
+    const cryptoMod = await import('node:crypto');
+    const validSha = cryptoMod.createHash('sha256').update(fakeExeBytes).digest('hex');
+    const mkSelfUpdateFetch = (shaText) => async (url) => {
+      if (String(url).includes('/releases/latest')) {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Map(),
+          json: async () => ({
+            tag_name: 'v0.9.9',
+            name: 'v0.9.9',
+            published_at: '2026-11-26T09:00:00Z',
+            html_url: 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/tag/v0.9.9',
+            body: '- **一键更新**：自动校验 SHA-256 并原地升级\n- **上游雷达中文化**：人话中文摘要',
+            assets: [
+              {
+                name: 'Anti-Claude-Prism-Suite-Setup.exe',
+                size: fakeExeBytes.length,
+                browser_download_url: 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/download/v0.9.9/Anti-Claude-Prism-Suite-Setup.exe'
+              },
+              {
+                name: 'Anti-Claude-Prism-Suite-Setup.exe.sha256',
+                size: 80,
+                browser_download_url: 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/download/v0.9.9/Anti-Claude-Prism-Suite-Setup.exe.sha256'
+              }
+            ]
+          })
+        };
+      }
+      if (String(url).endsWith('.sha256')) {
+        return { ok: true, status: 200, arrayBuffer: async () => Buffer.from(shaText, 'utf8') };
+      }
+      return { ok: true, status: 200, arrayBuffer: async () => fakeExeBytes };
+    };
+
+    const chkUpd = await checkPrismSelfUpdate({ currentVersion: '0.5.5', fetchImpl: mkSelfUpdateFetch(`${validSha}  Anti-Claude-Prism-Suite-Setup.exe\n`) });
+    assert.equal(chkUpd.hasUpdate, true);
+    assert.equal(chkUpd.latestTag, 'v0.9.9');
+    assert.equal(chkUpd.highlights.length, 2);
+
+    const lockDir = path.join(tmp, 'upd-lock');
+    const sameVerSkipped = await applyPrismSelfUpdate({
+      currentVersion: '0.9.9',
+      platform: 'win32',
+      lockDir,
+      fetchImpl: mkSelfUpdateFetch(`${validSha}  Anti-Claude-Prism-Suite-Setup.exe\n`),
+      runExecFile: async () => { throw new Error('Should not execute installer when already up to date'); }
+    });
+    assert.equal(sameVerSkipped.ok, true);
+    assert.equal(sameVerSkipped.skipped, true);
+    assert.equal(sameVerSkipped.upToDate, true);
+
+    await assert.rejects(
+      () => applyPrismSelfUpdate({
+        currentVersion: '0.5.5',
+        platform: 'win32',
+        lockDir,
+        fetchImpl: async (url) => {
+          if (String(url).includes('/releases/latest')) return mkSelfUpdateFetch(`${validSha}  Anti-Claude-Prism-Suite-Setup.exe\n`)(url);
+          return { ok: false, status: 302, headers: new Map([['location', 'https://evil.example.com/payload.exe']]) };
+        },
+        runExecFile: async () => ({ stdout: '', stderr: '' })
+      }),
+      (err) => err.code === 'UNTRUSTED_REDIRECT_HOST'
+    );
+
+    await assert.rejects(
+      () => applyPrismSelfUpdate({
+        currentVersion: '0.5.5',
+        platform: 'win32',
+        lockDir,
+        fetchImpl: mkSelfUpdateFetch(`${'0'.repeat(64)}  Anti-Claude-Prism-Suite-Setup.exe\n`),
+        runExecFile: async () => ({ stdout: '', stderr: '' })
+      }),
+      (err) => err.code === 'SHA256_MISMATCH'
+    );
+
+    const execCalls = [];
+    const appliedUpd = await applyPrismSelfUpdate({
+      currentVersion: '0.5.5',
+      platform: 'win32',
+      lockDir,
+      fetchImpl: mkSelfUpdateFetch(`${validSha}  Anti-Claude-Prism-Suite-Setup.exe\n`),
+      runExecFile: async (file, args) => {
+        execCalls.push({ file, args });
+        return { stdout: 'Installed OK', stderr: '' };
+      }
+    });
+    assert.equal(appliedUpd.ok, true);
+    assert.equal(appliedUpd.sha256Verified, true);
+    assert.equal(appliedUpd.updatedTo, 'v0.9.9');
+    assert.deepEqual(execCalls[0].args, ['--silent-install']);
+
+    // Verify WSL2 mode splits safely with --no-wsl (no recursive wsl.exe) + tar entry audit
+    const wslCalls = [];
+    const wslApplied = await applyPrismSelfUpdate({
+      currentVersion: '0.5.5',
+      platform: 'linux',
+      isWsl: true,
+      lockDir,
+      pluginDir: path.join(tmp, 'wsl-plugins'),
+      fetchImpl: mkSelfUpdateFetch(`${validSha}  Anti-Claude-Prism-Suite-Setup.exe\n`),
+      runExecFile: async (file, args) => {
+        wslCalls.push({ file, args });
+        if (file === 'tar' && args[0] === '-tvzf') {
+          return { stdout: '-rw-r--r-- root/root 100 2026-11-26 09:00 repo-v0.9.9/install.mjs\n', stderr: '' };
+        }
+        if (file === 'tar' && args[0] === '-xzf') {
+          const destIdx = args.indexOf('-C') + 1;
+          fs.writeFileSync(path.join(args[destIdx], 'install.mjs'), 'console.log("ok")', 'utf8');
+          return { stdout: '', stderr: '' };
+        }
+        return { stdout: 'OK', stderr: '' };
+      }
+    });
+    assert.equal(wslApplied.ok, true);
+    assert.equal(wslApplied.method, 'wsl-split-safe-update');
+    assert.deepEqual(wslCalls[0].args, ['--silent-install', '--no-wsl']);
+
+    // 6. Static contract checks for persistent module registry, button-scoped focus, self-update, and v0.5.5 release consistency
     const jsSrc = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite.js'), 'utf8');
     const fxSrc = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite-fx.js'), 'utf8');
     const wfSrc = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite-workflow.js'), 'utf8');
@@ -1245,10 +1374,10 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.5.4');
-    assert.equal(pluginJson.version, '0.5.4');
+    assert.equal(pkgJson.version, '0.5.5');
+    assert.equal(pluginJson.version, '0.5.5');
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.5\.4'/);
+    assert.match(jsSrc, /SUITE_VERSION = '0\.5\.5'/);
     assert.match(jsSrc, /window\.__agPrismModules/);
     assert.match(jsSrc, /clearPendingWorkbenchNav/);
     assert.match(fxSrc, /registerPrismModule\('fx', initFxModule\)/);
@@ -1257,7 +1386,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(wfSrc, /registerPrismModule\('workflow', initWorkflowModule\)/);
     assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
     assert.match(jsSrc, /readAntiClaudeQuotaCache/);
-    assert.match(inlineHtml, /version: '0\.5\.4'/);
+    assert.match(inlineHtml, /version: '0\.5\.5'/);
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1272,6 +1401,8 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(appHtml, /quota-fam-chip/);
     assert.match(appHtml, /is-account-slot/);
     assert.match(appHtml, /\.relay-scroll > \*/);
+    assert.match(appHtml, /prism_self_update_check/);
+    assert.match(appHtml, /prism_self_update_apply/);
     assert.match(appHtml, /is-compact-controls/);
     assert.match(appHtml, /btn-preview-copy/);
     assert.match(appHtml, /code-ln/);
@@ -1284,7 +1415,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(appHtml, /expectedEmail/);
     assert.match(csSrc, /PruneObsoletePluginEntries/);
     assert.match(csSrc, /CheckDebugPortShortcutStatus/);
-    assert.match(csSrc, /v0\.5\.4/);
+    assert.match(csSrc, /v0\.5\.5/);
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
   } finally {

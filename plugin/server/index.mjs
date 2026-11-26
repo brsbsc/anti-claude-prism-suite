@@ -28,7 +28,7 @@ import { createAccountManager } from './account-manager.mjs';
 import { resolveSafeExecCwd, resolveWslInteropEnv } from './account-vault.mjs';
 import { createClientRelauncher } from './relaunch-client.mjs';
 import { createHandoffMemoryStore } from './handoff-memory.mjs';
-import { checkUpstreams, renderMarkdownReport, syncUpstreamBaseline } from './upstream-radar.mjs';
+import { checkUpstreams, renderMarkdownReport, syncUpstreamBaseline, checkPrismSelfUpdate, applyPrismSelfUpdate } from './upstream-radar.mjs';
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
@@ -38,7 +38,7 @@ const PLUGIN_ROOT = path.resolve(__dirname, '..');
 export const APP_URI = 'ui://prism-files/app.html';
 export const INLINE_URI = 'ui://prism-files/inline.html';
 export const APP_MIME_TYPE = 'text/html;profile=mcp-app';
-const SERVER_INFO = { name: 'prism-files', version: '0.5.4' };
+const SERVER_INFO = { name: 'prism-files', version: '0.5.5' };
 const MAX_TEXT_PREVIEW_BYTES = 256 * 1024;
 const MAX_IMAGE_PREVIEW_BYTES = 4 * 1024 * 1024;
 const MAX_SAVE_BYTES = 512 * 1024;
@@ -2688,6 +2688,23 @@ export function createPrismFilesServer({
         }
       },
       _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'prism_self_update_check',
+      description: 'App-only: check latest official Anti-Claude Prism Suite GitHub Release version and highlights',
+      inputSchema: { type: 'object', properties: {} },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'prism_self_update_apply',
+      description: 'App-only: download SHA-256 verified official Anti-Claude Prism Suite release and apply in-place update',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          force: { type: 'boolean' }
+        }
+      },
+      _meta: { ui: { visibility: ['app'] } }
     }
   ];
 
@@ -3154,6 +3171,30 @@ export function createPrismFilesServer({
       return {
         content: [{ type: 'text', text: `已同步基线: ${synced.updatedKeys.join(', ') || '(无变更)'}` }],
         structuredContent: synced
+      };
+    }
+
+    if (name === 'prism_self_update_check') {
+      const info = await checkPrismSelfUpdate({
+        currentVersion: SERVER_INFO.version,
+        fetchImpl: upstreamFetch || globalThis.fetch
+      });
+      return {
+        content: [{ type: 'text', text: info.hasUpdate ? `发现新版本 ${info.latestTag}` : `当前已是最新版本 v${info.currentVersion}` }],
+        structuredContent: info
+      };
+    }
+
+    if (name === 'prism_self_update_apply') {
+      const res = await applyPrismSelfUpdate({
+        currentVersion: SERVER_INFO.version,
+        force: Boolean(args.force),
+        pluginDir: path.dirname(PLUGIN_ROOT),
+        fetchImpl: upstreamFetch || globalThis.fetch
+      });
+      return {
+        content: [{ type: 'text', text: res.message || `已更新至 ${res.updatedTo}` }],
+        structuredContent: res
       };
     }
 

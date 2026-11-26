@@ -66,10 +66,17 @@ jobs:
             dist/Anti-Claude-Prism-Suite-Setup.exe
             dist/Anti-Claude-Prism-Suite-Setup.exe.sha256
 
+      - name: Extract Chinese changelog section for Release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          node -e "const fs=require('fs');const tag=(process.env.GITHUB_REF_NAME||'').replace(/^v/i,'');const sec=fs.readFileSync('CHANGELOG.md','utf8').split(/^## /m).find(s=>s.startsWith(tag+' ')||s.startsWith(tag+'\r')||s.startsWith(tag+'\n'));const body=sec?sec.split(/\r?\n/).slice(1).join('\n').trim():'Anti-Claude Prism Suite '+process.env.GITHUB_REF_NAME;fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/release-notes.md',body+'\n','utf8');"
+
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          body_path: dist/release-notes.md
           generate_release_notes: true
           files: |
             dist/Anti-Claude-Prism-Suite-Setup.exe

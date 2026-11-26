@@ -780,8 +780,11 @@
     function syncQuotaRingSuppression(nowMs) {
       if (!qRingWrap) return;
       const prefs = getPrefs();
-      const beamActive = isBeamTargetActive(prefs, nowMs);
-      setAttr(qRingWrap, 'data-suppressed', beamActive ? '1' : '');
+      const preview = isBeamPreviewActive(nowMs);
+      const suppressHard = preview || (Boolean(prefs.borderBeam) && lastBusy);
+      const coexistAmbient = !suppressHard && Boolean(prefs.borderBeam) && (prefs.borderBeamMode || 'always') === 'always' && windowFocused;
+      setAttr(qRingWrap, 'data-suppressed', suppressHard ? '1' : '');
+      setAttr(qRingWrap, 'data-coexist', coexistAmbient ? '1' : '');
     }
 
     function syncQuotaRing() {
@@ -1635,7 +1638,10 @@
           // Leave clear gutter to the left of both the vertical scrollbar track and any adjacent split-pane divider
           const scrollbarW = Math.max(14, Math.round((vp.offsetWidth || 0) - (vp.clientWidth || 0)));
           const gutter = rect.width < 420 ? 10 : 16;
-          const rightPx = Math.max(28, Math.round(window.innerWidth - rect.right + scrollbarW + gutter));
+          const minRight = scrollbarW + gutter;
+          const maxRight = Math.max(minRight, Math.round(window.innerWidth - rect.left - 48));
+          const desired = Math.round(window.innerWidth - rect.right + scrollbarW + gutter);
+          const rightPx = Math.max(minRight, Math.min(maxRight, desired));
           railEl.style.right = `${rightPx}px`;
           return;
         }
@@ -1685,6 +1691,9 @@
           });
         });
         railVpRO.observe(vp);
+        if (vp.parentElement && vp.parentElement !== document.body) {
+          railVpRO.observe(vp.parentElement);
+        }
       }
     }
 
