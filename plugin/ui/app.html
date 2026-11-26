@@ -601,6 +601,26 @@
       overflow-y: auto;
       overflow-x: hidden;
       padding: 4px 6px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
+    }
+
+    .list-scroll::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+
+    .list-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .list-scroll::-webkit-scrollbar-thumb {
+      background: rgba(128, 128, 128, 0.32);
+      border-radius: 999px;
+    }
+
+    .list-scroll::-webkit-scrollbar-thumb:hover {
+      background: rgba(128, 128, 128, 0.52);
     }
 
     .item-list {
@@ -1385,10 +1405,14 @@
     }
 
     .relay-scroll {
-      padding: 10px;
+      padding: 10px 10px 22px;
       display: flex;
       flex-direction: column;
       gap: 10px;
+    }
+
+    .relay-scroll > * {
+      flex-shrink: 0;
     }
 
     .relay-scroll.is-focus-flash {
@@ -4014,7 +4038,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.5.3，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.5.4，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -5436,7 +5460,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.5.3' },
+            appInfo: { name: 'prism-files', version: '0.5.4' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};
