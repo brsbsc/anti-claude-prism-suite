@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.7 - 2026-11-26
+
+- **彻底修复切换账号 / 重启客户端后 `✦ 棱镜` 扩展设置丢失的问题（跨端口三层持久化 + 自动找回旧设置）**：
+  - 根因：Antigravity 每次重启都会绑定新的本地随机端口，而浏览器 `localStorage` 按 `协议 + 主机 + 端口` 严格隔离，导致重启换端口后 `localStorage['ag_prism_suite_prefs_v1']` 为空并退回默认开关；
+  - [extensions/prism-suite.js](extensions/prism-suite.js) 新增全量 38 项配置白名单归一化器、`_ts` 时间戳比对与跨端口共享的宿主级 Cookie 镜像（`ag_prism_prefs_v1`，RFC 6265 同主机跨端口互通、首屏 `0ms` 同步无闪烁），并支持 `window.__agPrismDiskPrefs` / `hydrateDiskPrefs` 磁盘种子回填；同时加固 `registerDefaults` 类型自愈与像素伙伴/思考中译子开关的事件广播；
+  - [plugin/server/account-manager.mjs](plugin/server/account-manager.mjs) 新增只读 `readLocalPrismPrefsFromLevelDb` 与 `syncPrismPrefsSeed`：从本机 `Local Storage/leveldb` 自动找回历史端口已保存的棱镜设置落盘至 `ui-prefs.json`，并在切号准备重启前自动生成无敏感信息的 `prism-suite-00-prefs.js` 种子，卸载时自动清理零残留。
+- **修复全仓关联体验疏漏（6 项）**：
+  - **跨端口「返回上次会话」与重启落首页回跳条**：[extensions/prism-suite-fx.js](extensions/prism-suite-fx.js) 将最近会话路径同步至跨端口短效 Cookie；切号重启后落在空白欢迎首页 `/` 时顶部提供一键「返回上次会话 ↩」（不触发自动跳转倒计时，点新建对话不误弹）；
+  - **`✦ 棱镜` 顶部账号胶囊实时回退与防旧号残留**：未打开工作台时自动回退展示当前在线账号邮箱、在线绿点与套餐胶囊，切号后自动屏蔽未刷新的旧账号摘要；
+  - **修复 `Antigravity Starter Quota` 套餐名被截断为 `Quot`**：存储上限统一放宽至 48 字符，界面精简展示为 `Starter`（悬停查看完整名称）；
+  - **5h / 7d 低额度免打扰按账号邮箱隔离**：A 账号点击关闭提醒不再屏蔽切过去后的 B 账号预警；
+  - **客户端重启器保留显式调试端口号**：[plugin/server/relaunch-client.mjs](plugin/server/relaunch-client.mjs) 原样保留命令行中的 `--remote-debugging-port=<N>`（未指定具体端口时默认 `0`）。
+
 ## 0.5.6 - 2026-11-26
 
 - **修复切号并完成自动重启后，顶部仍残留「待重启生效」提示横幅**：

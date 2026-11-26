@@ -32,9 +32,20 @@ import {
   resolveWslInteropEnv,
   cleanPowerShellError
 } from '../plugin/server/account-vault.mjs';
-import { createAccountManager, parseQuotaText, computeEffectiveQuota, readLocalAntigravityQuotaCache } from '../plugin/server/account-manager.mjs';
+import {
+  createAccountManager,
+  parseQuotaText,
+  computeEffectiveQuota,
+  readLocalAntigravityQuotaCache,
+  sanitizePrismUiPrefs,
+  readLocalPrismPrefsFromLevelDb
+} from '../plugin/server/account-manager.mjs';
 import { localizeCommitLocally, checkPrismSelfUpdate, applyPrismSelfUpdate } from '../plugin/server/upstream-radar.mjs';
-import { createClientRelauncher } from '../plugin/server/relaunch-client.mjs';
+import {
+  createClientRelauncher,
+  buildWinRelaunchWorkerScript,
+  resolveLocalAntigravityTarget
+} from '../plugin/server/relaunch-client.mjs';
 import { createHandoffMemoryStore, redactMemoryText } from '../plugin/server/handoff-memory.mjs';
 import {
   UPSTREAM_SCHEMA_VERSION,
@@ -1385,19 +1396,24 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.5.6');
-    assert.equal(pluginJson.version, '0.5.6');
+    assert.equal(pkgJson.version, '0.5.7');
+    assert.equal(pluginJson.version, '0.5.7');
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.5\.6'/);
+    assert.match(jsSrc, /SUITE_VERSION = '0\.5\.7'/);
+    assert.match(jsSrc, /COOKIE_PREFS_KEY = 'ag_prism_prefs_v1'/);
+    assert.match(jsSrc, /hydrateDiskPrefs/);
+    assert.match(jsSrc, /formatShortTierName/);
     assert.match(jsSrc, /window\.__agPrismModules/);
     assert.match(jsSrc, /clearPendingWorkbenchNav/);
     assert.match(fxSrc, /registerPrismModule\('fx', initFxModule\)/);
+    assert.match(fxSrc, /LAST_CONV_COOKIE_KEY = 'ag_prism_last_conv_v1'/);
+    assert.match(fxSrc, /quotaDismissScopeKey/);
     assert.match(fxSrc, /borderBeamMode/);
     assert.match(fxSrc, /scrollbarW/);
     assert.match(wfSrc, /registerPrismModule\('workflow', initWorkflowModule\)/);
     assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
     assert.match(jsSrc, /readAntiClaudeQuotaCache/);
-    assert.match(inlineHtml, /version: '0\.5\.6'/);
+    assert.match(inlineHtml, /version: '0\.5\.7'/);
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1426,9 +1442,152 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(appHtml, /expectedEmail/);
     assert.match(csSrc, /PruneObsoletePluginEntries/);
     assert.match(csSrc, /CheckDebugPortShortcutStatus/);
-    assert.match(csSrc, /v0\.5\.6/);
+    assert.match(csSrc, /prism-suite-00-prefs\.js/);
+    assert.match(csSrc, /v0\.5\.7/);
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('v0.5.7 cross-port UI prefs persistence, compaction guard, Starter tier non-truncation, and debugPort preservation', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-v057-'));
+  try {
+    // 1. Whitelist normalization across all 38 keys + prototype/unknown key rejection
+    const clean = sanitizePrismUiPrefs({
+      lightPalette: 'sage',
+      darkPalette: 'marine',
+      mascotCountMode: 'agents',
+      mascotMinCount: 99,
+      mascotSize: 25,
+      borderBeam: true,
+      thinkingOrb: true,
+      bubbleTintStrength: 5,
+      i18nExtraMode: 'zh-CN',
+      evilSecret: 'should-strip',
+      _ts: 1795658000123
+    });
+    assert.equal(clean.lightPalette, 'sage');
+    assert.equal(clean.darkPalette, 'marine');
+    assert.equal(clean.mascotCountMode, 'agents');
+    assert.equal(clean.mascotMinCount, 3);
+    assert.equal(clean.mascotSize, 26);
+    assert.equal(clean.borderBeam, true);
+    assert.equal(clean.thinkingOrb, true);
+    assert.equal(clean.bubbleTintStrength, 10);
+    assert.equal(clean.i18nExtraMode, 'zh-CN');
+    assert.equal('evilSecret' in clean, false);
+    assert.equal(clean._ts, 1795658000123);
+    assert.equal(clean._tsOrigin, 'explicit');
+    assert.equal(sanitizePrismUiPrefs({ evilOnly: true }), null);
+
+    // 2. LevelDB prefs recovery + compaction guard + odd-byte UTF-16LE alignment + multi-dir global winner
+    const ldbDirOld = path.join(tmp, 'leveldb-old');
+    const ldbDir = path.join(tmp, 'leveldb-active');
+    fs.mkdirSync(ldbDirOld, { recursive: true });
+    fs.mkdirSync(ldbDir, { recursive: true });
+
+    // Older profile dir with legacy record must NOT cause early break over active profile dir
+    fs.writeFileSync(
+      path.join(ldbDirOld, '000001.log'),
+      `ag_prism_suite_prefs_v1\x00\x01${JSON.stringify({ lightPalette: 'crystal', borderBeam: false })}`,
+      'latin1'
+    );
+
+    const logFile = path.join(ldbDir, '000044.log');
+    const explicitPayload = JSON.stringify({
+      lightPalette: 'alabaster',
+      mascotCountMode: 'agents',
+      mascotMinCount: 3,
+      borderBeam: true,
+      alwaysOutlineRail: true,
+      _ts: 1795658000000
+    });
+    // Place UTF-16LE record at an ODD byte offset (1 byte prefix 0x7f) to verify phase-aligned decoding
+    const oddUtf16Record = Buffer.concat([
+      Buffer.from([0x7f]),
+      Buffer.from(`ag_prism_suite_prefs_v1\x00${explicitPayload}`, 'utf16le')
+    ]);
+    const quotaPayload = JSON.stringify({
+      ts: 1795658005000,
+      accountKey: 'starter@example.com|sub',
+      tierName: 'Antigravity Starter Quota',
+      groups: [{ displayName: 'Gemini', buckets: [{ window: '5h', remainingFraction: 0.75 }] }]
+    });
+    const quotaBuf = Buffer.from(`\x00ag_claude_ux_quota_cache_v1\x00\x01${quotaPayload}`, 'latin1');
+    fs.writeFileSync(logFile, Buffer.concat([oddUtf16Record, quotaBuf]));
+    const oldTime = new Date(1795658000000);
+    fs.utimesSync(logFile, oldTime, oldTime);
+
+    // Simulate Chromium compacting an ancient un-timestamped default record into a brand-new .ldb with newer mtime
+    const compactedLdb = path.join(ldbDir, '000099.ldb');
+    const legacyDefaultPayload = JSON.stringify({
+      lightPalette: 'default',
+      mascotCountMode: 'fixed',
+      borderBeam: false
+    });
+    fs.writeFileSync(compactedLdb, `_https://127.0.0.1:33885\x00\x01ag_prism_suite_prefs_v1\x00\x01${legacyDefaultPayload}`, 'latin1');
+    const newerCompactedTime = new Date(1795659999000);
+    fs.utimesSync(compactedLdb, newerCompactedTime, newerCompactedTime);
+
+    const scannedPrefs = readLocalPrismPrefsFromLevelDb({ localStorageDir: ldbDir, platform: 'linux', homeDir: tmp });
+    assert.equal(scannedPrefs.found, true);
+    assert.equal(scannedPrefs.hasExplicitTs, true);
+    assert.equal(scannedPrefs.prefs.lightPalette, 'alabaster');
+    assert.equal(scannedPrefs.prefs.mascotCountMode, 'agents');
+    assert.equal(scannedPrefs.prefs.borderBeam, true);
+
+    // Verify 25-char "Antigravity Starter Quota" is NOT truncated to "Quot"
+    const quotaScan = readLocalAntigravityQuotaCache({ localStorageDir: ldbDir, platform: 'linux', homeDir: tmp });
+    assert.equal(quotaScan.byEmail.get('starter@example.com')?.tierName, 'Antigravity Starter Quota');
+
+    // 3. Seed generation only into installed extension dirs & clean removal on uninstall
+    const userDir = path.join(tmp, 'anti-claude-user');
+    const bareExtDir = path.join(tmp, 'bare-uninstalled-ext');
+    fs.mkdirSync(bareExtDir, { recursive: true });
+    installExtensions({ userDir });
+    const installedExtDir = path.join(userDir, 'extensions');
+
+    const mgr = createAccountManager({
+      homeDir: tmp,
+      stateDir: path.join(tmp, 'state'),
+      localStorageDir: ldbDir,
+      extensionDirs: [installedExtDir, bareExtDir],
+      platform: 'linux'
+    });
+    const seedRes = mgr.syncPrismPrefsSeed({ writeExtensionSeed: true });
+    assert.equal(seedRes.ok, true);
+    assert.equal(seedRes.found, true);
+    assert.equal(fs.existsSync(path.join(tmp, 'state', 'ui-prefs.json')), true);
+    assert.equal(fs.existsSync(path.join(installedExtDir, 'prism-suite-00-prefs.js')), true);
+    assert.equal(fs.existsSync(path.join(bareExtDir, 'prism-suite-00-prefs.js')), false, 'Must not drop seed in bare uninstalled dir');
+    const seedSrc = fs.readFileSync(path.join(installedExtDir, 'prism-suite-00-prefs.js'), 'utf8');
+    assert.match(seedSrc, /window\.__agPrismDiskPrefs = seed/);
+    assert.match(seedSrc, /hydrateDiskPrefs/);
+
+    const uninst = uninstallExtensions({ userDir });
+    assert.equal(uninst.removed.length, 7);
+    assert.equal(fs.existsSync(path.join(installedExtDir, 'prism-suite-00-prefs.js')), false);
+
+    // 4. Relauncher preserves explicit --remote-debugging-port=<N> and defaults to 0 when unspecified
+    const defaultScript = buildWinRelaunchWorkerScript({ targetPath: 'C:\\App\\Antigravity.exe', preserveDebugPort: true });
+    assert.match(defaultScript, /--remote-debugging-port=0/);
+    const customPortScript = buildWinRelaunchWorkerScript({ targetPath: 'C:\\App\\Antigravity.exe', preserveDebugPort: true, debugPort: '9222' });
+    assert.match(customPortScript, /--remote-debugging-port=9222/);
+
+    const resolvedCustom = resolveLocalAntigravityTarget({
+      platform: 'win32',
+      isWsl: false,
+      homeDir: tmp,
+      existsSync: () => false,
+      runCmd: () => ({
+        status: 0,
+        stdout: JSON.stringify({ ok: true, targetPath: 'C:\\App\\Antigravity.exe', hasDebug: true, debugPort: '9333', hasAntiClaude: true }),
+        stderr: ''
+      })
+    });
+    assert.deepEqual(resolvedCustom.launchArgs, ['--remote-debugging-port=9333']);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

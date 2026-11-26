@@ -12,8 +12,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Anti-Claude Prism Suite 一键安装器")]
 [assembly: AssemblyDescription("Anti-Claude Prism Suite & Antigravity prism-files MCP App Installer")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.5.6.0")]
-[assembly: AssemblyFileVersion("0.5.6.0")]
+[assembly: AssemblyVersion("0.5.7.0")]
+[assembly: AssemblyFileVersion("0.5.7.0")]
 
 namespace AntiClaudePrismSuiteInstaller
 {
@@ -51,6 +51,11 @@ namespace AntiClaudePrismSuiteInstaller
             "prism-suite-fx.js",
             "prism-suite-workflow.css",
             "prism-suite-workflow.js"
+        };
+
+        private static readonly string[] GeneratedExtensionFileNames = new string[]
+        {
+            "prism-suite-00-prefs.js"
         };
 
         public static string GetDefaultExtensionsDir()
@@ -249,6 +254,15 @@ namespace AntiClaudePrismSuiteInstaller
             }
 
             string resolvedDir = Path.GetFullPath(targetExtDir.Trim());
+            for (int g = 0; g < GeneratedExtensionFileNames.Length; g++)
+            {
+                try
+                {
+                    File.Delete(Path.Combine(resolvedDir, GeneratedExtensionFileNames[g]));
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
             int removed = 0;
             for (int i = 0; i < ExtensionFileNames.Length; i++)
             {
@@ -751,7 +765,7 @@ namespace AntiClaudePrismSuiteInstaller
 
         private void InitializeUi()
         {
-            Text = "Anti-Claude Prism Suite 一键安装器 v0.5.6";
+            Text = "Anti-Claude Prism Suite 一键安装器 v0.5.7";
             Size = new Size(740, 660);
             MinimumSize = new Size(660, 580);
             StartPosition = FormStartPosition.CenterScreen;
@@ -769,7 +783,7 @@ namespace AntiClaudePrismSuiteInstaller
             header.Paint += PaintHeaderAccent;
 
             Label lblTitle = new Label();
-            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.5.6";
+            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.5.7";
             lblTitle.ForeColor = Color.White;
             lblTitle.Font = new Font("Microsoft YaHei UI", 13.5f, FontStyle.Bold);
             lblTitle.AutoSize = true;

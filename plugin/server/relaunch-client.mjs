@@ -68,10 +68,22 @@ const PS_PROBE_TARGET_SCRIPT = String.raw`
 $ErrorActionPreference = 'SilentlyContinue'
 $target = ''
 $hasDebug = $false
+$debugPort = ''
 $mainProc = Get-CimInstance Win32_Process -Filter "Name='Antigravity.exe'" | Where-Object { $_.ExecutablePath -and ($_.CommandLine -notmatch '--type=') } | Select-Object -First 1
 if ($mainProc) {
   $target = [string]$mainProc.ExecutablePath
-  if ([string]$mainProc.CommandLine -match '--remote-debugging-port') { $hasDebug = $true }
+  $cmdStr = [string]$mainProc.CommandLine
+  if ($cmdStr -match '--remote-debugging-port') {
+    $hasDebug = $true
+    $portPattern = '(?<!\S)(?:"--remote-debugging-port=(?<p>[0-9]{1,5})"|--remote-debugging-port=(?:"(?<p>[0-9]{1,5})"|(?<p>[0-9]{1,5}))|--remote-debugging-port\s+(?<p>[0-9]{1,5}))(?=\s|$)'
+    $portMatch = [regex]::Match($cmdStr, $portPattern)
+    if ($portMatch.Success) {
+      $portNumber = [int]$portMatch.Groups['p'].Value
+      if ($portNumber -ge 1 -and $portNumber -le 65535) {
+        $debugPort = [string]$portNumber
+      }
+    }
+  }
 }
 if (-not $target) {
   $cands = @(
@@ -86,18 +98,30 @@ if (-not $target) {
 }
 $antiClaudeDir = Join-Path $env:USERPROFILE '.gemini\antigravity\anti-claude'
 $hasAntiClaude = Test-Path -LiteralPath $antiClaudeDir -PathType Container
-Write-Output (ConvertTo-Json -Compress @{ ok = $true; targetPath = $target; hasDebug = [bool]$hasDebug; hasAntiClaude = [bool]$hasAntiClaude })
+Write-Output (ConvertTo-Json -Compress @{ ok = $true; targetPath = $target; hasDebug = [bool]$hasDebug; debugPort = $debugPort; hasAntiClaude = [bool]$hasAntiClaude })
 `;
 
 const PS_PROBE_TARGET_ENCODED = Buffer.from(PS_PROBE_TARGET_SCRIPT, 'utf16le').toString('base64');
 
+function normalizeDebugPortFlag(debugPort) {
+  const raw = String(debugPort ?? '').trim();
+  if (/^\d{1,5}$/.test(raw)) {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n >= 0 && n <= 65535) {
+      return `--remote-debugging-port=${n}`;
+    }
+  }
+  return '--remote-debugging-port=0';
+}
+
 export function buildWinRelaunchWorkerScript({
   targetPath,
   preserveDebugPort = true,
+  debugPort = '',
   delayMs = 650
 } = {}) {
   const safeDelay = Math.max(250, Math.min(5000, Math.round(Number(delayMs) || 650)));
-  const launchArgLine = preserveDebugPort ? '--remote-debugging-port=0' : '';
+  const launchArgLine = preserveDebugPort ? normalizeDebugPortFlag(debugPort) : '';
   return [
     "$ErrorActionPreference = 'SilentlyContinue'",
     `Start-Sleep -Milliseconds ${safeDelay}`,
@@ -206,14 +230,17 @@ export function resolveLocalAntigravityTarget({
     const parsed = JSON.parse(line);
     const targetPath = String(parsed.targetPath || '').trim();
     if (!targetPath) {
-      return { found: false, targetPath: '', preserveDebugPort: false, launchArgs: [] };
+      return { found: false, targetPath: '', preserveDebugPort: false, debugPort: '', launchArgs: [] };
     }
     const preserveDebugPort = Boolean(parsed.hasDebug || parsed.hasAntiClaude || antiClaudeLocal);
+    const debugPort = typeof parsed.debugPort === 'string' ? parsed.debugPort.trim() : '';
+    const debugFlag = normalizeDebugPortFlag(debugPort);
     return {
       found: true,
       targetPath,
       preserveDebugPort,
-      launchArgs: preserveDebugPort ? ['--remote-debugging-port=0'] : []
+      debugPort,
+      launchArgs: preserveDebugPort ? [debugFlag] : []
     };
   }
 
@@ -224,11 +251,12 @@ export function resolveLocalAntigravityTarget({
           found: true,
           targetPath: candidate,
           preserveDebugPort: antiClaudeLocal,
+          debugPort: '',
           launchArgs: antiClaudeLocal ? ['--remote-debugging-port=0'] : []
         };
       }
     }
-    return { found: false, targetPath: '', preserveDebugPort: false, launchArgs: [] };
+    return { found: false, targetPath: '', preserveDebugPort: false, debugPort: '', launchArgs: [] };
   }
 
   if (platform === 'linux') {
@@ -244,14 +272,15 @@ export function resolveLocalAntigravityTarget({
           found: true,
           targetPath: candidate,
           preserveDebugPort: antiClaudeLocal,
+          debugPort: '',
           launchArgs: antiClaudeLocal ? ['--remote-debugging-port=0'] : []
         };
       }
     }
-    return { found: false, targetPath: '', preserveDebugPort: false, launchArgs: [] };
+    return { found: false, targetPath: '', preserveDebugPort: false, debugPort: '', launchArgs: [] };
   }
 
-  return { found: false, targetPath: '', preserveDebugPort: false, launchArgs: [] };
+  return { found: false, targetPath: '', preserveDebugPort: false, debugPort: '', launchArgs: [] };
 }
 
 export function createClientRelauncher(options = {}) {
@@ -296,6 +325,7 @@ export function createClientRelauncher(options = {}) {
       const workerScript = buildWinRelaunchWorkerScript({
         targetPath: targetInfo.targetPath,
         preserveDebugPort: targetInfo.preserveDebugPort,
+        debugPort: targetInfo.debugPort || '',
         delayMs
       });
       const workerEncoded = Buffer.from(workerScript, 'utf16le').toString('base64');
@@ -335,8 +365,9 @@ export function createClientRelauncher(options = {}) {
     }
 
     const delaySec = (Math.max(250, Math.min(5000, Number(delayMs) || 650)) / 1000).toFixed(2);
+    const unixDebugFlag = normalizeDebugPortFlag(targetInfo.debugPort);
     if (platform === 'darwin') {
-      const argsArg = targetInfo.preserveDebugPort ? ' --args --remote-debugging-port=0' : '';
+      const argsArg = targetInfo.preserveDebugPort ? ` --args ${unixDebugFlag}` : '';
       const script = [
         `sleep ${delaySec}`,
         'osascript -e \'tell application "Antigravity" to quit\' >/dev/null 2>&1 || true',
@@ -358,7 +389,7 @@ export function createClientRelauncher(options = {}) {
     }
 
     if (platform === 'linux') {
-      const argsPart = targetInfo.preserveDebugPort ? ' --remote-debugging-port=0' : '';
+      const argsPart = targetInfo.preserveDebugPort ? ` ${unixDebugFlag}` : '';
       const script = [
         `sleep ${delaySec}`,
         'pkill -TERM -x antigravity >/dev/null 2>&1 || true',

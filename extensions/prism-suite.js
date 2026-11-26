@@ -12,10 +12,11 @@
     try { window.__agPrismSuiteDispose(); } catch {}
   }
 
-  const SUITE_VERSION = '0.5.6';
+  const SUITE_VERSION = '0.5.7';
   const REPO_RELEASES_API = 'https://api.github.com/repos/wushuai0802/anti-claude-prism-suite/releases/latest';
   const REPO_RELEASES_URL = 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest';
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';
+  const COOKIE_PREFS_KEY = 'ag_prism_prefs_v1';
   const LIVE_QUOTA_STORAGE_KEY = 'ag_prism_live_quota_v1';
   const ACCOUNT_SUMMARY_STORAGE_KEY = 'ag_prism_account_summary_v1';
   const ANTI_CLAUDE_QUOTA_CACHE_KEY = 'ag_claude_ux_quota_cache_v1';
@@ -37,9 +38,145 @@
     return Math.max(1, Math.min(3, n));
   }
 
+  function clampRangeInt(val, min, max, fallback) {
+    const n = Math.round(Number(val));
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(min, Math.min(max, n));
+  }
+
+  const enumValidator = (allowed) => {
+    const set = new Set(allowed);
+    return (v) => (typeof v === 'string' && set.has(v) ? v : undefined);
+  };
+  const boolValidator = (v) => (typeof v === 'boolean' ? v : undefined);
+
+  // Full 38-key schema across prism-suite, prism-suite-fx, and prism-suite-workflow
+  const PREF_VALIDATORS = Object.freeze({
+    lightPalette: enumValidator(['default', 'crystal', 'alabaster', 'sage']),
+    darkPalette: enumValidator(['default', 'obsidian', 'basalt', 'marine']),
+    outline: boolValidator,
+    usageExtra: boolValidator,
+    inkStream: boolValidator,
+    mascot: boolValidator,
+    mascotCountMode: enumValidator(['fixed', 'agents']),
+    mascotMinCount: (v) => (Number.isFinite(Number(v)) ? clampMascotMinCount(v) : undefined),
+    mascotStyle: enumValidator(['trio', 'crab', 'cat']),
+    mascotRoam: boolValidator,
+    mascotVibe: enumValidator(['calm', 'lively']),
+    mascotSize: (v) => (Number.isFinite(Number(v)) ? clampMascotSize(v) : undefined),
+    thoughtMode: enumValidator(['off', 'bilingual', 'immersive']),
+    borderBeam: boolValidator,
+    borderBeamMode: enumValidator(['always', 'busy']),
+    borderBeamPalette: enumValidator(['theme', 'gemini', 'aurora', 'prism', 'neon', 'quota']),
+    quotaRing: boolValidator,
+    quotaRingPeriod: enumValidator(['auto', 'weekly', '5h']),
+    thinkingOrb: boolValidator,
+    thinkingOrbMode: enumValidator(['both', 'replace']),
+    bubbleTint: boolValidator,
+    bubbleTintPreset: enumValidator(['accent', 'sky', 'emerald', 'amber', 'violet']),
+    bubbleTintStrength: (v) => (Number.isFinite(Number(v)) ? clampRangeInt(v, 10, 100, 22) : undefined),
+    compactLayout: boolValidator,
+    unreadBadge: boolValidator,
+    sidebarSessions: enumValidator(['default', '10', 'all']),
+    keepOverviewOpen: boolValidator,
+    alwaysOutlineRail: boolValidator,
+    switchReturnHelper: boolValidator,
+    switchAutoReturn: boolValidator,
+    autoDismissOnboarding: boolValidator,
+    quotaHandoffAlert: boolValidator,
+    imageContextMenu: boolValidator,
+    cleanCopy: boolValidator,
+    sshPaste: boolValidator,
+    i18nExtraMode: enumValidator(['off', 'zh-CN', 'zh-TW', 'en']),
+    inlineEditHelper: boolValidator,
+    sessionFork: boolValidator
+  });
+
+  const MIN_USER_TS = 1_700_000_000_000;
+  const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+
+  function canUseHostCookie() {
+    try {
+      return typeof window === 'object' && Boolean(window.location) && /^https?:$/i.test(window.location.protocol || '');
+    } catch {
+      return false;
+    }
+  }
+
+  function normalizePrefValue(key, val) {
+    if (!hasOwn(PREF_VALIDATORS, key) || val === undefined || val === null) return undefined;
+    try {
+      return PREF_VALIDATORS[key](val);
+    } catch {
+      return undefined;
+    }
+  }
+
+  function sanitizePrefsCandidate(raw) {
+    if (typeof raw === 'string') {
+      try { raw = JSON.parse(raw); } catch { return null; }
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const clean = {};
+    let count = 0;
+    for (const k of Object.keys(PREF_VALIDATORS)) {
+      if (!hasOwn(raw, k)) continue;
+      const norm = normalizePrefValue(k, raw[k]);
+      if (norm !== undefined) {
+        clean[k] = norm;
+        count++;
+      }
+    }
+    if (count === 0) return null;
+    const rawTs = Number(raw._ts);
+    const isExplicit = raw._tsOrigin !== 'legacy' && Number.isFinite(rawTs) && rawTs >= MIN_USER_TS;
+    const ts = isExplicit ? Math.round(rawTs) : 0;
+    clean._ts = ts;
+    clean._tsOrigin = isExplicit ? 'explicit' : 'legacy';
+    return { clean, ts, explicit: isExplicit };
+  }
+
+  function readPrefsFromCookie() {
+    if (!canUseHostCookie()) return null;
+    try {
+      const rawCookie = typeof document === 'object' && document ? String(document.cookie || '') : '';
+      if (!rawCookie) return null;
+      const prefix = `${COOKIE_PREFS_KEY}=`;
+      let best = null;
+      for (const part of rawCookie.split(';')) {
+        const seg = part.trim();
+        if (!seg.startsWith(prefix)) continue;
+        try {
+          const decoded = decodeURIComponent(seg.slice(prefix.length));
+          const cand = sanitizePrefsCandidate(decoded);
+          if (cand && (!best || cand.ts >= best.ts)) {
+            best = cand;
+          }
+        } catch {}
+      }
+      return best;
+    } catch {
+      return null;
+    }
+  }
+
+  function writePrefsToCookie(prefsObj) {
+    if (!canUseHostCookie()) return;
+    try {
+      if (typeof document !== 'object' || !document) return;
+      const cand = sanitizePrefsCandidate(prefsObj);
+      if (!cand) return;
+      const encoded = encodeURIComponent(JSON.stringify(cand.clean));
+      if (encoded.length <= 3800) {
+        const secureAttr = /^https:$/i.test(window.location.protocol || '') ? '; Secure' : '';
+        document.cookie = `${COOKIE_PREFS_KEY}=${encoded}; Path=/; Max-Age=31536000; SameSite=Lax${secureAttr}`;
+      }
+    } catch {}
+  }
+
   const DEFAULT_PREFS = {
-    lightPalette: 'default',   // 'default' | 'crystal' | 'alabaster'
-    darkPalette: 'default',    // 'default' | 'obsidian' | 'basalt'
+    lightPalette: 'default',   // 'default' | 'crystal' | 'alabaster' | 'sage'
+    darkPalette: 'default',    // 'default' | 'obsidian' | 'basalt' | 'marine'
     outline: true,             // Conversation outline + Alt+Up/Down turn jump
     usageExtra: true,          // Book yardstick + weekday-aligned 12-week heatmap
     inkStream: true,           // 5-stage CSS.highlights stream fade-in
@@ -53,24 +190,58 @@
     thoughtMode: 'bilingual'   // 'off' | 'bilingual' | 'immersive'
   };
 
-  let prefs = (() => {
+  const registeredDefaults = Object.assign({}, DEFAULT_PREFS);
+  const prefs = {};
+
+  function replacePrefsInPlace(cand) {
+    const next = Object.assign({}, registeredDefaults, cand ? cand.clean : null, {
+      _ts: cand ? cand.ts : 0,
+      _tsOrigin: cand && cand.explicit ? 'explicit' : 'legacy'
+    });
+    for (const k of Object.keys(prefs)) {
+      if (!hasOwn(next, k)) delete prefs[k];
+    }
+    Object.assign(prefs, next);
+  }
+
+  function persistPrefsMirrors(prefsObj) {
+    const cand = sanitizePrefsCandidate(prefsObj);
+    if (!cand) return;
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cand.clean)); } catch {}
+    writePrefsToCookie(cand.clean);
+  }
+
+  const loadedFromStorage = (() => {
+    let cLocal = null;
+    try { cLocal = sanitizePrefsCandidate(localStorage.getItem(STORAGE_KEY)); } catch {}
+    const cCookie = readPrefsFromCookie();
+    let cDisk = null;
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const merged = Object.assign({}, DEFAULT_PREFS, JSON.parse(raw));
-        merged.mascotSize = clampMascotSize(merged.mascotSize);
-        merged.mascotRoam = merged.mascotRoam !== false;
-        merged.mascotCountMode = merged.mascotCountMode === 'agents' ? 'agents' : 'fixed';
-        merged.mascotMinCount = clampMascotMinCount(merged.mascotMinCount);
-        merged.mascotVibe = merged.mascotVibe === 'calm' ? 'calm' : 'lively';
-        return merged;
+      if (window.__agPrismDiskPrefs && typeof window.__agPrismDiskPrefs === 'object') {
+        cDisk = sanitizePrefsCandidate(window.__agPrismDiskPrefs);
       }
     } catch {}
-    return Object.assign({}, DEFAULT_PREFS);
+
+    const hadBrowserStorage = Boolean(cLocal || cCookie);
+    let winner = null;
+    // Tie-break identical timestamps in order: local -> cookie -> disk
+    for (const cand of [cLocal, cCookie, cDisk]) {
+      if (cand && (!winner || cand.ts > winner.ts)) {
+        winner = cand;
+      }
+    }
+    replacePrefsInPlace(winner);
+    if (winner) {
+      // Backfill localStorage & host cookie on the new port without fabricating an explicit _ts
+      persistPrefsMirrors(prefs);
+    }
+    return hadBrowserStorage;
   })();
 
   function savePrefs() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs)); } catch {}
+    prefs._ts = Math.max(MIN_USER_TS, Date.now());
+    prefs._tsOrigin = 'explicit';
+    persistPrefsMirrors(prefs);
   }
 
   let disposed = false;
@@ -2201,7 +2372,7 @@
       const rawKey = String(parsed.accountKey || '').trim();
       const firstSeg = rawKey.split('|')[0].trim().toLowerCase();
       const accountEmail = firstSeg.includes('@') && firstSeg.length <= 254 ? firstSeg : '';
-      const tierName = String(parsed.tierName || '').trim().slice(0, 24);
+      const tierName = String(parsed.tierName || '').trim().slice(0, 48);
       const nowMs = Date.now();
 
       const detectActiveFamily = () => {
@@ -2531,20 +2702,43 @@
       reset7dAt: typeof q.reset7dAt === 'string' ? q.reset7dAt.slice(0, 40) : '',
       families,
       accountEmail,
-      tierName: typeof q.tierName === 'string' ? q.tierName.trim().slice(0, 24) : '',
+      tierName: typeof q.tierName === 'string' ? q.tierName.trim().slice(0, 48) : '',
       observedAt: Number(q.observedAt) || Date.now()
     };
+  }
+
+  function formatShortTierName(rawTier) {
+    const s = String(rawTier || '').trim();
+    if (!s) return '';
+    if (/^(?:antigravity\s+)?starter(?:\s+quota)?$/i.test(s)) return 'Starter';
+    return s.length > 24 ? `${s.slice(0, 22)}…` : s;
+  }
+
+  function shortAccountEmail(em) {
+    const s = String(em || '').trim();
+    if (!s) return '';
+    const at = s.indexOf('@');
+    if (at <= 0) return s.slice(0, 16);
+    const local = s.slice(0, at);
+    return local.length > 12 ? `${local.slice(0, 10)}…` : local;
   }
 
   function syncWorkbenchTooltip() {
     const wbBtn = document.getElementById('ag-ps-btn-workbench');
     if (!wbBtn) return;
     const parts = ['快捷打开 Prism 工作台'];
-    if (cachedAccountSummary && cachedAccountSummary.activeAlias) {
-      const roleTag = cachedAccountSummary.activeRole === 'primary' ? '主号' : '备号';
-      parts.push(`${roleTag}: ${cachedAccountSummary.activeAlias}`);
+    const q = sanitizeQuotaPayload(getQuotaState()) || cachedLiveQuota;
+    const liveEmail = String(q?.accountEmail || '').trim().toLowerCase();
+    const sumEmail = String(cachedAccountSummary?.activeEmail || '').trim().toLowerCase();
+    const validSum = (cachedAccountSummary && sumEmail && liveEmail && sumEmail !== liveEmail)
+      ? null
+      : cachedAccountSummary;
+    if (validSum && validSum.activeAlias) {
+      const roleTag = validSum.activeRole === 'primary' ? '主号' : '备号';
+      parts.push(`${roleTag}: ${validSum.activeAlias}`);
+    } else if (liveEmail) {
+      parts.push(`在线: ${shortAccountEmail(liveEmail)}`);
     }
-    const q = cachedLiveQuota;
     if (q && (typeof q.pct5h === 'number' || typeof q.pct7d === 'number')) {
       const qBits = [];
       if (typeof q.pct5h === 'number') qBits.push(`5h ${q.pct5h}%`);
@@ -2665,15 +2859,17 @@
   }
 
   function setPref(key, val) {
-    if (!key) return;
-    if (prefs[key] === val) return;
-    prefs[key] = val;
+    if (!key) return false;
+    const norm = normalizePrefValue(key, val);
+    if (norm === undefined || Object.is(prefs[key], norm)) return false;
+    prefs[key] = norm;
     savePrefs();
     emitBus('prefs');
     const pop = document.getElementById('ag-ps-popover');
     if (pop && pop.getAttribute('data-open') === '1') {
       renderPopoverContent(pop);
     }
+    return true;
   }
 
   function buildBusHelpers() {
@@ -2856,19 +3052,20 @@
               ? '重试检查'
               : '检查更新';
     const liveQ = sanitizeQuotaPayload(getQuotaState()) || cachedLiveQuota;
-    const accSum = cachedAccountSummary;
-    const shortEmail = (em) => {
-      const s = String(em || '').trim();
-      if (!s) return '';
-      const at = s.indexOf('@');
-      if (at <= 0) return s.slice(0, 16);
-      const local = s.slice(0, at);
-      return local.length > 12 ? `${local.slice(0, 10)}…` : local;
-    };
+    const rawAccSum = cachedAccountSummary;
+    const sumEmail = String(rawAccSum?.activeEmail || '').trim().toLowerCase();
+    const liveEmail = String(liveQ?.accountEmail || '').trim().toLowerCase();
+    // Ignore stale workbench summary if live quota cache proves a different account is currently signed in
+    const accSum = (rawAccSum && sumEmail && liveEmail && sumEmail !== liveEmail) ? null : rawAccSum;
+    const effectiveEmail = (accSum ? sumEmail : '') || liveEmail;
     const accTitle = accSum?.activeAlias
-      ? `${accSum.activeRole === 'primary' ? '★ ' : ''}${accSum.activeAlias}${accSum.activeEmail ? ` · ${shortEmail(accSum.activeEmail)}` : ''}`
-      : (accSum?.activeEmail ? shortEmail(accSum.activeEmail) : '多账号安全接力');
+      ? `${accSum.activeRole === 'primary' ? '★ ' : ''}${accSum.activeAlias}${effectiveEmail ? ` · ${shortAccountEmail(effectiveEmail)}` : ''}`
+      : (effectiveEmail ? shortAccountEmail(effectiveEmail) : '多账号安全接力');
     const quotaChips = [];
+    const shortTier = formatShortTierName(liveQ?.tierName);
+    if (shortTier) {
+      quotaChips.push(`<span class="ag-ps-qchip" title="${escapeHtml(liveQ.tierName)}">${escapeHtml(shortTier)}</span>`);
+    }
     if (liveQ && typeof liveQ.pct5h === 'number') {
       const tier5 = liveQ.pct5h >= 50 ? 'ok' : liveQ.pct5h >= 20 ? 'warn' : 'danger';
       quotaChips.push(`<span class="ag-ps-qchip" data-tier="${tier5}">5h ${liveQ.pct5h}%</span>`);
@@ -2878,7 +3075,7 @@
       quotaChips.push(`<span class="ag-ps-qchip" data-tier="${tier7}">7d ${liveQ.pct7d}%</span>`);
     }
     const accSubHtml = accSum?.pendingSwitchEmail
-      ? `<span class="ag-ps-qchip" data-tier="warn">待重启切至 ${escapeHtml(shortEmail(accSum.pendingSwitchEmail))}</span>`
+      ? `<span class="ag-ps-qchip" data-tier="warn">待重启切至 ${escapeHtml(shortAccountEmail(accSum.pendingSwitchEmail))}</span>`
       : (quotaChips.length
         ? quotaChips.join('')
         : `<span class="ag-ps-toggle-sub">${accSum?.accountCount ? `已捕获 ${accSum.accountCount} 个账号` : '打开工作台同步主备账号与额度'}</span>`);
@@ -2895,8 +3092,8 @@
       <div class="ag-ps-account-bar">
         <div class="ag-ps-account-info">
           <div class="ag-ps-account-name">
-            <span class="ag-ps-account-dot" data-online="${accSum?.activeEmail ? '1' : '0'}" aria-hidden="true"></span>
-            <span class="ag-ps-account-text">${escapeHtml(accTitle)}</span>
+            <span class="ag-ps-account-dot" data-online="${effectiveEmail ? '1' : '0'}" aria-hidden="true"></span>
+            <span class="ag-ps-account-text" title="${escapeHtml(effectiveEmail || '')}">${escapeHtml(accTitle)}</span>
           </div>
           <div class="ag-ps-account-meta">${accSubHtml}</div>
         </div>
@@ -3061,11 +3258,12 @@
       }
       const lBtn = e.target.closest('[data-set-light]');
       if (lBtn) {
-        const val = lBtn.getAttribute('data-set-light');
+        const val = PREF_VALIDATORS.lightPalette(lBtn.getAttribute('data-set-light')) || 'default';
         prefs.lightPalette = val;
         savePrefs();
         applyPalettes();
         emitBus('theme');
+        emitBus('prefs');
         renderPopoverContent(pop);
         const name = LIGHT_NAMES[val] || val;
         showJumpToast(isCurrentlyDark() ? `已设为浅色首选「${name}」，切换浅色模式时生效` : `已切换浅色配色：${name}`);
@@ -3073,11 +3271,12 @@
       }
       const dBtn = e.target.closest('[data-set-dark]');
       if (dBtn) {
-        const val = dBtn.getAttribute('data-set-dark');
+        const val = PREF_VALIDATORS.darkPalette(dBtn.getAttribute('data-set-dark')) || 'default';
         prefs.darkPalette = val;
         savePrefs();
         applyPalettes();
         emitBus('theme');
+        emitBus('prefs');
         renderPopoverContent(pop);
         const name = DARK_NAMES[val] || val;
         showJumpToast(!isCurrentlyDark() ? `已设为深色首选「${name}」，切换深色模式时生效` : `已切换深色配色：${name}`);
@@ -3102,6 +3301,7 @@
       if (mcm) {
         prefs.mascotCountMode = mcm.getAttribute('data-mascot-count-mode') === 'agents' ? 'agents' : 'fixed';
         savePrefs();
+        emitBus('prefs');
         syncMascotDock(isAgentGenerating());
         renderPopoverContent(pop);
         return;
@@ -3110,6 +3310,7 @@
       if (mmc) {
         prefs.mascotMinCount = clampMascotMinCount(mmc.getAttribute('data-mascot-min-count'));
         savePrefs();
+        emitBus('prefs');
         syncMascotDock(isAgentGenerating());
         renderPopoverContent(pop);
         return;
@@ -3118,14 +3319,16 @@
       if (mv) {
         prefs.mascotVibe = mv.getAttribute('data-mascot-vibe') === 'calm' ? 'calm' : 'lively';
         savePrefs();
+        emitBus('prefs');
         syncMascotDock(isAgentGenerating());
         renderPopoverContent(pop);
         return;
       }
       const ms = e.target.closest('[data-mascot-style]');
       if (ms) {
-        prefs.mascotStyle = ms.getAttribute('data-mascot-style');
+        prefs.mascotStyle = PREF_VALIDATORS.mascotStyle(ms.getAttribute('data-mascot-style')) || 'trio';
         savePrefs();
+        emitBus('prefs');
         syncMascotDock(isAgentGenerating());
         renderPopoverContent(pop);
         return;
@@ -3134,6 +3337,7 @@
       if (mReset) {
         prefs.mascotSize = MASCOT_SIZE_DEFAULT;
         savePrefs();
+        emitBus('prefs');
         applyMascotSizeVars(document.getElementById('ag-ps-mascot-dock'), true);
         renderPopoverContent(pop);
         return;
@@ -3153,8 +3357,9 @@
       }
       const tm = e.target.closest('[data-thought-mode]');
       if (tm) {
-        prefs.thoughtMode = tm.getAttribute('data-thought-mode');
+        prefs.thoughtMode = PREF_VALIDATORS.thoughtMode(tm.getAttribute('data-thought-mode')) || 'bilingual';
         savePrefs();
+        emitBus('prefs');
         syncThoughtBlocks(isAgentGenerating());
         renderPopoverContent(pop);
       }
@@ -3192,6 +3397,7 @@
       const sz = clampMascotSize(slider.value);
       prefs.mascotSize = sz;
       savePrefs();
+      emitBus('prefs');
       applyMascotSizeVars(document.getElementById('ag-ps-mascot-dock'), true);
     });
     document.body.appendChild(pop);
@@ -3554,15 +3760,38 @@
     suiteVersion: SUITE_VERSION,
     getPrefs: () => Object.assign({}, prefs),
     registerDefaults(defaultsObj) {
-      if (!defaultsObj || typeof defaultsObj !== 'object') return;
+      if (!defaultsObj || typeof defaultsObj !== 'object' || Array.isArray(defaultsObj)) return;
       let changed = false;
-      for (const [k, v] of Object.entries(defaultsObj)) {
-        if (!(k in prefs)) {
-          prefs[k] = v;
+      for (const [k, rawDefault] of Object.entries(defaultsObj)) {
+        const validDefault = normalizePrefValue(k, rawDefault);
+        if (validDefault === undefined) continue;
+        registeredDefaults[k] = validDefault;
+        if (!hasOwn(prefs, k) || normalizePrefValue(k, prefs[k]) === undefined) {
+          prefs[k] = validDefault;
           changed = true;
         }
       }
       if (changed) emitBus('prefs');
+    },
+    hydrateDiskPrefs(rawDiskPrefs) {
+      const cand = sanitizePrefsCandidate(rawDiskPrefs);
+      if (!cand) return false;
+      const curTs = Number(prefs._ts) || 0;
+      if (!(cand.ts > curTs || (curTs === 0 && !loadedFromStorage))) return false;
+      replacePrefsInPlace(cand);
+      persistPrefsMirrors(prefs);
+      applyPalettes();
+      const busy = isAgentGenerating();
+      syncStreamObserver(busy);
+      syncToolbarButtons();
+      syncMascotDock(busy);
+      syncUsageExtraMount();
+      syncThoughtBlocks(busy);
+      emitBus('theme');
+      emitBus('prefs');
+      const pop = document.getElementById('ag-ps-popover');
+      if (pop && pop.getAttribute('data-open') === '1') renderPopoverContent(pop);
+      return true;
     },
     setPref,
     subscribe(fn) {

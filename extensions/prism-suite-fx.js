@@ -1810,16 +1810,27 @@
      * 10b. Safe Manual Account-Switch Return Helper (Zero Credentials / Zero Modal Clicks)
      * ======================================================================== */
     const LAST_CONV_STORAGE_KEY = 'ag_prism_last_conv_v1';
+    const LAST_CONV_COOKIE_KEY = 'ag_prism_last_conv_v1';
     const VALID_CONV_PATH_RE = /^\/c\/[A-Za-z0-9_-]{8,}/;
     const SAFE_CONV_PATH_RE = /^\/c\/[A-Za-z0-9_-]{8,}(?:\/[A-Za-z0-9_-]+)*$/;
     const SETTINGS_ROUTE_RE = /^\/settings(?:\/|$)/;
     const LAST_CONV_MAX_AGE_MS = 4 * 60 * 60 * 1000;
+    const HOME_RETURN_MAX_AGE_MS = 30 * 60 * 1000;
 
     let returnBarEl = null;
     let returnBarAc = null;
     let returnBarPath = '';
+    let returnBarMode = ''; // 'settings' | 'home'
     let returnBarCountdownEl = null;
     let returnBarDismissedForVisit = false;
+    // Persist window-level visit state across Anti-Claude hot-reloads within the same document
+    const fxVisitState = (window[Symbol.for('ag.prism.fx.visitState')] = window[Symbol.for('ag.prism.fx.visitState')] || {
+      hasVisitedConvInWindow: false,
+      homeReturnDismissed: false
+    });
+    if (VALID_CONV_PATH_RE.test(window.location.pathname || '') && SAFE_CONV_PATH_RE.test(window.location.pathname || '')) {
+      fxVisitState.hasVisitedConvInWindow = true;
+    }
     let wasOnSettingsRoute = false;
     let returnCountdownTimer = 0;
     let returnCountdownSec = 0;
@@ -1830,11 +1841,25 @@
     let onboardingRetryTimer = 0;
 
     function isSafeConvPath(p) {
-      return typeof p === 'string' && VALID_CONV_PATH_RE.test(p) && SAFE_CONV_PATH_RE.test(p);
+      if (typeof p !== 'string' || !p.startsWith('/') || p.startsWith('//') || /[\\\x00-\x20]/.test(p)) return false;
+      return VALID_CONV_PATH_RE.test(p) && SAFE_CONV_PATH_RE.test(p);
+    }
+
+    function isHomeWelcomeRoute(p) {
+      return p === '/' || p === '';
+    }
+
+    function canUseHostCookie() {
+      try {
+        return typeof window === 'object' && Boolean(window.location) && /^https?:$/i.test(window.location.protocol || '');
+      } catch {
+        return false;
+      }
     }
 
     function saveLastConversationPath(pathname) {
       if (!isSafeConvPath(pathname)) return;
+      fxVisitState.hasVisitedConvInWindow = true;
       const now = Date.now();
       if (pathname === lastSavedConvPath && now - lastSavedConvAt < 15000) return;
       lastSavedConvPath = pathname;
@@ -1842,28 +1867,48 @@
       const payload = JSON.stringify({ path: pathname, ts: now });
       try { sessionStorage.setItem(LAST_CONV_STORAGE_KEY, payload); } catch {}
       try { localStorage.setItem(LAST_CONV_STORAGE_KEY, payload); } catch {}
+      if (canUseHostCookie()) {
+        try {
+          const enc = encodeURIComponent(payload);
+          if (enc.length <= 1024) {
+            const secureAttr = /^https:$/i.test(window.location.protocol || '') ? '; Secure' : '';
+            document.cookie = `${LAST_CONV_COOKIE_KEY}=${enc}; Path=/; Max-Age=14400; SameSite=Lax${secureAttr}`;
+          }
+        } catch {}
+      }
     }
 
     function loadLastConversationRecord() {
       const now = Date.now();
-      const storages = [];
-      try { storages.push(sessionStorage); } catch {}
-      try { storages.push(localStorage); } catch {}
-      for (let i = 0; i < storages.length; i++) {
+      let best = null;
+      const considerRaw = (raw) => {
+        if (!raw) return;
         try {
-          const raw = storages[i].getItem(LAST_CONV_STORAGE_KEY);
-          if (!raw) continue;
           const parsed = JSON.parse(raw);
-          if (!parsed || !isSafeConvPath(parsed.path)) continue;
+          if (!parsed || !isSafeConvPath(parsed.path)) return;
           const ts = Number(parsed.ts);
-          if (!Number.isFinite(ts)) continue;
+          if (!Number.isFinite(ts)) return;
           const age = now - ts;
           if (age <= LAST_CONV_MAX_AGE_MS && age >= -60000) {
-            return { path: parsed.path, ts };
+            if (!best || ts > best.ts) {
+              best = { path: parsed.path, ts };
+            }
+          }
+        } catch {}
+      };
+      try { considerRaw(sessionStorage.getItem(LAST_CONV_STORAGE_KEY)); } catch {}
+      try { considerRaw(localStorage.getItem(LAST_CONV_STORAGE_KEY)); } catch {}
+      if (canUseHostCookie()) {
+        try {
+          const prefix = `${LAST_CONV_COOKIE_KEY}=`;
+          for (const part of String(document.cookie || '').split(';')) {
+            const seg = part.trim();
+            if (!seg.startsWith(prefix)) continue;
+            try { considerRaw(decodeURIComponent(seg.slice(prefix.length))); } catch {}
           }
         } catch {}
       }
-      return null;
+      return best;
     }
 
     function hasOpenModalDialog() {
@@ -1909,6 +1954,7 @@
       }
       returnBarCountdownEl = null;
       returnBarPath = '';
+      returnBarMode = '';
     }
 
     function findNativeSidebarConvLink(targetPath) {
@@ -1930,6 +1976,7 @@
 
     function navigateToSavedConv(savedPath) {
       if (!isSafeConvPath(savedPath)) return;
+      fxVisitState.hasVisitedConvInWindow = true;
       returnBarDismissedForVisit = true;
       removeReturnBar();
 
@@ -1998,10 +2045,11 @@
       }, 1000);
     }
 
-    function mountReturnBar(savedPath) {
+    function mountReturnBar(savedPath, mode = 'settings') {
       if (!document.body || !isSafeConvPath(savedPath)) return;
-      if (returnBarEl && returnBarEl.isConnected && returnBarPath === savedPath) {
-        if (getPrefs().switchAutoReturn) {
+      const allowAutoCountdown = mode === 'settings';
+      if (returnBarEl && returnBarEl.isConnected && returnBarPath === savedPath && returnBarMode === mode) {
+        if (allowAutoCountdown && getPrefs().switchAutoReturn) {
           if (hasOpenModalDialog() || document.hidden) {
             stopReturnCountdown();
           } else if (!returnCountdownTimer && !returnBarDismissedForVisit) {
@@ -2017,6 +2065,7 @@
       returnBarAc = new AbortController();
       const barSignal = returnBarAc.signal;
       returnBarPath = savedPath;
+      returnBarMode = mode;
 
       returnBarEl = document.createElement('div');
       returnBarEl.id = 'ag-ps-return-bar';
@@ -2029,7 +2078,9 @@
 
       const text = document.createElement('span');
       text.className = 'ag-ps-return-text';
-      text.textContent = '检测到位于设置页 · 可快速返回上次会话';
+      text.textContent = mode === 'home'
+        ? '检测到刚重启回到首页 · 可一键返回上次会话'
+        : '检测到位于设置页 · 可快速返回上次会话';
 
       const badge = document.createElement('span');
       badge.className = 'ag-ps-return-badge';
@@ -2064,10 +2115,11 @@
       const stayBtn = document.createElement('button');
       stayBtn.type = 'button';
       stayBtn.className = 'ag-ps-return-btn-ghost';
-      stayBtn.textContent = '留在设置';
+      stayBtn.textContent = mode === 'home' ? '留在首页' : '留在设置';
       stayBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        returnBarDismissedForVisit = true;
+        if (mode === 'home') fxVisitState.homeReturnDismissed = true;
+        else returnBarDismissedForVisit = true;
         removeReturnBar();
       }, { signal: barSignal });
 
@@ -2082,7 +2134,7 @@
       returnBarEl.appendChild(actions);
       document.body.appendChild(returnBarEl);
 
-      if (getPrefs().switchAutoReturn && !document.hidden && !hasOpenModalDialog()) {
+      if (allowAutoCountdown && getPrefs().switchAutoReturn && !document.hidden && !hasOpenModalDialog()) {
         startReturnCountdown(savedPath);
       }
     }
@@ -2128,6 +2180,7 @@
       }
       const pathname = window.location.pathname || '';
       if (isSafeConvPath(pathname)) {
+        fxVisitState.hasVisitedConvInWindow = true;
         saveLastConversationPath(pathname);
         wasOnSettingsRoute = false;
         returnBarDismissedForVisit = false;
@@ -2135,32 +2188,50 @@
         return;
       }
 
-      const onSettings = SETTINGS_ROUTE_RE.test(pathname);
-      if (!onSettings) {
-        wasOnSettingsRoute = false;
-        returnBarDismissedForVisit = false;
-        removeReturnBar();
-        return;
-      }
-
-      if (!wasOnSettingsRoute) {
-        wasOnSettingsRoute = true;
-        returnBarDismissedForVisit = false;
-      }
-
       const prefs = getPrefs();
-      if (!prefs.switchReturnHelper || returnBarDismissedForVisit) {
+      if (!prefs.switchReturnHelper) {
+        wasOnSettingsRoute = false;
         removeReturnBar();
         return;
       }
 
-      const rec = loadLastConversationRecord();
-      if (!rec || rec.path === pathname) {
-        removeReturnBar();
+      const onSettings = SETTINGS_ROUTE_RE.test(pathname);
+      if (onSettings) {
+        if (!wasOnSettingsRoute) {
+          wasOnSettingsRoute = true;
+          returnBarDismissedForVisit = false;
+        }
+        if (returnBarDismissedForVisit) {
+          removeReturnBar();
+          return;
+        }
+        const rec = loadLastConversationRecord();
+        if (!rec || rec.path === pathname) {
+          removeReturnBar();
+          return;
+        }
+        mountReturnBar(rec.path, 'settings');
         return;
       }
 
-      mountReturnBar(rec.path);
+      wasOnSettingsRoute = false;
+      returnBarDismissedForVisit = false;
+
+      // Fresh client restart landing on Home ('/') — offer 1-click return without auto-redirecting
+      if (isHomeWelcomeRoute(pathname) && !fxVisitState.hasVisitedConvInWindow && !fxVisitState.homeReturnDismissed) {
+        if (typeof bus.isTyping === 'function' && bus.isTyping()) {
+          fxVisitState.homeReturnDismissed = true;
+          removeReturnBar();
+          return;
+        }
+        const rec = loadLastConversationRecord();
+        if (rec && Date.now() - rec.ts <= HOME_RETURN_MAX_AGE_MS) {
+          mountReturnBar(rec.path, 'home');
+          return;
+        }
+      }
+
+      removeReturnBar();
     }
 
     /* ========================================================================
@@ -2173,29 +2244,36 @@
     let quotaNudgeEl = null;
     let quotaNudgeAc = null;
     let quotaNudgeSig = '';
-    const quotaNudgeDismissMem = { '7d': 0, '5h': 0 };
+    const quotaNudgeDismissMem = Object.create(null);
 
-    function readQuotaDismissTs(winKey) {
-      let ts = quotaNudgeDismissMem[winKey] || 0;
+    function quotaDismissScopeKey(winKey, accountEmail) {
+      const acct = String(accountEmail || '').trim().toLowerCase() || '__dom__';
+      return JSON.stringify([acct, String(winKey || '')]);
+    }
+
+    function readQuotaDismissTs(winKey, accountEmail) {
+      const scopeKey = quotaDismissScopeKey(winKey, accountEmail);
+      let ts = quotaNudgeDismissMem[scopeKey] || 0;
       try {
         const raw = sessionStorage.getItem(QUOTA_NUDGE_DISMISS_KEY);
         if (raw) {
           const map = JSON.parse(raw);
-          const stored = Number(map && map[winKey]);
+          const stored = Number(map && map[scopeKey]);
           if (Number.isFinite(stored) && stored > ts) ts = stored;
         }
       } catch {}
       return ts;
     }
 
-    function isQuotaNudgeDismissed(winKey) {
-      const ts = readQuotaDismissTs(winKey);
+    function isQuotaNudgeDismissed(winKey, accountEmail) {
+      const ts = readQuotaDismissTs(winKey, accountEmail);
       return ts > 0 && Date.now() - ts < QUOTA_NUDGE_COOLDOWN_MS;
     }
 
-    function markQuotaNudgeDismissed(winKey) {
+    function markQuotaNudgeDismissed(winKey, accountEmail) {
+      const scopeKey = quotaDismissScopeKey(winKey, accountEmail);
       const now = Date.now();
-      quotaNudgeDismissMem[winKey] = now;
+      quotaNudgeDismissMem[scopeKey] = now;
       try {
         let map = {};
         const raw = sessionStorage.getItem(QUOTA_NUDGE_DISMISS_KEY);
@@ -2203,7 +2281,7 @@
           const parsed = JSON.parse(raw);
           if (parsed && typeof parsed === 'object') map = parsed;
         }
-        map[winKey] = now;
+        map[scopeKey] = now;
         sessionStorage.setItem(QUOTA_NUDGE_DISMISS_KEY, JSON.stringify(map));
       } catch {}
     }
@@ -2259,10 +2337,11 @@
       quotaNudgeSig = '';
     }
 
-    function mountQuotaNudge(winKey, pct) {
+    function mountQuotaNudge(winKey, pct, accountEmail = '') {
       if (!document.body) return;
       const pctStr = formatQuotaPct(pct);
-      const sig = `${winKey}:${pctStr}`;
+      const acct = String(accountEmail || '').trim().toLowerCase() || 'active';
+      const sig = `${acct}:${winKey}:${pctStr}`;
       if (quotaNudgeEl && quotaNudgeEl.isConnected && quotaNudgeSig === sig) return;
 
       removeQuotaNudge();
@@ -2319,7 +2398,7 @@
       closeBtn.textContent = '关闭';
       closeBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        markQuotaNudgeDismissed(winKey);
+        markQuotaNudgeDismissed(winKey, accountEmail);
         removeQuotaNudge();
       }, { signal: nudgeSignal });
       actions.appendChild(closeBtn);
@@ -2339,15 +2418,16 @@
       const q = safeGetQuotaState();
       const pct7d = typeof q.pct7d === 'number' && Number.isFinite(q.pct7d) ? q.pct7d : null;
       const pct5h = typeof q.pct5h === 'number' && Number.isFinite(q.pct5h) ? q.pct5h : null;
+      const acctEmail = typeof q.accountEmail === 'string' ? q.accountEmail : '';
 
       if (pct7d !== null && pct7d <= 5) {
-        if (!isQuotaNudgeDismissed('7d')) {
-          mountQuotaNudge('7d', pct7d);
+        if (!isQuotaNudgeDismissed('7d', acctEmail)) {
+          mountQuotaNudge('7d', pct7d, acctEmail);
           return;
         }
       } else if (pct5h !== null && pct5h <= 10) {
-        if (!isQuotaNudgeDismissed('5h')) {
-          mountQuotaNudge('5h', pct5h);
+        if (!isQuotaNudgeDismissed('5h', acctEmail)) {
+          mountQuotaNudge('5h', pct5h, acctEmail);
           return;
         }
       }

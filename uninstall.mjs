@@ -11,11 +11,12 @@ import { fileURLToPath } from 'node:url';
 import { EXTENSION_FILES, resolvePluginsDir, resolvePrismFilesTargetDir, resolveUserDir } from './install.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
+const GENERATED_EXTENSION_FILES = ['prism-suite-00-prefs.js'];
 
 export function uninstallExtensions({ userDir = resolveUserDir() } = {}) {
   const targetDir = path.join(path.resolve(userDir), 'extensions');
   const removed = [];
-  for (const name of EXTENSION_FILES) {
+  for (const name of [...EXTENSION_FILES, ...GENERATED_EXTENSION_FILES]) {
     const fp = path.join(targetDir, name);
     if (fs.existsSync(fp)) {
       fs.rmSync(fp, { force: true });

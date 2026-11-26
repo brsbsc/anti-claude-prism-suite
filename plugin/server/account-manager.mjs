@@ -194,7 +194,7 @@ function classifyQuotaWindow(quota = {}, nowMs = Date.now()) {
     reset7dAt: normalizeIso(merged.reset7dAt, merged.reset7dInHours),
     resetsAt: merged.resetsAt ? String(merged.resetsAt).slice(0, 64) : '',
     modelFamily: merged.modelFamily ? String(merged.modelFamily).slice(0, 48).toLowerCase() : '',
-    tierName: merged.tierName ? String(merged.tierName).trim().slice(0, 24) : '',
+    tierName: merged.tierName ? String(merged.tierName).trim().slice(0, 48) : '',
     families: normalizeFamilyQuotaMap(merged.families),
     source: merged.source ? String(merged.source).slice(0, 32) : '',
     observedAt: normalizeIso(merged.observedAt, 0) || new Date(nowMs).toISOString(),
@@ -357,7 +357,7 @@ function parseAntiClaudeQuotaSnapshotObject(obj) {
   const rawKey = String(obj.accountKey || '').trim();
   const keyFirst = rawKey.split('|')[0].trim().toLowerCase();
   const email = keyFirst.includes('@') && keyFirst.length <= 254 ? keyFirst : '';
-  const tierName = String(obj.tierName || '').trim().slice(0, 24);
+  const tierName = String(obj.tierName || '').trim().slice(0, 48);
 
   let min5h = null;
   let min7d = null;
@@ -485,6 +485,237 @@ export function readLocalAntigravityQuotaCache(options = {}) {
   return { dir: matchedDir, byEmail, latest };
 }
 
+const PRISM_UI_ENUM_VALIDATORS = Object.freeze({
+  lightPalette: new Set(['default', 'crystal', 'alabaster', 'sage']),
+  darkPalette: new Set(['default', 'obsidian', 'basalt', 'marine']),
+  mascotCountMode: new Set(['fixed', 'agents']),
+  mascotStyle: new Set(['trio', 'crab', 'cat']),
+  mascotVibe: new Set(['calm', 'lively']),
+  thoughtMode: new Set(['off', 'bilingual', 'immersive']),
+  borderBeamMode: new Set(['always', 'busy']),
+  borderBeamPalette: new Set(['theme', 'gemini', 'aurora', 'prism', 'neon', 'quota']),
+  quotaRingPeriod: new Set(['auto', 'weekly', '5h']),
+  thinkingOrbMode: new Set(['both', 'replace']),
+  bubbleTintPreset: new Set(['accent', 'sky', 'emerald', 'amber', 'violet']),
+  sidebarSessions: new Set(['default', '10', 'all']),
+  i18nExtraMode: new Set(['off', 'zh-CN', 'zh-TW', 'en'])
+});
+
+const PRISM_UI_BOOL_KEYS = new Set([
+  'outline', 'usageExtra', 'inkStream', 'mascot', 'mascotRoam',
+  'borderBeam', 'quotaRing', 'thinkingOrb', 'bubbleTint', 'compactLayout',
+  'unreadBadge', 'keepOverviewOpen', 'alwaysOutlineRail', 'switchReturnHelper',
+  'switchAutoReturn', 'autoDismissOnboarding', 'quotaHandoffAlert',
+  'imageContextMenu', 'cleanCopy', 'sshPaste', 'inlineEditHelper', 'sessionFork'
+]);
+
+export function sanitizePrismUiPrefs(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out = {};
+  let recognized = 0;
+  for (const [k, allowed] of Object.entries(PRISM_UI_ENUM_VALIDATORS)) {
+    if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
+    const v = raw[k];
+    if (typeof v === 'string' && allowed.has(v)) {
+      out[k] = v;
+      recognized++;
+    }
+  }
+  for (const k of PRISM_UI_BOOL_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
+    if (typeof raw[k] === 'boolean') {
+      out[k] = raw[k];
+      recognized++;
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, 'mascotMinCount') && Number.isFinite(Number(raw.mascotMinCount))) {
+    out.mascotMinCount = clampInt(raw.mascotMinCount, 1, 3, 1);
+    recognized++;
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, 'mascotSize') && Number.isFinite(Number(raw.mascotSize))) {
+    const stepped = Math.round(Number(raw.mascotSize) / 2) * 2;
+    out.mascotSize = Math.max(16, Math.min(36, stepped));
+    recognized++;
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, 'bubbleTintStrength') && Number.isFinite(Number(raw.bubbleTintStrength))) {
+    out.bubbleTintStrength = clampInt(raw.bubbleTintStrength, 10, 100, 22);
+    recognized++;
+  }
+  if (recognized === 0) return null;
+  const MIN_USER_TS = 1_700_000_000_000;
+  const rawTs = Number(raw._ts);
+  const isExplicit = raw._tsOrigin !== 'legacy' && Number.isFinite(rawTs) && rawTs >= MIN_USER_TS;
+  out._ts = isExplicit ? Math.round(rawTs) : 0;
+  out._tsOrigin = isExplicit ? 'explicit' : 'legacy';
+  if (!isExplicit && Number.isFinite(Number(raw._legacyMtime)) && Number(raw._legacyMtime) > 0) {
+    out._legacyMtime = Math.round(Number(raw._legacyMtime));
+  }
+  return out;
+}
+
+function readLevelDbWindow(filePath) {
+  const MiB = 1024 * 1024;
+  const MAX_FULL_BYTES = 16 * MiB;
+  const TAIL_WINDOW_BYTES = 8 * MiB;
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size <= 0) return null;
+    const start = stat.size > MAX_FULL_BYTES ? stat.size - TAIL_WINDOW_BYTES : 0;
+    const len = stat.size - start;
+    const buf = Buffer.allocUnsafe(len);
+    let used = 0;
+    while (used < len) {
+      const n = fs.readSync(fd, buf, used, len - used, start + used);
+      if (!n) break;
+      used += n;
+    }
+    return { buf: buf.subarray(0, used), mtimeMs: stat.mtimeMs };
+  } finally {
+    try { fs.closeSync(fd); } catch {}
+  }
+}
+
+export function readLocalPrismPrefsFromLevelDb(options = {}) {
+  const candidateDirs = resolveAntigravityLocalStorageDirs(options);
+  const MARKER = 'ag_prism_suite_prefs_v1';
+  const MARKER_LATIN1 = Buffer.from(MARKER, 'latin1');
+  const MARKER_UTF16_PROBE = Buffer.from('a\x00g\x00_\x00p\x00r\x00i\x00s\x00m\x00', 'latin1');
+  let best = null;
+  let seq = 0;
+  let matchedDir = '';
+
+  const beatsCandidate = (cand, cur) => {
+    if (!cur) return true;
+    if (cand.hasExplicitTs !== cur.hasExplicitTs) return cand.hasExplicitTs;
+    if (cand.hasExplicitTs) {
+      if (cand.prefs._ts !== cur.prefs._ts) return cand.prefs._ts > cur.prefs._ts;
+      return cand.seq > cur.seq;
+    }
+    if (cand.mtimeMs !== cur.mtimeMs) return cand.mtimeMs > cur.mtimeMs;
+    return cand.seq > cur.seq;
+  };
+
+  for (const dir of new Set(candidateDirs)) {
+    if (!fs.existsSync(dir)) continue;
+    let files = [];
+    try {
+      files = fs.readdirSync(dir)
+        .filter((f) => /\.(log|ldb)$/i.test(f))
+        .map((f) => {
+          const full = path.join(dir, f);
+          try {
+            const st = fs.statSync(full);
+            return st.isFile() && st.size > 0 ? { name: f, full, mtimeMs: Math.round(st.mtimeMs) } : null;
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean)
+        .sort((a, b) => (a.mtimeMs - b.mtimeMs) || a.name.localeCompare(b.name));
+    } catch {
+      continue;
+    }
+
+    for (const file of files) {
+      let win;
+      try {
+        win = readLevelDbWindow(file.full);
+      } catch {
+        continue;
+      }
+      if (!win || !win.buf.length) continue;
+
+      const { buf } = win;
+      const mtimeMs = Math.round(win.mtimeMs || file.mtimeMs || 1);
+      const rawObjs = [];
+      if (buf.includes(MARKER_LATIN1)) {
+        rawObjs.push(...extractBalancedJsonObjectsAfterMarker(buf.toString('latin1'), MARKER, 8192));
+      }
+      // LevelDB variable-length headers allow UTF-16LE payloads to start at either even (0) or odd (1) byte offset
+      if (buf.includes(MARKER_UTF16_PROBE)) {
+        for (const offset of [0, 1]) {
+          const pairs = Math.floor((buf.length - offset) / 2);
+          if (pairs > 0) {
+            rawObjs.push(...extractBalancedJsonObjectsAfterMarker(buf.toString('utf16le', offset, offset + pairs * 2), MARKER, 8192));
+          }
+        }
+      }
+
+      for (const obj of rawObjs) {
+        const clean = sanitizePrismUiPrefs(obj);
+        if (!clean) continue;
+        seq++;
+        const hasExplicitTs = clean._tsOrigin === 'explicit' && clean._ts > 0;
+        const prefsOut = hasExplicitTs
+          ? { ...clean }
+          : { ...clean, _ts: 0, _tsOrigin: 'legacy', _legacyMtime: mtimeMs };
+        const cand = {
+          prefs: prefsOut,
+          hasExplicitTs,
+          mtimeMs,
+          seq,
+          file: file.name,
+          dir
+        };
+        if (beatsCandidate(cand, best)) {
+          best = cand;
+          matchedDir = dir;
+        }
+      }
+    }
+  }
+
+  return best
+    ? { found: true, dir: matchedDir, file: best.file, hasExplicitTs: best.hasExplicitTs, mtimeMs: best.mtimeMs, prefs: best.prefs }
+    : { found: false, dir: matchedDir, file: '', hasExplicitTs: false, mtimeMs: 0, prefs: null };
+}
+
+function resolveAntiClaudeExtensionDirs({ homeDir = os.homedir(), platform = process.platform, extraExtensionDirs = [] } = {}) {
+  const dirs = [];
+  const pushUnique = (p) => {
+    if (!p) return;
+    const resolved = path.resolve(p);
+    if (!dirs.includes(resolved)) dirs.push(resolved);
+  };
+  if (Array.isArray(extraExtensionDirs)) {
+    for (const d of extraExtensionDirs) pushUnique(d);
+  }
+  pushUnique(path.join(homeDir, '.gemini', 'antigravity', 'anti-claude', 'user', 'extensions'));
+  if (platform !== 'win32' && platform !== 'darwin' && fs.existsSync('/mnt/c/Users')) {
+    const skip = new Set(['Public', 'Default', 'Default User', 'All Users']);
+    const preferred = [process.env.PRISM_WIN_USER, 'Administrator'].filter(Boolean);
+    try {
+      const u = os.userInfo().username;
+      if (u) preferred.unshift(u);
+    } catch {}
+    for (const u of preferred) {
+      if (!skip.has(u)) pushUnique(path.join('/mnt/c/Users', u, '.gemini', 'antigravity', 'anti-claude', 'user', 'extensions'));
+    }
+    try {
+      for (const ent of fs.readdirSync('/mnt/c/Users', { withFileTypes: true })) {
+        if (!ent.isDirectory() || skip.has(ent.name) || ent.name.startsWith('.')) continue;
+        pushUnique(path.join('/mnt/c/Users', ent.name, '.gemini', 'antigravity', 'anti-claude', 'user', 'extensions'));
+      }
+    } catch {}
+  }
+  return dirs;
+}
+
+function buildPrismPrefsSeedJs(cleanPrefs) {
+  return [
+    '/* Auto-generated by Anti-Claude Prism Suite — cross-port UI preferences seed (zero credentials) */',
+    '(() => {',
+    `  const seed = ${JSON.stringify(cleanPrefs)};`,
+    '  window.__agPrismDiskPrefs = seed;',
+    "  if (window.__agPrismBus && typeof window.__agPrismBus.hydrateDiskPrefs === 'function') {",
+    '    try { window.__agPrismBus.hydrateDiskPrefs(seed); } catch {}',
+    '  }',
+    '})();',
+    ''
+  ].join('\n');
+}
+
 export function createAccountManager(options = {}) {
   const homeDir = path.resolve(options.homeDir || os.homedir());
   const stateDir = path.resolve(options.stateDir || path.join(homeDir, '.gemini', 'antigravity', 'prism-suite'));
@@ -494,6 +725,8 @@ export function createAccountManager(options = {}) {
   const accountsFile = path.join(stateDir, 'accounts.json');
   const lockFile = path.join(stateDir, 'switch.lock');
   const snapshotFile = path.join(stateDir, 'handoff-snapshot.json');
+  const uiPrefsFile = path.join(stateDir, 'ui-prefs.json');
+  const extraExtensionDirs = Array.isArray(options.extensionDirs) ? options.extensionDirs : [];
 
   const vault = options.vault || createAccountVault({
     platform: options.platform,
@@ -570,6 +803,93 @@ export function createAccountManager(options = {}) {
       try { saveState(state); } catch {}
     }
     return dirty;
+  }
+
+  function syncPrismPrefsSeed({ writeExtensionSeed = false, allowBareExtensionDir = false } = {}) {
+    let saved = null;
+    if (fs.existsSync(uiPrefsFile)) {
+      try {
+        const parsed = sanitizePrismUiPrefs(JSON.parse(fs.readFileSync(uiPrefsFile, 'utf8')));
+        if (parsed) {
+          const explicit = parsed._tsOrigin === 'explicit' && parsed._ts > 0;
+          const mtimeMs = Number.isFinite(parsed._legacyMtime)
+            ? parsed._legacyMtime
+            : Math.round(fs.statSync(uiPrefsFile).mtimeMs || 1);
+          saved = { prefs: parsed, hasExplicitTs: explicit, mtimeMs };
+        }
+      } catch {}
+    }
+    const scanned = disableLocalQuotaScan
+      ? { found: false, hasExplicitTs: false, mtimeMs: 0, prefs: null }
+      : readLocalPrismPrefsFromLevelDb({ localStorageDir, platform: options.platform || process.platform, homeDir });
+
+    let best = saved;
+    if (scanned.found && scanned.prefs) {
+      if (!best) {
+        best = { prefs: scanned.prefs, hasExplicitTs: scanned.hasExplicitTs, mtimeMs: scanned.mtimeMs };
+      } else {
+        const sameExplicitTs = best.hasExplicitTs && scanned.hasExplicitTs && scanned.prefs._ts === best.prefs._ts;
+        const scanWins = !sameExplicitTs && (
+          (scanned.hasExplicitTs && !best.hasExplicitTs) ||
+          (scanned.hasExplicitTs && best.hasExplicitTs && scanned.prefs._ts > best.prefs._ts) ||
+          (!scanned.hasExplicitTs && !best.hasExplicitTs && scanned.mtimeMs > best.mtimeMs)
+        );
+        if (scanWins) {
+          best = { prefs: scanned.prefs, hasExplicitTs: scanned.hasExplicitTs, mtimeMs: scanned.mtimeMs };
+        }
+      }
+    }
+    if (!best) {
+      return { ok: true, found: false, prefs: null, writtenSeedFiles: [] };
+    }
+
+    const diskPayload = { ...best.prefs, _tsOrigin: best.hasExplicitTs ? 'explicit' : 'legacy' };
+    if (best.hasExplicitTs) {
+      delete diskPayload._legacyMtime;
+    } else {
+      diskPayload._ts = 0;
+      diskPayload._legacyMtime = best.mtimeMs;
+    }
+
+    if (!saved || JSON.stringify(saved.prefs) !== JSON.stringify(diskPayload)) {
+      try { writeJsonAtomic0600(uiPrefsFile, diskPayload); } catch {}
+    }
+
+    const seedPayload = { ...diskPayload };
+    delete seedPayload._legacyMtime;
+
+    const writtenSeedFiles = [];
+    if (writeExtensionSeed) {
+      const jsText = buildPrismPrefsSeedJs(seedPayload);
+      const extDirs = resolveAntiClaudeExtensionDirs({
+        homeDir,
+        platform: options.platform || process.platform,
+        extraExtensionDirs
+      });
+      for (const extDir of new Set(extDirs)) {
+        try {
+          if (!fs.existsSync(extDir)) continue;
+          // Only drop seed next to an installed Prism Suite unless explicitly requested in tests
+          if (!allowBareExtensionDir && !fs.statSync(path.join(extDir, 'prism-suite.js'), { throwIfNoEntry: false })?.isFile()) continue;
+          const seedPath = path.join(extDir, 'prism-suite-00-prefs.js');
+          if (fs.existsSync(seedPath) && fs.readFileSync(seedPath, 'utf8') === jsText) {
+            writtenSeedFiles.push(seedPath);
+            continue;
+          }
+          const tmpSeed = path.join(extDir, `.prism-prefs-${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`);
+          try {
+            fs.writeFileSync(tmpSeed, jsText, { encoding: 'utf8', flag: 'wx' });
+            fs.renameSync(tmpSeed, seedPath);
+          } catch {
+            try { fs.rmSync(tmpSeed, { force: true }); } catch {}
+            fs.writeFileSync(seedPath, jsText, 'utf8');
+          }
+          writtenSeedFiles.push(seedPath);
+        } catch {}
+      }
+    }
+
+    return { ok: true, found: true, prefs: seedPayload, uiPrefsFile, writtenSeedFiles };
   }
 
   function loadState() {
@@ -749,6 +1069,9 @@ export function createAccountManager(options = {}) {
     const state = loadState();
     const force = Boolean(forceRefresh);
     hydrateAccountsFromLocalQuotaCache(state, { force });
+    if (force) {
+      try { syncPrismPrefsSeed({ writeExtensionSeed: false }); } catch {}
+    }
     const vaultProbe = vault.probe({ force });
     let activeCred = { exists: false, email: '', hashPrefix: '', byteLength: 0, hasUserScope: false };
     let activeError = '';
@@ -1272,6 +1595,8 @@ export function createAccountManager(options = {}) {
         expiresAt: nowMs + PENDING_SWITCH_TTL_MS
       };
       saveState(state);
+      // Persist latest UI preferences to disk seed before Antigravity restarts on a new random localhost port
+      try { syncPrismPrefsSeed({ writeExtensionSeed: true }); } catch {}
 
       const autoBackupNote = autoCapturedActive
         ? `已先自动备份原未捕获账号 (${autoCapturedActive.email}) 防丢；`
@@ -1379,6 +1704,7 @@ export function createAccountManager(options = {}) {
     captureCurrentAccount,
     updateAccount,
     syncActiveAccountQuota,
+    syncPrismPrefsSeed,
     pickRecommendedTarget,
     saveHandoffSnapshot,
     switchAccount,

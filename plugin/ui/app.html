@@ -2319,7 +2319,7 @@
         const r5 = typeof quota.reset5hAt === 'string' && !Number.isNaN(Date.parse(quota.reset5hAt)) ? quota.reset5hAt : '';
         const r7 = typeof quota.reset7dAt === 'string' && !Number.isNaN(Date.parse(quota.reset7dAt)) ? quota.reset7dAt : '';
         const expectedEmail = typeof quota.accountEmail === 'string' && quota.accountEmail.includes('@') ? quota.accountEmail.trim().toLowerCase() : '';
-        const tierName = typeof quota.tierName === 'string' ? quota.tierName.trim().slice(0, 24) : '';
+        const tierName = typeof quota.tierName === 'string' ? quota.tierName.trim().slice(0, 48) : '';
         const famSig = families ? Object.entries(families).map(([k, v]) => `${k}:${v.pct5h ?? ''}/${v.pct7d ?? ''}`).join(',') : '';
         const sig = `${expectedEmail}|${p5 ?? ''}|${p7 ?? ''}|${r5.slice(0, 16)}|${r7.slice(0, 16)}|${famSig}`;
         const now = Date.now();
@@ -4086,7 +4086,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.5.6，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.5.7，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -4267,7 +4267,9 @@
               const syncTag = obsTime
                 ? `<span class="quota-fam-sync">${eff?.source === 'anti-claude-cache' ? '实时缓存' : '已同步'} ${escapeHtml(obsTime)}</span>`
                 : '';
-              const tierBadge = eff?.tierName ? `<span class="pill">${escapeHtml(eff.tierName)}</span>` : '';
+              const rawTier = String(eff?.tierName || '').trim();
+              const shortTier = /^(?:antigravity\s+)?starter(?:\s+quota)?$/i.test(rawTier) ? 'Starter' : rawTier;
+              const tierBadge = shortTier ? `<span class="pill" title="${escapeHtml(rawTier)}">${escapeHtml(shortTier)}</span>` : '';
               const quotaBlock = (q5Html || q7Html)
                 ? `<div class="quota-bars">${q5Html}${q7Html}${(famChips.length || syncTag) ? `<div class="quota-fam-row">${famChips.join('')}${syncTag}</div>` : ''}</div>`
                 : `<p class="relay-sub">${a.isCurrentActive ? (quotaWaitRetryTimer ? '等待客户端首次拉取该账号实时额度，将自动刷新（也可点右上 ↻ 立即刷新）' : '暂未读到本机实时额度缓存（点右上 ↻ 刷新，或点左下角「录入额度」手动补充）') : '切过去登录一次即自动记录实时额度与秒级重置倒计时（也可点左下角手动录入）'}</p>`;
@@ -4483,7 +4485,7 @@
               ? `<span class="pill pill-warn">新版本 ${escapeHtml(suInfo.latestTag)}</span>`
               : st.radarLoading
                 ? '<span class="pill">检查中</span>'
-                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.5.6</span>');
+                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.5.7</span>');
         const radarOpen = Boolean(st.openSections?.radar || st.radarLoading || rad || st.selfUpdateChecking || st.selfUpdateApplying || suInfo || suRes);
         parts.push(
           `<details class="relay-accordion" data-sec="radar" ${radarOpen ? 'open' : ''}>` +
@@ -4879,7 +4881,7 @@
             appState.accounts.selfUpdateChecking = false;
             appState.accounts.selfUpdateInfo = info;
             renderAccounts();
-            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.5.6'}`);
+            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.5.7'}`);
           } else if (act === 'self-update-repair-ask') {
             appState.accounts.selfUpdateConfirmRepair = true;
             renderAccounts();
@@ -5607,7 +5609,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.5.6' },
+            appInfo: { name: 'prism-files', version: '0.5.7' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};
