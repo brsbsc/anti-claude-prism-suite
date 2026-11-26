@@ -602,7 +602,7 @@ const PRISM_UI_BOOL_KEYS = new Set([
   'borderBeam', 'quotaRing', 'thinkingOrb', 'bubbleTint', 'compactLayout',
   'unreadBadge', 'keepOverviewOpen', 'alwaysOutlineRail', 'switchReturnHelper',
   'switchAutoReturn', 'autoDismissOnboarding', 'quotaHandoffAlert',
-  'imageContextMenu', 'cleanCopy', 'sshPaste', 'inlineEditHelper', 'sessionFork'
+  'imageContextMenu', 'cleanCopy', 'sshPaste', 'inlineEditHelper', 'sessionFork', 'composerFileDrop'
 ]);
 
 export function sanitizePrismUiPrefs(raw) {
@@ -810,6 +810,45 @@ function buildPrismPrefsSeedJs(cleanPrefs) {
     '})();',
     ''
   ].join('\n');
+}
+
+export function evaluateQuotaPoolHealth(eff, activeModel = '') {
+  if (!eff || typeof eff !== 'object') {
+    return { minPct: null, avgPct: null, hasKnown: false };
+  }
+  const model = String(activeModel || '').trim().toLowerCase();
+  const targetFam = /claude|sonnet|opus|gpt/.test(model)
+    ? 'claude'
+    : (/gemini/.test(model) ? 'gemini' : '');
+  const vals = [];
+  const pushIfFinite = (v) => {
+    const n = toFinitePctOrNull(v);
+    if (n !== null) vals.push(n);
+  };
+
+  const fams = eff.families && typeof eff.families === 'object' ? eff.families : null;
+  if (targetFam) {
+    if (fams && fams[targetFam]) {
+      pushIfFinite(fams[targetFam].pct5h);
+      pushIfFinite(fams[targetFam].pct7d);
+    }
+  } else if (fams && (fams.gemini || fams.claude || fams.other)) {
+    for (const fk of ['gemini', 'claude', 'other']) {
+      if (!fams[fk]) continue;
+      pushIfFinite(fams[fk].pct5h);
+      pushIfFinite(fams[fk].pct7d);
+    }
+  }
+  if (!vals.length) {
+    pushIfFinite(eff.effective5hPct);
+    pushIfFinite(eff.effective7dPct);
+  }
+  if (!vals.length) {
+    return { minPct: null, avgPct: null, hasKnown: false };
+  }
+  const minPct = Math.min(...vals);
+  const avgPct = vals.reduce((acc, x) => acc + x, 0) / vals.length;
+  return { minPct, avgPct, hasKnown: true };
 }
 
 export function createAccountManager(options = {}) {
@@ -1110,18 +1149,19 @@ export function createAccountManager(options = {}) {
     let primaryRecovery = null;
     if (primary && curId && primary.id !== curId) {
       const eff = computeEffectiveQuota(primary.lastQuota);
-      const p7 = eff?.effective7dPct;
-      const p5 = eff?.effective5hPct;
-      const p7Ok = p7 === null || p7 === undefined || Number(p7) >= hysteresis;
-      const p5Ok = p5 === null || p5 === undefined || Number(p5) >= hysteresis;
-      if (p7Ok && p5Ok) {
+      const health = evaluateQuotaPoolHealth(eff, activeModel);
+      const p7 = toFinitePctOrNull(eff?.effective7dPct);
+      const p5 = toFinitePctOrNull(eff?.effective5hPct);
+      const topOk = (p7 === null || p7 >= hysteresis) && (p5 === null || p5 >= hysteresis);
+      const poolOk = !health.hasKnown || health.minPct >= hysteresis;
+      if (topOk && poolOk) {
         primaryRecovery = {
           accountId: primary.id,
           email: primary.email,
           alias: primary.alias || '主账号',
           reason: eff?.reset7dPassed || eff?.reset5hPassed
-            ? `主账号额度预计已重置恢复（≥ ${hysteresis}%），可择机切回主号继续使用`
-            : `主账号额度已恢复（≥ ${hysteresis}% 滞回阈值），可择机切回主号继续使用`
+            ? `主账号各模型池额度预计已重置恢复（≥ ${hysteresis}%），可择机切回主号继续使用`
+            : `主账号各模型池额度充沛（≥ ${hysteresis}% 滞回阈值），可择机切回主号继续使用`
         };
       }
     }
@@ -1131,36 +1171,41 @@ export function createAccountManager(options = {}) {
       .map((a) => {
         const compatible = accountSupportsModel(a, activeModel);
         const eff = computeEffectiveQuota(a.lastQuota);
-        const q7 = eff?.effective7dPct;
-        const q5 = eff?.effective5hPct;
-        const q7Num = q7 === null || q7 === undefined ? null : Number(q7);
-        const q5Num = q5 === null || q5 === undefined ? null : Number(q5);
-        const qScore = (q7Num === null ? 80 : q7Num) + (q5Num === null ? 20 : q5Num) * 0.4;
-        const healthyForPrimaryBoost =
-          (q7Num === null || q7Num >= hysteresis) && (q5Num === null || q5Num >= hysteresis);
-        const criticallyLow =
-          (q7Num !== null && q7Num < 10) || (q5Num !== null && q5Num < 10);
-        const roleBoost = a.role === 'primary' && healthyForPrimaryBoost ? 200 : 0;
-        const lowPenalty = criticallyLow ? 300 : 0;
+        const health = evaluateQuotaPoolHealth(eff, activeModel);
+        const minPct = health.minPct;
+        const avgPct = health.avgPct;
+        const qScore = health.hasKnown
+          ? minPct * 1.15 + avgPct * 0.35
+          : 92;
+        const healthyForRecommend = !health.hasKnown || minPct >= hysteresis;
+        const depletedPool = health.hasKnown && minPct < 20;
+        const criticallyLow = health.hasKnown && minPct < 10;
+        const roleBoost = a.role === 'primary' && healthyForRecommend ? 200 : 0;
+        const lowPenalty = criticallyLow ? 600 : (depletedPool ? 380 : 0);
         const compatBoost = compatible ? 1000 : 0;
         const prioPenalty = clampInt(a.priority, 1, 99, 50);
         return {
           account: a,
           compatible,
+          hasKnownQuota: health.hasKnown,
+          minPct,
+          depletedPool,
           score: compatBoost + roleBoost + qScore - lowPenalty - prioPenalty
         };
       })
       .sort((a, b) => b.score - a.score);
 
     const best = candidates[0] || null;
+    // Never mark an account as "recommended" if its bottleneck pool is clearly depleted (<20%)
+    const eligibleBest = best && !best.depletedPool ? best : null;
     return {
-      recommended: best
+      recommended: eligibleBest
         ? {
-            accountId: best.account.id,
-            email: best.account.email,
-            alias: best.account.alias || best.account.email,
-            role: best.account.role,
-            modelCompatible: best.compatible
+            accountId: eligibleBest.account.id,
+            email: eligibleBest.account.email,
+            alias: eligibleBest.account.alias || eligibleBest.account.email,
+            role: eligibleBest.account.role,
+            modelCompatible: eligibleBest.compatible
           }
         : null,
       primaryRecovery,

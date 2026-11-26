@@ -1701,6 +1701,62 @@
       gap: 5px;
     }
 
+    .relay-card.is-standby-compact .relay-card-head {
+      flex-wrap: nowrap;
+      gap: 6px;
+    }
+
+    .relay-card.is-standby-compact .search-card-meta {
+      flex: 1 1 auto;
+      min-width: 0;
+      flex-wrap: nowrap;
+      overflow: hidden;
+      gap: 4px;
+    }
+
+    .relay-card.is-standby-compact .relay-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+
+    .relay-card.is-standby-compact .relay-handle-sub {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 72px;
+    }
+
+    .relay-card.is-standby-compact .pill {
+      flex-shrink: 0;
+    }
+
+    .relay-card.is-standby-compact .search-card-actions {
+      flex-shrink: 0;
+      flex-wrap: nowrap;
+    }
+
+    .list-row[draggable="true"] {
+      cursor: grab;
+    }
+
+    .list-row[draggable="true"]:active {
+      cursor: grabbing;
+    }
+
+    .radar-rel-details {
+      margin-top: 5px;
+      font-size: 11px;
+    }
+
+    .radar-rel-details summary {
+      cursor: pointer;
+      color: var(--color-accent, var(--p-accent));
+      font-weight: 500;
+      user-select: none;
+    }
+
     .relay-handle-sub {
       font-size: 11px;
       font-weight: 400;
@@ -3663,7 +3719,7 @@
           const selected = b.selectedPath === item.path;
           const showOpen = !item.isDir && Boolean(item.uri) && !appState.nativeTabUnsupported;
           return (
-            `<li class="list-row${selected ? ' is-selected' : ''}" data-list="browse" data-index="${idx}" title="${escapeHtml(item.path)}">` +
+            `<li class="list-row${selected ? ' is-selected' : ''}" draggable="true" data-list="browse" data-index="${idx}" title="${escapeHtml(item.path)}">` +
               `<span class="kind-icon kind-${escapeHtml(kind)}" aria-hidden="true">${KIND_ICONS[kind]}</span>` +
               `<span class="row-main">` +
                 `<span class="row-title-line"><span class="row-name">${escapeHtml(item.name)}</span></span>` +
@@ -3714,7 +3770,7 @@
           const showOpen = Boolean(item.uri) && !appState.nativeTabUnsupported;
           const ago = formatTimeAgo(item.mtimeMs);
           return (
-            `<li class="list-row${selected ? ' is-selected' : ''}" data-list="artifacts" data-index="${realIdx}" title="${escapeHtml(item.path)}">` +
+            `<li class="list-row${selected ? ' is-selected' : ''}" draggable="true" data-list="artifacts" data-index="${realIdx}" title="${escapeHtml(item.path)}">` +
               `<span class="kind-icon kind-${escapeHtml(kind)}" aria-hidden="true">${KIND_ICONS[kind]}</span>` +
               `<span class="row-main">` +
                 `<span class="row-title-line"><span class="row-name">${escapeHtml(item.name)}</span></span>` +
@@ -3760,7 +3816,7 @@
           const selected = p.selectedPath === item.path;
           const showOpen = !item.isDir && exists && Boolean(item.uri) && !appState.nativeTabUnsupported;
           return (
-            `<li class="list-row${selected ? ' is-selected' : ''}${exists ? '' : ' is-missing'}" data-list="pins" data-index="${idx}" title="${escapeHtml(item.path)}">` +
+            `<li class="list-row${selected ? ' is-selected' : ''}${exists ? '' : ' is-missing'}" draggable="true" data-list="pins" data-index="${idx}" title="${escapeHtml(item.path)}">` +
               `<span class="kind-icon kind-${escapeHtml(kind)}" aria-hidden="true">${KIND_ICONS[kind]}</span>` +
               `<span class="row-main">` +
                 `<span class="row-title-line">` +
@@ -4282,7 +4338,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.5.9，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.6.0，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -4312,6 +4368,45 @@
           );
         } else {
           const rec = d.recommendation || {};
+          const accs = Array.isArray(d.accounts) ? d.accounts : [];
+
+          const evalWindowPctClient = (pctRaw, resetIso, resetPassedFlag) => {
+            const passedByClock = Boolean(resetIso && Number.isFinite(Date.parse(resetIso)) && Date.parse(resetIso) <= Date.now());
+            if (resetPassedFlag || passedByClock) return { pct: 100, passed: true };
+            if (pctRaw === undefined || pctRaw === null || typeof pctRaw === 'boolean' || (typeof pctRaw === 'string' && pctRaw.trim() === '')) {
+              return { pct: null, passed: false };
+            }
+            const num = Number(pctRaw);
+            return Number.isFinite(num) ? { pct: Math.max(0, Math.min(100, num)), passed: false } : { pct: null, passed: false };
+          };
+
+          const evalAccountPoolHealthClient = (acc) => {
+            const eff = acc?.effectiveQuota;
+            if (!eff || typeof eff !== 'object') return { hasAny: false, minPoolPct: null, anyExhausted: false };
+            const samples = [];
+            const pushWin = (p, rst, pass) => {
+              const w = evalWindowPctClient(p, rst, pass);
+              if (w.pct !== null) samples.push(w.pct);
+            };
+            const fams = eff.families;
+            if (fams && (fams.gemini || fams.claude)) {
+              if (fams.gemini) {
+                pushWin(fams.gemini.pct5h, fams.gemini.reset5hAt || eff.reset5hAt, fams.gemini.reset5hPassed);
+                pushWin(fams.gemini.pct7d, fams.gemini.reset7dAt || eff.reset7dAt, fams.gemini.reset7dPassed);
+              }
+              if (fams.claude) {
+                pushWin(fams.claude.pct5h, fams.claude.reset5hAt || eff.reset5hAt, fams.claude.reset5hPassed);
+                pushWin(fams.claude.pct7d, fams.claude.reset7dAt || eff.reset7dAt, fams.claude.reset7dPassed);
+              }
+            } else {
+              pushWin(eff.effective5hPct, eff.reset5hAt, eff.reset5hPassed);
+              pushWin(eff.effective7dPct, eff.reset7dAt, eff.reset7dPassed);
+            }
+            if (!samples.length) return { hasAny: false, minPoolPct: null, anyExhausted: false };
+            const minPoolPct = Math.min(...samples);
+            return { hasAny: true, minPoolPct, anyExhausted: minPoolPct < 20 };
+          };
+
           if (d.activeCredential?.unregistered && d.activeCredential?.email) {
             parts.push(
               `<article class="relay-card is-warn">` +
@@ -4321,7 +4416,8 @@
               `</article>`
             );
           }
-          if (rec.primaryRecovery) {
+          const priRecAcc = rec.primaryRecovery?.accountId ? accs.find((x) => x.id === rec.primaryRecovery.accountId) : null;
+          if (rec.primaryRecovery && (!priRecAcc || !evalAccountPoolHealthClient(priRecAcc).anyExhausted)) {
             parts.push(
               `<article class="relay-card is-accent">` +
                 `<div class="relay-card-head"><span class="relay-title">💡 主号恢复提醒</span>` +
@@ -4395,10 +4491,28 @@
             );
           }
 
-          const accs = Array.isArray(d.accounts) ? d.accounts : [];
           if (!accs.length) {
             parts.push('<div class="empty-state">尚未捕获账号，请先在下方点击「捕获当前活跃账号」把当前主号存入 OS 隔离凭据库</div>');
           } else {
+            const standbyCandidates = accs.filter((x) => !x.isCurrentActive && x.vaultHasBackup !== false);
+            const healthyStandby = standbyCandidates.filter((x) => !evalAccountPoolHealthClient(x).anyExhausted);
+            let effectiveRecId = '';
+            if (healthyStandby.length > 0) {
+              const srvRecId = rec?.recommended?.accountId || '';
+              const rankedHealthy = [...healthyStandby].sort((a, b) => {
+                const ha = evalAccountPoolHealthClient(a);
+                const hb = evalAccountPoolHealthClient(b);
+                const scoreOf = (item, h) => {
+                  const minQ = h.minPoolPct ?? 75;
+                  const priBonus = item.role === 'primary' ? (minQ >= 50 ? 200 : 90) : 0;
+                  const srvTie = srvRecId && item.id === srvRecId ? 5 : 0;
+                  return priBonus + minQ + srvTie - ((Number(item.priority) || 50) * 0.1);
+                };
+                return scoreOf(b, hb) - scoreOf(a, ha);
+              });
+              effectiveRecId = rankedHealthy[0].id;
+            }
+
             const fmtQuotaEta = (iso) => {
               if (!iso) return '';
               const ms = Date.parse(iso) - Date.now();
@@ -4445,11 +4559,12 @@
             };
 
             const barRow = (label, pct, passed, resetIso) => {
-              const n = toCleanPct(pct);
+              const w = evalWindowPctClient(pct, resetIso, passed);
+              const n = w.pct;
               if (n === null) return '';
               const cls = n >= 50 ? 'is-ok' : n >= 20 ? 'is-warn' : 'is-danger';
               const eta = fmtQuotaEta(resetIso);
-              const meta = passed
+              const meta = w.passed
                 ? '<span class="pill pill-ok">已回血 100%</span>'
                 : `<span>${n}%${eta ? ' · ' + escapeHtml(eta) : ''}</span>`;
               return (
@@ -4462,8 +4577,10 @@
             };
 
             const renderCompactPoolChip = (poolName, p5, pass5, rst5, p7, pass7, rst7) => {
-              const n5 = toCleanPct(p5);
-              const n7 = toCleanPct(p7);
+              const w5 = evalWindowPctClient(p5, rst5, pass5);
+              const w7 = evalWindowPctClient(p7, rst7, pass7);
+              const n5 = w5.pct;
+              const n7 = w7.pct;
               const has5 = n5 !== null;
               const has7 = n7 !== null;
               if (!has5 && !has7) return '';
@@ -4472,7 +4589,7 @@
               const tone = minN >= 50 ? 'is-ok' : minN >= 20 ? 'is-warn' : 'is-danger';
 
               let summaryText = '';
-              if (has5 && has7 && n5 >= 99.95 && n7 >= 99.95 && !pass5 && !pass7) {
+              if (has5 && has7 && n5 >= 99.95 && n7 >= 99.95 && !w5.passed && !w7.passed) {
                 summaryText = '100%';
               } else {
                 const bits = [];
@@ -4484,11 +4601,11 @@
               const tipParts = [];
               if (has5) {
                 const eta5 = fmtQuotaEta(rst5);
-                tipParts.push(`5h: ${n5}%${pass5 ? '（过点预计已满血）' : (eta5 ? `（${eta5}）` : '')}`);
+                tipParts.push(`5h: ${n5}%${w5.passed ? '（过点预计已满血）' : (eta5 ? `（${eta5}）` : '')}`);
               }
               if (has7) {
                 const eta7 = fmtQuotaEta(rst7);
-                tipParts.push(`7d: ${n7}%${pass7 ? '（过点预计已满血）' : (eta7 ? `（${eta7}）` : '')}`);
+                tipParts.push(`7d: ${n7}%${w7.passed ? '（过点预计已满血）' : (eta7 ? `（${eta7}）` : '')}`);
               }
               return (
                 `<span class="quota-fam-chip ${tone}" title="${escapeHtml(`${poolName} · ${tipParts.join(' ｜ ')}`)}">` +
@@ -4499,22 +4616,21 @@
             };
 
             const computeStandbyScore = (a) => {
-              const isRec = rec?.recommended?.accountId && rec.recommended.accountId === a.id;
-              const eff = a.effectiveQuota;
-              const q7 = eff?.effective7dPct;
-              const q5 = eff?.effective5hPct;
-              const minQ = Math.min(
-                q7 === null || q7 === undefined ? 85 : Number(q7),
-                q5 === null || q5 === undefined ? 85 : Number(q5)
-              );
-              const healthyPrimary = a.role === 'primary' && minQ >= 20 ? 300 : (a.role === 'primary' ? 40 : 0);
-              return (isRec ? 500 : 0) + healthyPrimary + minQ;
+              const isRec = Boolean(effectiveRecId && effectiveRecId === a.id);
+              const h = evalAccountPoolHealthClient(a);
+              const minQ = h.minPoolPct ?? 75;
+              if (h.anyExhausted) {
+                return minQ - ((Number(a.priority) || 50) * 0.05);
+              }
+              const healthyPrimary = a.role === 'primary' && minQ >= 50 ? 220 : (a.role === 'primary' ? 90 : 0);
+              return (isRec ? 500 : 0) + healthyPrimary + minQ - ((Number(a.priority) || 50) * 0.05);
             };
 
             const renderAccountCard = (a) => {
               const ident = resolveIdentity(a);
               const isOnline = Boolean(a.isCurrentActive);
-              const isRec = !isOnline && Boolean(rec?.recommended?.accountId && rec.recommended.accountId === a.id);
+              const poolHealth = evalAccountPoolHealthClient(a);
+              const isRec = !isOnline && !poolHealth.anyExhausted && Boolean(effectiveRecId && effectiveRecId === a.id);
               const eff = a.effectiveQuota;
               const rawTier = String(eff?.tierName || '').trim();
               const tierLabel = formatTierLabel(rawTier, !isOnline);
@@ -4578,7 +4694,8 @@
                 : '';
 
               const autoRelaunchPref = d.autoRelaunchAfterSwitch !== false;
-              const switchCtaText = autoRelaunchPref ? '⚡ 切换并重启' : '⏱ 5s 切号';
+              const switchCtaText = autoRelaunchPref ? '⚡ 切换' : '⏱ 切号';
+              const switchCtaTip = autoRelaunchPref ? '安全切换至该账号并自动重启 Antigravity 生效' : '5 秒倒计时安全切换至该账号';
 
               if (isOnline) {
                 const roleBadge = a.role === 'primary'
@@ -4687,7 +4804,7 @@
                       tierBadge + recBadge + backupBadge +
                     `</div>` +
                     `<div class="search-card-actions">` +
-                      `<button type="button" class="mini-btn is-primary" data-acc-action="countdown" data-id="${escapeHtml(a.id)}" data-display-name="${escapeHtml(ident.title)}">${switchCtaText}</button>` +
+                      `<button type="button" class="mini-btn is-primary" data-acc-action="countdown" data-id="${escapeHtml(a.id)}" data-display-name="${escapeHtml(ident.title)}" title="${escapeHtml(switchCtaTip)}">${switchCtaText}</button>` +
                       `<button type="button" class="mini-btn icon-more-btn${moreOpen ? ' is-open' : ''}" data-acc-action="toggle-more" data-id="${escapeHtml(a.id)}" title="展开管理操作与详情" aria-label="更多操作">⋯</button>` +
                     `</div>` +
                   `</div>` +
@@ -4845,9 +4962,13 @@
           `</div>`;
 
         const rad = st.radarReport;
-        let radarBodyHtml = '<p class="relay-sub">普通用户直接用上方「一键更新」即可；若你想抢先挑选上游某个新特性让 AI 融合，再点「检查上游动向」勾选对应中文条目。</p>';
+        const radHasUpdates = Boolean(rad && Array.isArray(rad.results) && rad.results.some((r) => r.hasUpdate));
+        const radDefaultPickedCount = radHasUpdates
+          ? rad.results.reduce((sum, r) => sum + ((r.compatFixes || []).length), 0)
+          : 0;
+        let radarBodyHtml = '<p class="relay-sub">普通用户直接用上方「一键更新」即可；若你想抢先挑选上游某个新特性让 AI 融合，再点「检查上游动向」勾选对应中文条目后一键合并复制。</p>';
         if (st.radarLoading) {
-          radarBodyHtml = '<p class="relay-sub">正在比对上游版本并生成中文更新摘要…</p>';
+          radarBodyHtml = '<p class="relay-sub">正在比对三个上游仓库版本、Release 要点并生成精准中文摘要…</p>';
         } else if (rad && Array.isArray(rad.results)) {
           const renderZhItem = (r, c, checked) => {
             const tag = escapeHtml(c.tagZh || '更新');
@@ -4855,7 +4976,7 @@
             const rawTip = escapeHtml(`提交 ${c.sha || '-'} · 原文：${c.message || ''}`);
             return (
               `<label class="radar-pick-row" title="${rawTip}">` +
-                `<input type="checkbox" class="radar-pick-cb" ${checked ? 'checked ' : ''}data-key="${escapeHtml(r.key)}" data-repo="${escapeHtml(r.repo)}" data-sha="${escapeHtml(c.sha)}" data-msg="${escapeHtml(c.message)}">` +
+                `<input type="checkbox" class="radar-pick-cb" ${checked ? 'checked ' : ''}data-key="${escapeHtml(r.key)}" data-repo="${escapeHtml(r.repo)}" data-license="${escapeHtml(r.license || '')}" data-role-zh="${escapeHtml(r.roleZh || r.role || '')}" data-tag-zh="${tag}" data-zh="${zhText}" data-sha="${escapeHtml(c.sha)}" data-msg="${escapeHtml(c.message)}">` +
                 `<span><span class="pill" style="margin-right:4px;font-size:10px;">${tag}</span>${zhText}</span>` +
               `</label>`
             );
@@ -4871,23 +4992,30 @@
                     ? '<span class="pill">小幅变动</span>'
                     : `<span class="pill">${escapeHtml(r.impactLevel || '')}</span>`;
             const compatHtml = (r.compatFixes || []).length
-              ? `<div style="margin-top:4px;"><strong style="font-size:11px;">🛡️ 兼容性 / 安全必看：</strong>` +
+              ? `<div style="margin-top:4px;"><strong style="font-size:11px;">🛡️ 兼容性 / 安全必看（默认已勾）：</strong>` +
                 r.compatFixes.map((c) => renderZhItem(r, c, true)).join('') + `</div>`
               : '';
             const featHtml = (r.featureCandidates || []).length
-              ? `<div style="margin-top:4px;"><strong style="font-size:11px;">✨ 实用新功能候选：</strong>` +
+              ? `<div style="margin-top:4px;"><strong style="font-size:11px;">✨ 实用新功能 / 参考候选（按需勾选）：</strong>` +
                 r.featureCandidates.map((c) => renderZhItem(r, c, false)).join('') + `</div>`
               : '';
+            const relHighlights = Array.isArray(r.zhReleaseHighlights) ? r.zhReleaseHighlights : [];
+            const relHtml = r.hasUpdate && relHighlights.length
+              ? `<details class="radar-rel-details">` +
+                  `<summary>📄 原版 Release 中文升级要点（${relHighlights.length} 条 · 防大提交漏检）</summary>` +
+                  `<ul class="radar-list">${relHighlights.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>` +
+                `</details>`
+              : '';
             const rowActions = r.hasUpdate
-              ? `<button type="button" class="mini-btn" data-acc-action="radar-copy-picked" data-key="${escapeHtml(r.key)}" data-repo="${escapeHtml(r.repo)}">复制融合指令</button>` +
-                `<button type="button" class="mini-btn is-primary" data-acc-action="radar-sync-key" data-key="${escapeHtml(r.key)}">标为已同步</button>`
+              ? `<button type="button" class="mini-btn" data-acc-action="radar-sync-key" data-key="${escapeHtml(r.key)}" title="仅将该仓库标记为已同步">同步此项</button>`
               : '';
             const titleLabel = r.displayNameZh || r.repo;
+            const latestVerStr = `${r.latestTag || r.latestCommit || '-'}${r.latestIsPrerelease ? ' (预发布)' : ''}`;
             return (
               `<div class="radar-item">` +
                 `<div class="relay-card-head"><div class="search-card-meta"><strong title="${escapeHtml(r.repo)}">${escapeHtml(titleLabel)}</strong>${lvl}</div><div class="search-card-actions">${rowActions}</div></div>` +
-                `<div class="relay-sub">当前基线 ${escapeHtml(r.baselineTag || r.baselineCommit || '-')} → 上游最新 ${escapeHtml(r.latestTag || r.latestCommit || '-')} (${escapeHtml(r.license || '')})${r.roleZh ? ` · ${escapeHtml(r.roleZh)}` : ''}</div>` +
-                compatHtml + featHtml +
+                `<div class="relay-sub">当前基线 ${escapeHtml(r.baselineTag || r.baselineCommit || '-')} → 上游最新 ${escapeHtml(latestVerStr)} (${escapeHtml(r.license || '')})${r.roleZh ? ` · ${escapeHtml(r.roleZh)}` : ''}</div>` +
+                compatHtml + featHtml + relHtml +
               `</div>`
             );
           }).join('');
@@ -4900,7 +5028,7 @@
               ? `<span class="pill pill-warn">新版本 ${escapeHtml(suInfo.latestTag)}</span>`
               : st.radarLoading
                 ? '<span class="pill">检查中</span>'
-                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.5.9</span>');
+                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.6.0</span>');
         const radarOpen = Boolean(st.openSections?.radar || st.radarLoading || rad || st.selfUpdateChecking || st.selfUpdateApplying || suInfo || suRes);
         parts.push(
           `<details class="relay-accordion" data-sec="radar" ${radarOpen ? 'open' : ''}>` +
@@ -4911,9 +5039,12 @@
             `<div class="relay-acc-body">` +
               selfUpdateBoxHtml +
               `<div class="relay-card-head" style="margin-top:4px;padding-top:6px;border-top:1px dashed var(--color-border-secondary, var(--p-border));">` +
-                `<span class="relay-title" style="font-size:11.5px;">🔭 上游生态动态（进阶参考 · 悬停可看英文原文）</span>` +
+                `<span class="relay-title" style="font-size:11.5px;">🔭 上游生态动态（悬停条目可看英文原文）</span>` +
                 `<div class="search-card-actions">` +
-                  (rad?.markdown ? `<button type="button" class="mini-btn" data-acc-action="radar-copy">复制简报</button>` : '') +
+                  (radHasUpdates
+                    ? `<button type="button" id="radar-copy-all-btn" class="mini-btn is-primary" data-acc-action="radar-copy-all-picked" title="将下方所有仓库已勾选的更新合并为一条结构化融合指令">📋 一键复制已勾融合指令 (${radDefaultPickedCount})</button>` +
+                      `<button type="button" class="mini-btn" data-acc-action="radar-sync-all" title="将全部上游仓库基线同步到最新并归绿">✅ 一键同步全部基线</button>`
+                    : (rad?.markdown ? `<button type="button" class="mini-btn" data-acc-action="radar-copy">复制简报</button>` : '')) +
                   `<button type="button" class="mini-btn" data-acc-action="radar-check" ${st.radarLoading ? 'disabled' : ''}>${st.radarLoading ? '检查中…' : '检查上游动向'}</button>` +
                 `</div>` +
               `</div>` +
@@ -5178,6 +5309,12 @@
           const nowBtn = accountsWrap.querySelector('button[data-acc-action="cd-now"]');
           if (nowBtn) nowBtn.textContent = autoR ? '立即切换并重启' : '立即切换';
           callServerTool('accounts_toggle_enabled', { autoRelaunchAfterSwitch: autoR }).catch(() => {});
+        } else if (event.target && event.target.classList && event.target.classList.contains('radar-pick-cb')) {
+          const copyAllBtn = document.getElementById('radar-copy-all-btn');
+          if (copyAllBtn) {
+            const cnt = accountsWrap.querySelectorAll('.radar-pick-cb:checked').length;
+            copyAllBtn.textContent = `📋 一键复制已勾融合指令 (${cnt})`;
+          }
         }
       });
 
@@ -5371,7 +5508,7 @@
             appState.accounts.selfUpdateChecking = false;
             appState.accounts.selfUpdateInfo = info;
             renderAccounts();
-            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.5.9'}`);
+            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.6.0'}`);
           } else if (act === 'self-update-repair-ask') {
             appState.accounts.selfUpdateConfirmRepair = true;
             renderAccounts();
@@ -5399,18 +5536,76 @@
             appState.accounts.radarReport = rep;
             renderAccounts();
             showToast(`上游检查完成：重要更新 ${rep?.summary?.high ?? 0} 项 / 常规更新 ${rep?.summary?.medium ?? 0} 项`);
-          } else if (act === 'radar-copy-picked') {
-            const key = btn.dataset.key;
-            const repo = btn.dataset.repo;
-            const checks = Array.from(accountsWrap.querySelectorAll(`.radar-pick-cb[data-key="${CSS.escape(key)}"]:checked`));
+          } else if (act === 'radar-copy-all-picked' || act === 'radar-copy-picked') {
+            const targetKey = act === 'radar-copy-picked' ? (btn.dataset.key || '') : '';
+            const selector = targetKey
+              ? `.radar-pick-cb[data-key="${safeCssEscape(targetKey)}"]:checked`
+              : '.radar-pick-cb:checked';
+            const checks = Array.from(accountsWrap.querySelectorAll(selector));
+            const allResults = Array.isArray(appState.accounts.radarReport?.results)
+              ? appState.accounts.radarReport.results
+              : [];
             if (!checks.length) {
-              showToast('请先勾选至少一条想要评估或融合的更新项；若决定全部跳过请直接点「同步基线」', true);
+              showToast('当前未勾选任何需融合的条目；若确认全部跳过，直接点击「✅ 一键同步全部基线」即可归绿', true);
               return;
             }
-            const pickedLines = checks.map((c) => `- ${c.dataset.sha} ${c.dataset.msg}`).join('\n');
-            const prompt = `请对比上游仓库 ${repo} 中我勾选的以下变更，评估并以 Clean-room 方式择优融合进 anti-claude-prism-suite（未勾选的一律跳过，绝不照搬照抄），完成后同步基线：\n${pickedLines}`;
-            const ok = await copyTextSafe(prompt);
-            showToast(ok ? `已复制 ${checks.length} 条已选融合指令，粘贴给 AI 即可` : '复制失败', !ok);
+            const byRepo = new Map();
+            for (const cb of checks) {
+              const repo = cb.dataset.repo || cb.dataset.key || 'unknown';
+              if (!byRepo.has(repo)) {
+                byRepo.set(repo, {
+                  key: cb.dataset.key || '',
+                  repo,
+                  license: cb.dataset.license || '',
+                  roleZh: cb.dataset.roleZh || '',
+                  items: []
+                });
+              }
+              byRepo.get(repo).items.push({
+                sha: cb.dataset.sha || '-',
+                tagZh: cb.dataset.tagZh || '更新',
+                zh: cb.dataset.zh || '',
+                msg: cb.dataset.msg || ''
+              });
+            }
+            const promptLines = [
+              '请评估以下我在 Prism 上游雷达中勾选的变更，以 Clean-room 方式择优融合进 `anti-claude-prism-suite`（未勾选条目一律跳过，严禁照搬照抄或引入 GPL 源码），完成后一并同步 `upstream.json` 与 `plugin/upstream.json` 基线：'
+            ];
+            let secIdx = 1;
+            for (const grp of byRepo.values()) {
+              const metaBits = [grp.license, grp.roleZh].filter(Boolean).join(' · ');
+              const isGpl = /GPL/i.test(grp.license);
+              promptLines.push('');
+              promptLines.push(`### ${secIdx}. ${grp.repo}${metaBits ? `（${metaBits}）` : ''}`);
+              if (isGpl) {
+                promptLines.push('> 注意：该仓库为 GPL 协议，仅参考公开交互思路或兼容信号，严禁复制或转写其源码。');
+              }
+              for (const it of grp.items) {
+                const zhDiffers = it.zh && it.zh !== it.msg;
+                promptLines.push(`- \`${it.sha}\` [${it.tagZh}] ${it.zh || it.msg}`);
+                if (zhDiffers && it.msg) {
+                  promptLines.push(`  - 原文：\`${it.msg}\``);
+                }
+              }
+              secIdx++;
+            }
+            if (!targetKey) {
+              const skippedUpdated = allResults.filter((r) => r.hasUpdate && !byRepo.has(r.repo));
+              if (skippedUpdated.length) {
+                promptLines.push('');
+                promptLines.push(`### ${secIdx}. 本轮未勾选代码融合、直接同步基线的仓库`);
+                for (const sr of skippedUpdated) {
+                  promptLines.push(`- \`${sr.repo}\`（${sr.baselineTag || sr.baselineCommit || '-'} → ${sr.latestTag || sr.latestCommit || '-'}）`);
+                }
+              }
+            }
+            const ok = await copyTextSafe(promptLines.join('\n'));
+            showToast(ok ? `已合并复制 ${byRepo.size} 个仓库共 ${checks.length} 条融合指令，粘贴给 AI 即可` : '复制失败', !ok);
+          } else if (act === 'radar-sync-all') {
+            await callServerTool('sync_upstream_baseline', { keys: [] });
+            showToast('已将全部上游仓库基线同步至最新并归绿');
+            appState.accounts.radarReport = await callServerTool('check_upstreams', { force: true });
+            renderAccounts();
           } else if (act === 'radar-sync-key') {
             const key = btn.dataset.key;
             await callServerTool('sync_upstream_baseline', { keys: [key] });
@@ -5664,9 +5859,29 @@
         }
       }
 
+      function handleListDragStart(event) {
+        if (event.target.closest('button[data-action]')) {
+          event.preventDefault();
+          return;
+        }
+        const row = event.target.closest('.list-row');
+        if (!row || !event.dataTransfer) return;
+        const listType = row.dataset.list;
+        const idx = Number(row.dataset.index);
+        const item = getRowItem(listType, idx);
+        if (!item || !item.path) return;
+        event.dataTransfer.effectAllowed = 'copyLink';
+        const refToken = /\s/.test(item.path) ? `@"${item.path.replace(/"/g, '')}"` : `@${item.path}`;
+        event.dataTransfer.setData('text/plain', refToken);
+        if (item.uri) {
+          try { event.dataTransfer.setData('text/uri-list', item.uri); } catch {}
+        }
+      }
+
       for (const wrap of [browseListWrap, artifactsListWrap, pinsListWrap]) {
         wrap.addEventListener('click', handleListClick);
         wrap.addEventListener('dblclick', handleListDblClick);
+        wrap.addEventListener('dragstart', handleListDragStart);
       }
 
       // Preview Header & Body Events
@@ -6099,7 +6314,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.5.9' },
+            appInfo: { name: 'prism-files', version: '0.6.0' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};

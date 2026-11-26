@@ -5,22 +5,23 @@ using System.Drawing;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Anti-Claude Prism Suite 一键安装器")]
-[assembly: AssemblyDescription("Anti-Claude Prism Suite & Antigravity prism-files MCP App Installer")]
+[assembly: AssemblyDescription("Anti-Claude Prism Suite Standalone All-in-One Installer (Kernel + Extensions + prism-files MCP App)")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.5.9.0")]
-[assembly: AssemblyFileVersion("0.5.9.0")]
+[assembly: AssemblyVersion("0.6.0.0")]
+[assembly: AssemblyFileVersion("0.6.0.0")]
 
 namespace AntiClaudePrismSuiteInstaller
 {
     internal sealed class PayloadEntry
     {
         public string ResourceName;
-        public string Category; // "extensions" or "plugin"
+        public string Category; // "kernel", "extensions", or "plugin"
         public string RelativePath;
     }
 
@@ -28,6 +29,7 @@ namespace AntiClaudePrismSuiteInstaller
     {
         public bool SilentInstall;
         public bool SilentUninstall;
+        public bool WithKernel;
         public bool NoWsl;
         public string TestUserDir;
         public string TestPluginsDir;
@@ -58,6 +60,14 @@ namespace AntiClaudePrismSuiteInstaller
             "prism-suite-00-prefs.js"
         };
 
+        private static readonly string[] KernelUserLayerFileNames = new string[]
+        {
+            "config.json",
+            "custom.css",
+            "custom.js",
+            "i18n.override.json"
+        };
+
         public static string GetDefaultExtensionsDir()
         {
             string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -76,6 +86,27 @@ namespace AntiClaudePrismSuiteInstaller
             return Path.Combine(
                 Path.Combine(Path.Combine(Path.Combine(profile, ".gemini"), "config"), "plugins"),
                 "prism-files");
+        }
+
+        public static void ResolveAntiClaudeDirsFromExtDir(string targetExtDir, out string stateDir, out string userDir)
+        {
+            string full = Path.GetFullPath(targetExtDir.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            if (string.Equals(Path.GetFileName(full), "extensions", StringComparison.OrdinalIgnoreCase))
+            {
+                userDir = Path.GetDirectoryName(full) ?? full;
+            }
+            else
+            {
+                userDir = full;
+            }
+            if (string.Equals(Path.GetFileName(userDir), "user", StringComparison.OrdinalIgnoreCase))
+            {
+                stateDir = Path.GetDirectoryName(userDir) ?? userDir;
+            }
+            else
+            {
+                stateDir = Path.Combine(userDir, ".anti-claude");
+            }
         }
 
         public static string NormalizePrismFilesTarget(string rawPath)
@@ -151,6 +182,17 @@ namespace AntiClaudePrismSuiteInstaller
                             RelativePath = rel
                         });
                     }
+                    else if (targetRel.StartsWith("kernel/", StringComparison.OrdinalIgnoreCase)
+                        && resourceName.StartsWith("payload.kernel.", StringComparison.Ordinal))
+                    {
+                        string rel = ValidateSafeRelativePath(targetRel.Substring("kernel/".Length));
+                        entries.Add(new PayloadEntry
+                        {
+                            ResourceName = resourceName,
+                            Category = "kernel",
+                            RelativePath = rel
+                        });
+                    }
                 }
             }
 
@@ -187,9 +229,18 @@ namespace AntiClaudePrismSuiteInstaller
             string parent = Path.GetDirectoryName(destPath);
             if (!string.IsNullOrEmpty(parent))
             {
+                if (IsExistingReparsePoint(parent))
+                {
+                    throw new InvalidOperationException("安全拦截：拒绝向重解析点目录写入文件：" + parent);
+                }
                 Directory.CreateDirectory(parent);
             }
-            string tmpPath = destPath + ".prism-tmp-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+            if (IsExistingReparsePoint(destPath))
+            {
+                throw new InvalidOperationException("安全拦截：拒绝覆盖重解析点文件：" + destPath);
+            }
+            string tmpPath = destPath + ".prism-tmp-" + Guid.NewGuid().ToString("N");
+            bool createdTmp = false;
             try
             {
                 using (Stream src = asm.GetManifestResourceStream(resourceName))
@@ -198,22 +249,608 @@ namespace AntiClaudePrismSuiteInstaller
                     {
                         throw new InvalidOperationException("未找到内嵌资源：" + resourceName);
                     }
-                    using (FileStream dst = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                    using (FileStream dst = new FileStream(tmpPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                     {
+                        createdTmp = true;
                         src.CopyTo(dst);
                         dst.Flush(true);
                     }
+                }
+                if (IsExistingReparsePoint(destPath))
+                {
+                    throw new InvalidOperationException("安全拦截：目标文件被替换为重解析点：" + destPath);
                 }
                 File.Copy(tmpPath, destPath, true);
             }
             finally
             {
+                if (createdTmp)
+                {
+                    try
+                    {
+                        if (File.Exists(tmpPath)) File.Delete(tmpPath);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct STARTUPINFOW
+        {
+            public int cb;
+            public string lpReserved;
+            public string lpDesktop;
+            public string lpTitle;
+            public int dwX;
+            public int dwY;
+            public int dwXSize;
+            public int dwYSize;
+            public int dwXCountChars;
+            public int dwYCountChars;
+            public int dwFillAttribute;
+            public int dwFlags;
+            public short wShowWindow;
+            public short cbReserved2;
+            public IntPtr lpReserved2;
+            public IntPtr hStdInput;
+            public IntPtr hStdOutput;
+            public IntPtr hStdError;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct PROCESS_INFORMATION
+        {
+            public IntPtr hProcess;
+            public IntPtr hThread;
+            public int dwProcessId;
+            public int dwThreadId;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool CreateProcessW(
+            string lpApplicationName,
+            StringBuilder lpCommandLine,
+            IntPtr lpProcessAttributes,
+            IntPtr lpThreadAttributes,
+            bool bInheritHandles,
+            uint dwCreationFlags,
+            IntPtr lpEnvironment,
+            string lpCurrentDirectory,
+            ref STARTUPINFOW lpStartupInfo,
+            out PROCESS_INFORMATION lpProcessInformation);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr hObject);
+
+        /// <summary>
+        /// Spawn a child process with bInheritHandles = FALSE and CREATE_NO_WINDOW so a detached
+        /// grandchild (e.g. daemon.mjs) can NEVER inherit open stdout/stderr pipes from callers of Setup.exe.
+        /// </summary>
+        private static bool RunProcessNoHandleInherit(string exePath, string arguments, string workingDir, int timeoutMs)
+        {
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            const uint WAIT_OBJECT_0 = 0x00000000;
+
+            string prevNoNet = Environment.GetEnvironmentVariable("ANTI_CLAUDE_NO_NETWORK");
+            Environment.SetEnvironmentVariable("ANTI_CLAUDE_NO_NETWORK", "1");
+            try
+            {
+                STARTUPINFOW si = new STARTUPINFOW();
+                si.cb = Marshal.SizeOf(typeof(STARTUPINFOW));
+                PROCESS_INFORMATION pi;
+                StringBuilder cmdLine = new StringBuilder();
+                cmdLine.Append('"').Append(exePath).Append('"');
+                if (!string.IsNullOrEmpty(arguments))
+                {
+                    cmdLine.Append(' ').Append(arguments);
+                }
+
+                bool started = CreateProcessW(
+                    exePath,
+                    cmdLine,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    false, // bInheritHandles = FALSE: strictly prevents pipe inheritance into daemon.mjs
+                    CREATE_NO_WINDOW,
+                    IntPtr.Zero,
+                    workingDir,
+                    ref si,
+                    out pi);
+
+                if (!started)
+                {
+                    throw new InvalidOperationException("CreateProcessW failed with Win32 error " + Marshal.GetLastWin32Error());
+                }
+
                 try
                 {
-                    if (File.Exists(tmpPath)) File.Delete(tmpPath);
+                    uint waitRes = WaitForSingleObject(pi.hProcess, (uint)Math.Max(1000, timeoutMs));
+                    if (waitRes != WAIT_OBJECT_0)
+                    {
+                        try { TerminateProcess(pi.hProcess, 1); } catch { }
+                        return false;
+                    }
+                    uint exitCode = 1;
+                    if (!GetExitCodeProcess(pi.hProcess, out exitCode))
+                    {
+                        return false;
+                    }
+                    return exitCode == 0;
                 }
-                catch
+                finally
                 {
+                    if (pi.hThread != IntPtr.Zero) CloseHandle(pi.hThread);
+                    if (pi.hProcess != IntPtr.Zero) CloseHandle(pi.hProcess);
+                }
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("ANTI_CLAUDE_NO_NETWORK", prevNoNet);
+            }
+        }
+
+        private static string ComputeFileSha256(string path)
+        {
+            if (!File.Exists(path)) return string.Empty;
+            try
+            {
+                using (SHA256 sha = SHA256.Create())
+                using (FileStream fs = File.OpenRead(path))
+                {
+                    byte[] hash = sha.ComputeHash(fs);
+                    return BitConverter.ToString(hash).Replace("-", string.Empty).ToLowerInvariant();
+                }
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        public static string FindWindowsNodeExe()
+        {
+            List<string> candidates = new List<string>();
+            string pathEnv = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+            string[] pathDirs = pathEnv.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < pathDirs.Length; i++)
+            {
+                try
+                {
+                    string dir = pathDirs[i].Trim().Trim('"');
+                    if (dir.Length > 0)
+                    {
+                        candidates.Add(Path.Combine(dir, "node.exe"));
+                    }
+                }
+                catch { }
+            }
+
+            string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            string pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+            if (!string.IsNullOrEmpty(pf)) candidates.Add(Path.Combine(Path.Combine(pf, "nodejs"), "node.exe"));
+            if (!string.IsNullOrEmpty(localApp)) candidates.Add(Path.Combine(Path.Combine(localApp, "Programs"), Path.Combine("nodejs", "node.exe")));
+            if (!string.IsNullOrEmpty(profile)) candidates.Add(Path.Combine(Path.Combine(profile, ".volta"), Path.Combine("bin", "node.exe")));
+            if (!string.IsNullOrEmpty(pf86)) candidates.Add(Path.Combine(Path.Combine(pf86, "nodejs"), "node.exe"));
+
+            // nvm-windows symlink or active dir
+            string nvmSymlink = Environment.GetEnvironmentVariable("NVM_SYMLINK");
+            if (!string.IsNullOrEmpty(nvmSymlink)) candidates.Add(Path.Combine(nvmSymlink.Trim().Trim('"'), "node.exe"));
+            if (!string.IsNullOrEmpty(appData))
+            {
+                string nvmDir = Path.Combine(appData, "nvm");
+                if (Directory.Exists(nvmDir))
+                {
+                    try
+                    {
+                        string[] sub = Directory.GetDirectories(nvmDir, "v*");
+                        Array.Sort(sub, StringComparer.OrdinalIgnoreCase);
+                        for (int s = sub.Length - 1; s >= 0; s--)
+                        {
+                            candidates.Add(Path.Combine(sub[s], "node.exe"));
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                try
+                {
+                    if (!string.IsNullOrEmpty(candidates[i]) && File.Exists(candidates[i]))
+                    {
+                        return Path.GetFullPath(candidates[i]);
+                    }
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        public static int EnsureDebugPortOnUserShortcuts(Action<string> log)
+        {
+            int updated = 0;
+            try
+            {
+                string[] userRoots = new string[]
+                {
+                    Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                    Environment.GetFolderPath(Environment.SpecialFolder.Programs)
+                };
+                Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+                if (shellType == null) return 0;
+                object shell = Activator.CreateInstance(shellType);
+                try
+                {
+                    for (int r = 0; r < userRoots.Length; r++)
+                    {
+                        if (string.IsNullOrEmpty(userRoots[r]) || !Directory.Exists(userRoots[r])) continue;
+                        string[] links;
+                        try
+                        {
+                            links = Directory.GetFiles(userRoots[r], "*Antigravity*.lnk", SearchOption.AllDirectories);
+                        }
+                        catch
+                        {
+                            continue;
+                        }
+                        for (int k = 0; k < links.Length; k++)
+                        {
+                            object shortcut = null;
+                            try
+                            {
+                                shortcut = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { links[k] });
+                                if (shortcut == null) continue;
+                                Type scType = shortcut.GetType();
+                                string targetPath = Convert.ToString(scType.InvokeMember("TargetPath", BindingFlags.GetProperty, null, shortcut, null)) ?? string.Empty;
+                                if (!targetPath.EndsWith("Antigravity.exe", StringComparison.OrdinalIgnoreCase)) continue;
+                                string args = Convert.ToString(scType.InvokeMember("Arguments", BindingFlags.GetProperty, null, shortcut, null)) ?? string.Empty;
+                                if (args.IndexOf("--remote-debugging-port", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                                string nextArgs = string.IsNullOrEmpty(args.Trim())
+                                    ? "--remote-debugging-port=0"
+                                    : (args.Trim() + " --remote-debugging-port=0");
+                                scType.InvokeMember("Arguments", BindingFlags.SetProperty, null, shortcut, new object[] { nextArgs });
+                                scType.InvokeMember("Save", BindingFlags.InvokeMethod, null, shortcut, null);
+                                updated++;
+                                log(string.Format("  [快捷方式] 已自动启用 CDP 调试端口: {0}", links[k]));
+                            }
+                            catch
+                            {
+                                // Safely skip read-only or locked shortcuts
+                            }
+                            finally
+                            {
+                                if (shortcut != null && Marshal.IsComObject(shortcut))
+                                {
+                                    try { Marshal.FinalReleaseComObject(shortcut); } catch { }
+                                }
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    if (shell != null && Marshal.IsComObject(shell))
+                    {
+                        try { Marshal.FinalReleaseComObject(shell); } catch { }
+                    }
+                }
+            }
+            catch
+            {
+            }
+            return updated;
+        }
+
+        private static bool IsExistingReparsePoint(string path)
+        {
+            try
+            {
+                FileAttributes attrs = File.GetAttributes(path);
+                return (attrs & FileAttributes.ReparsePoint) != 0;
+            }
+            catch (FileNotFoundException)
+            {
+                return false;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return false;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        private static string TrimTrailingSepPreserveRoot(string fullPath)
+        {
+            string full = Path.GetFullPath(fullPath);
+            string root = Path.GetPathRoot(full) ?? string.Empty;
+            if (string.Equals(full, root, StringComparison.OrdinalIgnoreCase))
+            {
+                return root;
+            }
+            return full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+
+        private static void AssertSafeManagedDirectory(string dirPath, string anchorDir)
+        {
+            string fullTarget = TrimTrailingSepPreserveRoot(dirPath);
+            string walkRoot = !string.IsNullOrEmpty(anchorDir)
+                ? TrimTrailingSepPreserveRoot(anchorDir)
+                : (Path.GetPathRoot(fullTarget) ?? string.Empty);
+
+            if (string.IsNullOrEmpty(walkRoot))
+            {
+                throw new InvalidOperationException("无法解析目标目录根路径：" + fullTarget);
+            }
+
+            string rootPath = Path.GetPathRoot(walkRoot) ?? string.Empty;
+            if (!string.Equals(walkRoot, rootPath, StringComparison.OrdinalIgnoreCase) && IsExistingReparsePoint(walkRoot))
+            {
+                throw new InvalidOperationException("安全拦截：锚点父目录为符号链接或目录联接：" + walkRoot);
+            }
+
+            if (string.Equals(fullTarget, walkRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            string prefix = walkRoot.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal)
+                ? walkRoot
+                : (walkRoot + Path.DirectorySeparatorChar);
+            if (!fullTarget.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("安全拦截：目标路径越出受管锚点目录：" + fullTarget);
+            }
+
+            string rel = fullTarget.Substring(prefix.Length);
+            string[] parts = rel.Split(new char[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
+            string walk = walkRoot;
+            for (int i = 0; i < parts.Length; i++)
+            {
+                walk = Path.Combine(walk, parts[i]);
+                if (IsExistingReparsePoint(walk))
+                {
+                    throw new InvalidOperationException("安全拦截：拒绝穿过符号链接或目录联接写入：" + walk);
+                }
+            }
+        }
+
+        public static int InstallKernel(string targetExtDir, List<PayloadEntry> entries, bool activateHostDaemon, Action<string> log)
+        {
+            string stateDir;
+            string userDir;
+            ResolveAntiClaudeDirsFromExtDir(targetExtDir, out stateDir, out userDir);
+            string fullStateDir = TrimTrailingSepPreserveRoot(stateDir);
+            string fullUserDir = TrimTrailingSepPreserveRoot(userDir);
+            string stateRoot = Path.GetPathRoot(fullStateDir) ?? string.Empty;
+            string userRoot = Path.GetPathRoot(fullUserDir) ?? string.Empty;
+            string runtimeDir = Path.Combine(fullStateDir, "runtime");
+            string runtimeFullRoot = Path.GetFullPath(runtimeDir);
+            string baseDir = Path.Combine(fullStateDir, "base");
+            string incomingDir = Path.Combine(fullStateDir, "incoming");
+
+            AssertSafeManagedDirectory(fullStateDir, stateRoot);
+            AssertSafeManagedDirectory(fullUserDir, userRoot);
+            AssertSafeManagedDirectory(runtimeDir, stateRoot);
+            AssertSafeManagedDirectory(baseDir, stateRoot);
+            AssertSafeManagedDirectory(incomingDir, stateRoot);
+
+            Directory.CreateDirectory(runtimeDir);
+            Directory.CreateDirectory(fullUserDir);
+            Directory.CreateDirectory(baseDir);
+
+            Assembly asm = Assembly.GetExecutingAssembly();
+            HashSet<string> expectedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int count = 0;
+            for (int i = 0; i < entries.Count; i++)
+            {
+                PayloadEntry entry = entries[i];
+                if (!string.Equals(entry.Category, "kernel", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                string dest = Path.GetFullPath(Path.Combine(runtimeDir, entry.RelativePath));
+                if (!IsInsideRoot(dest, runtimeFullRoot))
+                {
+                    throw new InvalidOperationException("安全拦截：内核资源路径越出 runtime 目录：" + dest);
+                }
+                string destDir = Path.GetDirectoryName(dest) ?? runtimeDir;
+                AssertSafeManagedDirectory(destDir, stateRoot);
+                WriteResourceToFile(asm, entry.ResourceName, dest);
+                expectedFiles.Add(dest);
+                count++;
+            }
+
+            if (count == 0)
+            {
+                return 0;
+            }
+
+            PruneObsoletePluginEntries(runtimeDir, Path.GetFullPath(runtimeDir), expectedFiles, true);
+
+            // Sync user-layer base templates safely without overwriting user customizations
+            for (int u = 0; u < KernelUserLayerFileNames.Length; u++)
+            {
+                string fName = KernelUserLayerFileNames[u];
+                string srcTemplate = Path.Combine(Path.Combine(runtimeDir, "user"), fName);
+                if (!File.Exists(srcTemplate)) continue;
+
+                string livePath = Path.Combine(userDir, fName);
+                string basePath = Path.Combine(baseDir, fName);
+                if (IsExistingReparsePoint(livePath) || IsExistingReparsePoint(basePath))
+                {
+                    throw new InvalidOperationException("安全拦截：拒绝覆盖符号链接或重解析点配置文件：" + livePath);
+                }
+                string srcHash = ComputeFileSha256(srcTemplate);
+
+                if (!File.Exists(livePath))
+                {
+                    File.Copy(srcTemplate, livePath, true);
+                    File.Copy(srcTemplate, basePath, true);
+                }
+                else
+                {
+                    string liveHash = ComputeFileSha256(livePath);
+                    string baseHash = ComputeFileSha256(basePath);
+                    if (string.Equals(liveHash, srcHash, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!string.Equals(baseHash, srcHash, StringComparison.OrdinalIgnoreCase))
+                        {
+                            File.Copy(srcTemplate, basePath, true);
+                        }
+                    }
+                    else if (!string.IsNullOrEmpty(baseHash) && string.Equals(liveHash, baseHash, StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.Copy(srcTemplate, livePath, true);
+                        File.Copy(srcTemplate, basePath, true);
+                    }
+                    else if (!string.Equals(baseHash, srcHash, StringComparison.OrdinalIgnoreCase))
+                    {
+                        AssertSafeManagedDirectory(incomingDir, stateRoot);
+                        Directory.CreateDirectory(incomingDir);
+                        string incFile = Path.Combine(incomingDir, fName);
+                        if (IsExistingReparsePoint(incFile))
+                        {
+                            throw new InvalidOperationException("安全拦截：incoming 目标文件为重解析点：" + incFile);
+                        }
+                        File.Copy(srcTemplate, incFile, true);
+                    }
+                }
+            }
+
+            log(string.Format("[完成] 内置 Anti-Claude v3.1.9 运行时内核已部署至 {0}（共 {1} 个文件）", runtimeDir, count));
+
+            if (activateHostDaemon)
+            {
+                EnsureDebugPortOnUserShortcuts(log);
+                string nodeExe = FindWindowsNodeExe();
+                string installScript = Path.Combine(runtimeDir, "install.mjs");
+                if (!string.IsNullOrEmpty(nodeExe) && File.Exists(installScript))
+                {
+                    try
+                    {
+                        bool keepAgentsRule = false;
+                        string stateFile = Path.Combine(stateDir, "install-state.json");
+                        if (File.Exists(stateFile))
+                        {
+                            try
+                            {
+                                string stRaw = File.ReadAllText(stateFile, Encoding.UTF8);
+                                if (stRaw.IndexOf("\"agentsRule\": true", StringComparison.Ordinal) >= 0
+                                    || stRaw.IndexOf("\"agentsRule\":true", StringComparison.Ordinal) >= 0)
+                                {
+                                    keepAgentsRule = true;
+                                }
+                            }
+                            catch { }
+                        }
+
+                        string installArgs = keepAgentsRule
+                            ? string.Format("\"{0}\" install --no-auto-update", installScript)
+                            : string.Format("\"{0}\" install --no-auto-update --no-agents-rule", installScript);
+
+                        bool finishedInTime = RunProcessNoHandleInherit(nodeExe, installArgs, runtimeDir, 25000);
+                        if (!finishedInTime)
+                        {
+                            log("  [提示] Anti-Claude 内核守护进程激活超时，将在下次登录时通过启动项自动拉起。");
+                        }
+                        else
+                        {
+                            log("  [内核] 已激活 Anti-Claude v3.1.9 后台 CDP 守护进程与开机自启（无需再单独安装 Anti-Claude）");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        log("  [提示] 自动拉起守护进程失败（内核文件已就位）：" + ex.Message);
+                    }
+                }
+                else
+                {
+                    log("  [提示] 未在 Windows PATH 检测到 Node.js (>=22)；内核文件已就位，安装 Node.js 后重跑安装器即可自动拉起守护进程。");
+                }
+            }
+
+            return count;
+        }
+
+        public static void UninstallKernel(string targetExtDir, bool deactivateHostDaemon, Action<string> log)
+        {
+            string stateDir;
+            string userDir;
+            ResolveAntiClaudeDirsFromExtDir(targetExtDir, out stateDir, out userDir);
+            string runtimeDir = Path.Combine(stateDir, "runtime");
+            string installScript = Path.Combine(runtimeDir, "install.mjs");
+
+            if (deactivateHostDaemon)
+            {
+                string nodeExe = FindWindowsNodeExe();
+                if (!string.IsNullOrEmpty(nodeExe) && File.Exists(installScript))
+                {
+                    try
+                    {
+                        string uninstallArgs = string.Format("\"{0}\" uninstall", installScript);
+                        RunProcessNoHandleInherit(nodeExe, uninstallArgs, runtimeDir, 20000);
+                    }
+                    catch { }
+                }
+
+                // Fallback: ensure Windows Startup VBS is removed even if node.exe was absent
+                try
+                {
+                    string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                    string vbs = Path.Combine(Path.Combine(Path.Combine(Path.Combine(appData, "Microsoft"), "Windows"), "Start Menu"), @"Programs\Startup\Anti-Claude-Daemon.vbs");
+                    if (File.Exists(vbs)) File.Delete(vbs);
+                }
+                catch { }
+            }
+            else
+            {
+                string baseDir = Path.Combine(stateDir, "base");
+                for (int u = 0; u < KernelUserLayerFileNames.Length; u++)
+                {
+                    string fName = KernelUserLayerFileNames[u];
+                    string livePath = Path.Combine(userDir, fName);
+                    string basePath = Path.Combine(baseDir, fName);
+                    if (File.Exists(livePath) && File.Exists(basePath)
+                        && string.Equals(ComputeFileSha256(livePath), ComputeFileSha256(basePath), StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { File.Delete(livePath); } catch { }
+                    }
+                }
+                try { if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true); } catch { }
+                string incDir = Path.Combine(stateDir, "incoming");
+                try { if (Directory.Exists(incDir)) Directory.Delete(incDir, true); } catch { }
+            }
+
+            if (Directory.Exists(runtimeDir) && !IsExistingReparsePoint(runtimeDir))
+            {
+                try
+                {
+                    Directory.Delete(runtimeDir, true);
+                    log(string.Format("[完成] 已移除内置 Anti-Claude 运行时目录: {0}", runtimeDir));
+                }
+                catch (Exception ex)
+                {
+                    log("[提示] 清理 runtime 目录部分文件被占用：" + ex.Message);
                 }
             }
         }
@@ -464,13 +1101,13 @@ namespace AntiClaudePrismSuiteInstaller
 
                 if (withDebugPort > 0)
                 {
-                    return string.Format("已检测到 {0}/{1} 个 Antigravity 快捷方式包含 --remote-debugging-port（支持自动重启后保留 Anti-Claude 扩展）", withDebugPort, foundShortcuts);
+                    return string.Format("已检测到 {0}/{1} 个 Antigravity 快捷方式包含 --remote-debugging-port（支持启动后直接挂载内置内核与扩展）", withDebugPort, foundShortcuts);
                 }
                 if (foundShortcuts > 0)
                 {
-                    return string.Format("检测到 {0} 个 Antigravity 快捷方式但未包含 --remote-debugging-port=0；若使用 Anti-Claude 扩展，建议通过 Anti-Claude 启动或补充该参数", foundShortcuts);
+                    return string.Format("检测到 {0} 个 Antigravity 快捷方式未开启调试端口；点击「一键安装」时将自动补齐 --remote-debugging-port=0", foundShortcuts);
                 }
-                return "未在桌面/开始菜单扫描到 Antigravity 快捷方式（若通过 Anti-Claude 启动，切号自动重启时会自动保留调试端口参数）";
+                return "未在桌面/开始菜单扫描到 Antigravity 快捷方式（切号自动重启时会自动附带调试端口参数）";
             }
             catch
             {
@@ -765,7 +1402,7 @@ namespace AntiClaudePrismSuiteInstaller
 
         private void InitializeUi()
         {
-            Text = "Anti-Claude Prism Suite 一键安装器 v0.5.9";
+            Text = "Anti-Claude Prism Suite 一键安装器 v0.6.0（独立完整版）";
             Size = new Size(740, 660);
             MinimumSize = new Size(660, 580);
             StartPosition = FormStartPosition.CenterScreen;
@@ -783,14 +1420,14 @@ namespace AntiClaudePrismSuiteInstaller
             header.Paint += PaintHeaderAccent;
 
             Label lblTitle = new Label();
-            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.5.9";
+            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.6.0";
             lblTitle.ForeColor = Color.White;
             lblTitle.Font = new Font("Microsoft YaHei UI", 13.5f, FontStyle.Bold);
             lblTitle.AutoSize = true;
             lblTitle.Location = new Point(22, 15);
 
             Label lblSubtitle = new Label();
-            lblSubtitle.Text = "一站式部署 Anti-Claude 棱镜扩展 与 Prism 工作台插件（文件 / 历史检索 / 多账号安全接力 · 原地热更保句柄）";
+            lblSubtitle.Text = "已内嵌 Anti-Claude v3.1.9 增强内核 + 棱镜扩展套件 + Prism 工作台插件（无需额外安装任何前置项目）";
             lblSubtitle.ForeColor = Color.FromArgb(148, 163, 184);
             lblSubtitle.Font = new Font("Microsoft YaHei UI", 8.8f, FontStyle.Regular);
             lblSubtitle.AutoSize = true;
@@ -820,13 +1457,13 @@ namespace AntiClaudePrismSuiteInstaller
 
             Label lblCompHeader = CreateSectionTitle("1. 选择安装 / 卸载组件");
             chkExtensions = new CheckBox();
-            chkExtensions.Text = "安装 Anti-Claude 棱镜扩展套件（8套主题 / 大纲 / 12周热力图 / 水墨 / 像素伙伴 / 思考中译）";
+            chkExtensions.Text = "内置 Anti-Claude v3.1.9 内核 + 棱镜扩展套件（8套主题 / 大纲 / 12周热力图 / 像素伙伴 / 思考中译）";
             chkExtensions.Checked = true;
             chkExtensions.AutoSize = true;
             chkExtensions.Margin = new Padding(2, 6, 2, 4);
 
             chkWinPlugin = new CheckBox();
-            chkWinPlugin.Text = "安装 Prism 工作台 MCP App 插件（文件树 / 键盘流 / 行号引用 / 历史检索 / 多账号接力）";
+            chkWinPlugin.Text = "安装 Prism 工作台 MCP App 插件（文件树 / 拖拽引用 / 历史检索 / 多账号安全接力）";
             chkWinPlugin.Checked = true;
             chkWinPlugin.AutoSize = true;
             chkWinPlugin.Margin = new Padding(2, 4, 2, 4);
@@ -869,7 +1506,7 @@ namespace AntiClaudePrismSuiteInstaller
             pathLayout.Controls.Add(lblPathHeader, 0, 0);
 
             Label lblExtDir = new Label();
-            lblExtDir.Text = "Windows Anti-Claude 扩展目录：";
+            lblExtDir.Text = "Windows Anti-Claude 扩展目录（自动同步同级 runtime 内核）：";
             lblExtDir.AutoSize = true;
             lblExtDir.ForeColor = Color.FromArgb(51, 65, 85);
             lblExtDir.Margin = new Padding(0, 6, 0, 2);
@@ -1027,7 +1664,7 @@ namespace AntiClaudePrismSuiteInstaller
 
         private void OnFormShown(object sender, EventArgs e)
         {
-            AppendLog(string.Format("已载入内嵌资源清单：共 {0} 个文件。", manifestEntries.Count));
+            AppendLog(string.Format("已载入内嵌资源清单：共 {0} 个文件（含内置 Anti-Claude v3.1.9 内核）。", manifestEntries.Count));
             AppendLog("正在检测 WSL Antigravity 环境（最多等待 3 秒）...");
 
             ThreadPool.QueueUserWorkItem(delegate
@@ -1095,7 +1732,7 @@ namespace AntiClaudePrismSuiteInstaller
 
         private void OnInstallClick(object sender, EventArgs e)
         {
-            RunOperation(true);
+            RunOperation(true, false);
         }
 
         private void OnUninstallClick(object sender, EventArgs e)
@@ -1111,21 +1748,33 @@ namespace AntiClaudePrismSuiteInstaller
                 return;
             }
 
-            DialogResult confirm = MessageBox.Show(
-                this,
-                "确定要干净卸载已勾选的 Anti-Claude Prism Suite 组件吗？\n\n仅移除 6 个扩展文件（prism-suite*.{css,js}：prism-suite.css / prism-suite.js / prism-suite-fx.css / prism-suite-fx.js / prism-suite-workflow.css / prism-suite-workflow.js）与 prism-files 插件目录，绝不会影响您的其他扩展、插件或会话数据。",
-                "确认干净卸载",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question);
-            if (confirm != DialogResult.Yes)
+            bool alsoRemoveKernel = false;
+            if (doExt)
             {
-                return;
+                DialogResult choice = MessageBox.Show(
+                    this,
+                    "请选择卸载范围：\n\n• 点击【是】：彻底卸载棱镜扩展、工作台插件 及 内置 Anti-Claude 守护进程（恢复原版 Antigravity）\n• 点击【否】：仅移除棱镜扩展（6个文件）与 prism-files 插件，保留 Anti-Claude 基础内核\n• 点击【取消】：放弃操作",
+                    "确认干净卸载",
+                    MessageBoxButtons.YesNoCancel,
+                    MessageBoxIcon.Question);
+                if (choice == DialogResult.Cancel) return;
+                alsoRemoveKernel = (choice == DialogResult.Yes);
+            }
+            else
+            {
+                DialogResult confirm = MessageBox.Show(
+                    this,
+                    "确定要干净移除选中的 prism-files 工作台插件目录吗？（不会影响其他插件或会话数据）",
+                    "确认干净卸载",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
+                if (confirm != DialogResult.Yes) return;
             }
 
-            RunOperation(false);
+            RunOperation(false, alsoRemoveKernel);
         }
 
-        private void RunOperation(bool isInstall)
+        private void RunOperation(bool isInstall, bool removeKernelOnUninstall)
         {
             if (isBusy) return;
 
@@ -1144,7 +1793,7 @@ namespace AntiClaudePrismSuiteInstaller
             List<string> wslTargetsSnapshot = new List<string>(detectedWslTargets);
 
             SetBusyState(true, isInstall ? "正在安装..." : "正在卸载...");
-            AppendLog(isInstall ? "=== 开始一键安装 / 更新 ===" : "=== 开始干净卸载 ===");
+            AppendLog(isInstall ? "=== 开始一键安装 / 更新（独立完整版） ===" : "=== 开始干净卸载 ===");
 
             Thread worker = new Thread(delegate()
             {
@@ -1160,6 +1809,7 @@ namespace AntiClaudePrismSuiteInstaller
                     {
                         if (doExt)
                         {
+                            InstallerCore.InstallKernel(extDir, manifestEntries, true, uiLog);
                             InstallerCore.InstallExtensions(extDir, manifestEntries, uiLog);
                         }
                         if (doWinPlugin)
@@ -1179,6 +1829,10 @@ namespace AntiClaudePrismSuiteInstaller
                         if (doExt)
                         {
                             InstallerCore.UninstallExtensions(extDir, uiLog);
+                            if (removeKernelOnUninstall)
+                            {
+                                InstallerCore.UninstallKernel(extDir, true, uiLog);
+                            }
                         }
                         if (doWinPlugin)
                         {
@@ -1209,12 +1863,12 @@ namespace AntiClaudePrismSuiteInstaller
                     else
                     {
                         AppendLog(isInstall
-                            ? "=== 全部安装已完成！请刷新 Anti-Claude / 重载 Antigravity 使插件生效 ==="
+                            ? "=== 全部安装已完成！重启一次 Antigravity 即可全面启用内置内核、扩展与工作台插件 ==="
                             : "=== 干净卸载已完成 ===");
                         MessageBox.Show(
                             this,
                             isInstall
-                                ? "Anti-Claude Prism Suite 安装 / 更新成功！\n\n若 Anti-Claude 或 Antigravity 正在运行，请刷新页面或重载应用以启用最新组件。"
+                                ? "Anti-Claude Prism Suite v0.6.0（独立完整版）安装成功！\n\n已一并部署内置 Anti-Claude v3.1.9 增强内核、棱镜扩展套件与 Prism 工作台插件，无需再单独安装其他项目。若 Antigravity 正在运行，重启一次应用即可全面生效。"
                                 : "已干净卸载选中的 Anti-Claude Prism Suite 组件。",
                             isInstall ? "安装成功" : "卸载完成",
                             MessageBoxButtons.OK,
@@ -1332,6 +1986,10 @@ namespace AntiClaudePrismSuiteInstaller
                 {
                     opts.SilentUninstall = true;
                 }
+                else if (string.Equals(a, "--with-kernel", StringComparison.OrdinalIgnoreCase))
+                {
+                    opts.WithKernel = true;
+                }
                 else if (string.Equals(a, "--no-wsl", StringComparison.OrdinalIgnoreCase))
                 {
                     opts.NoWsl = true;
@@ -1377,11 +2035,13 @@ namespace AntiClaudePrismSuiteInstaller
                         string extTarget = Path.Combine(Path.GetFullPath(opts.TestUserDir), "extensions");
                         if (opts.SilentInstall)
                         {
+                            InstallerCore.InstallKernel(extTarget, entries, false, consoleLog);
                             InstallerCore.InstallExtensions(extTarget, entries, consoleLog);
                         }
                         else
                         {
                             InstallerCore.UninstallExtensions(extTarget, consoleLog);
+                            InstallerCore.UninstallKernel(extTarget, false, consoleLog);
                         }
                     }
 
@@ -1405,6 +2065,7 @@ namespace AntiClaudePrismSuiteInstaller
 
                 if (opts.SilentInstall)
                 {
+                    InstallerCore.InstallKernel(defaultExt, entries, true, consoleLog);
                     InstallerCore.InstallExtensions(defaultExt, entries, consoleLog);
                     InstallerCore.InstallPlugin(defaultPlugin, entries, consoleLog);
                     if (!opts.NoWsl)
@@ -1420,6 +2081,10 @@ namespace AntiClaudePrismSuiteInstaller
                 else
                 {
                     InstallerCore.UninstallExtensions(defaultExt, consoleLog);
+                    if (opts.WithKernel)
+                    {
+                        InstallerCore.UninstallKernel(defaultExt, true, consoleLog);
+                    }
                     InstallerCore.UninstallPlugin(defaultPlugin, consoleLog);
                     if (!opts.NoWsl)
                     {

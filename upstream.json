@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "updatedAt": "2026-11-25",
+  "updatedAt": "2026-11-26",
   "principle": "Selective adoption only: inspect breaking host/credential changes first, surface useful/fun ideas for user approval, never copy-paste wholesale or import GPL-3.0 code.",
   "upstreams": {
     "antiClaude": {
@@ -9,8 +9,8 @@
       "license": "MIT",
       "absorptionPolicy": "compat-first-selective",
       "adoptionBoundary": "仅追踪 user/extensions 加载钩子、getUsageSummary/translateText 等扩展契约变化，不打包反编译核心逻辑。",
-      "baselineTag": "v3.1.7",
-      "baselineCommit": "2cc8a1d",
+      "baselineTag": "v3.1.9",
+      "baselineCommit": "747d43e",
       "watchedPaths": [
         "core/daemon.mjs",
         "core/runtime.js",
@@ -36,8 +36,8 @@
       "license": "MIT",
       "absorptionPolicy": "selective-feature-ideas",
       "adoptionBoundary": "关注 Antigravity 凭据库路径变动与有趣轻量小工具/视觉创意；不照搬全盘重写与闭环强耦合逻辑。",
-      "baselineTag": "v2.16.2",
-      "baselineCommit": "463fe0a",
+      "baselineTag": "v2.16.3",
+      "baselineCommit": "c9fec80",
       "watchedPaths": [
         "lib/credential-vault.mjs",
         "extensions/",
@@ -57,8 +57,8 @@
       "license": "GPL-3.0",
       "absorptionPolicy": "inspiration-only-no-code",
       "adoptionBoundary": "Clean-Room 红线：仅提取排版/动效交互思路供用户选择，严禁复制或移植任何 GPL-3.0 源码。",
-      "baselineTag": "v1.0.7",
-      "baselineCommit": "2e27680",
+      "baselineTag": "v1.0.8-beta.3",
+      "baselineCommit": "41cc481",
       "watchedPaths": [
         "CHANGELOG.md",
         "README.md"

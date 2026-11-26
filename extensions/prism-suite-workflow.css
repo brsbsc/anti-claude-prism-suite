@@ -136,6 +136,14 @@ body.dark .ag-ps-ssh-status[data-tone="warn"] {
   border-color: rgba(245, 158, 11, 0.28);
 }
 
+/* ---- 2b. Composer Local File/Folder Drop Highlight ---- */
+.ag-ps-drop-target {
+  outline: 2px dashed var(--primary, #2563EB) !important;
+  outline-offset: -2px;
+  background-color: color-mix(in srgb, var(--primary, #2563EB) 6%, transparent) !important;
+  transition: background-color 120ms ease, outline-color 120ms ease;
+}
+
 /* ---- 3. Turn Hover Micro-Actions (Edit / Fork) — Out-of-Flow Top-Right Rim Pill (0px Bubble Height Impact) ---- */
 .ag-ps-turn-host {
   position: relative;

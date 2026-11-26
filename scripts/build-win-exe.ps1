@@ -9,6 +9,7 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $SourceCs = Join-Path (Join-Path $RepoRoot "installer") (Join-Path "win" "PrismSuiteInstaller.cs")
 $ExtDir = Join-Path $RepoRoot "extensions"
 $PluginDir = Join-Path $RepoRoot "plugin"
+$KernelDir = Join-Path (Join-Path $RepoRoot "vendor") "anti-claude"
 
 if (-not (Test-Path -LiteralPath $SourceCs -PathType Leaf)) {
     throw "Missing installer source file: $SourceCs"
@@ -18,6 +19,15 @@ if (-not (Test-Path -LiteralPath $ExtDir -PathType Container)) {
 }
 if (-not (Test-Path -LiteralPath $PluginDir -PathType Container)) {
     throw "Missing plugin directory: $PluginDir"
+}
+if (-not (Test-Path -LiteralPath $KernelDir -PathType Container)) {
+    throw "Missing bundled Anti-Claude kernel directory: $KernelDir"
+}
+foreach ($requiredKernel in @("install.mjs", "package.json", "LICENSE", "core\daemon.mjs", "core\runtime.js", "core\base.css", "core\i18n.json", "user\custom.js", "user\custom.css", "user\config.json")) {
+    $reqKernelPath = Join-Path $KernelDir $requiredKernel
+    if (-not (Test-Path -LiteralPath $reqKernelPath -PathType Leaf)) {
+        throw "Missing required Anti-Claude kernel file: $reqKernelPath"
+    }
 }
 
 foreach ($requiredExt in @("prism-suite.css", "prism-suite.js", "prism-suite-fx.css", "prism-suite-fx.js", "prism-suite-workflow.css", "prism-suite-workflow.js")) {
@@ -98,6 +108,23 @@ try {
         $rel = $file.FullName.Substring($pluginRootLen).TrimStart("\", "/").Replace("\", "/")
         $resName = "payload.plugin.res_" + $resIndex
         $ManifestLines.Add(("{0}|plugin/{1}" -f $resName, $rel))
+        $RspLines.Add(('"/resource:{0},{1}"' -f $file.FullName, $resName))
+        $resIndex++
+    }
+
+    $kernelRootLen = $KernelDir.TrimEnd("\", "/").Length
+    $kernelFiles = Get-ChildItem -LiteralPath $KernelDir -Recurse -File |
+        Where-Object { $IgnoredNames -notcontains $_.Name -and -not $_.Name.EndsWith(".tmp") } |
+        Sort-Object -Property FullName
+
+    if ($kernelFiles.Count -eq 0) {
+        throw "No kernel files found under: $KernelDir"
+    }
+
+    foreach ($file in $kernelFiles) {
+        $rel = $file.FullName.Substring($kernelRootLen).TrimStart("\", "/").Replace("\", "/")
+        $resName = "payload.kernel.res_" + $resIndex
+        $ManifestLines.Add(("{0}|kernel/{1}" -f $resName, $rel))
         $RspLines.Add(('"/resource:{0},{1}"' -f $file.FullName, $resName))
         $resIndex++
     }

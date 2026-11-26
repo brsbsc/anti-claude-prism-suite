@@ -33,6 +33,7 @@
     imageContextMenu: true,
     cleanCopy: true,
     sshPaste: true,
+    composerFileDrop: true,
     i18nExtraMode: 'off',
     inlineEditHelper: true,
     sessionFork: true
@@ -521,7 +522,28 @@
     'Copied': '已复制',
     'Edit': '编辑',
     'Undo': '撤销',
-    'Retry': '重试'
+    'Retry': '重试',
+
+    // Antigravity v2.35.1–2.35.2 Active-Turn Model Note, /btw, Skills, Customizations & Marketplace
+    'Applies to /btw and messages sent after this turn': '将用于 /btw 及本轮之后发送的消息',
+    'Applies to messages sent after this turn': '将用于本轮之后发送的消息',
+    'Ask a side question...': '发起旁路追问 (/btw)…',
+    'Side question': '旁路追问',
+    'Skills & Customizations': '技能与自定义',
+    'Skills': '技能',
+    'Customizations': '自定义配置',
+    'Agent Marketplace': 'Agent 插件市场',
+    'Marketplace': '插件市场',
+    'Browse Marketplace': '浏览插件市场',
+    'Plugins Manager': '插件管理器',
+    'Installed Plugins': '已安装插件',
+    'Manage Plugins': '管理插件',
+    'MCP Servers': 'MCP 服务',
+    'Enable Plugin': '启用插件',
+    'Disable Plugin': '禁用插件',
+    'Uninstall Plugin': '卸载插件',
+    'More options': '更多选项',
+    'Native menu': '官方菜单'
   });
 
   const I18N_EXACT_ZH_TW = Object.freeze({
@@ -643,7 +665,28 @@
     'Copied': '已複製',
     'Edit': '編輯',
     'Undo': '復原',
-    'Retry': '重試'
+    'Retry': '重試',
+
+    // Antigravity v2.35.1–2.35.2 Active-Turn Model Note, /btw, Skills, Customizations & Marketplace
+    'Applies to /btw and messages sent after this turn': '將用於 /btw 及本輪之後傳送的訊息',
+    'Applies to messages sent after this turn': '將用於本輪之後傳送的訊息',
+    'Ask a side question...': '發起旁路追問 (/btw)…',
+    'Side question': '旁路追問',
+    'Skills & Customizations': '技能與自訂',
+    'Skills': '技能',
+    'Customizations': '自訂設定',
+    'Agent Marketplace': 'Agent 外掛市集',
+    'Marketplace': '外掛市集',
+    'Browse Marketplace': '瀏覽外掛市集',
+    'Plugins Manager': '外掛管理員',
+    'Installed Plugins': '已安裝外掛',
+    'Manage Plugins': '管理外掛',
+    'MCP Servers': 'MCP 伺服器',
+    'Enable Plugin': '啟用外掛',
+    'Disable Plugin': '停用外掛',
+    'Uninstall Plugin': '解除安裝外掛',
+    'More options': '更多選項',
+    'Native menu': '官方選單'
   });
 
   const I18N_PATTERNS = Object.freeze([
@@ -805,6 +848,7 @@
         imageContextMenu: p.imageContextMenu !== false,
         cleanCopy: p.cleanCopy !== false,
         sshPaste: p.sshPaste !== false,
+        composerFileDrop: p.composerFileDrop !== false,
         i18nExtraMode: i18nMode,
         inlineEditHelper: p.inlineEditHelper !== false,
         sessionFork: p.sessionFork !== false
@@ -1639,6 +1683,193 @@
     }, { capture: true, signal });
 
     /* ========================================================================
+     * 3b. Composer Local File & Folder Drag/Drop & Paste Reference Helper
+     *     (Clean-Room non-conflicting fallback: yields whenever host/Anti-Claude handles first)
+     * ======================================================================== */
+    let activeDropCard = null;
+
+    function clearDropHighlight() {
+      if (activeDropCard) {
+        activeDropCard.classList.remove('ag-ps-drop-target');
+        activeDropCard = null;
+      }
+    }
+    addCleanup(clearDropHighlight);
+
+    function decodeFileUriToPath(uriStr) {
+      const raw = String(uriStr || '').trim();
+      if (!/^file:\/\//i.test(raw)) return '';
+      try {
+        const u = new URL(raw);
+        if (u.protocol !== 'file:') return '';
+        let pathname = decodeURIComponent(u.pathname || '');
+        if (!pathname) return '';
+        // Windows file:///D:/foo/bar -> D:\foo\bar
+        if (/^\/[A-Za-z]:[\\/]/.test(pathname)) {
+          pathname = pathname.slice(1).replace(/\//g, '\\');
+        } else if (u.host && u.host !== 'localhost') {
+          pathname = `\\\\${u.host}${pathname.replace(/\//g, '\\')}`;
+        }
+        return /[\x00-\x1f]/.test(pathname) ? '' : pathname;
+      } catch {
+        return '';
+      }
+    }
+
+    function extractNonImageLocalPaths(dt) {
+      if (!dt) return { paths: [], hasImageFiles: false };
+      const seen = new Set();
+      const paths = [];
+      let hasImageFiles = false;
+      const pushPath = (p) => {
+        const clean = String(p || '').trim();
+        if (!clean || /[\x00-\x1f]/.test(clean) || seen.has(clean)) return;
+        seen.add(clean);
+        paths.push(clean);
+      };
+
+      const fileList = dt.files ? Array.from(dt.files) : [];
+      for (const f of fileList) {
+        if (!f) continue;
+        const mime = String(f.type || '').toLowerCase();
+        if (mime.startsWith('image/')) {
+          hasImageFiles = true;
+          continue;
+        }
+        let resolved = '';
+        try {
+          if (window.electronNative && typeof window.electronNative.getPathForFile === 'function') {
+            resolved = String(window.electronNative.getPathForFile(f) || '').trim();
+          }
+        } catch {}
+        if (!resolved && typeof f.path === 'string' && f.path.trim()) {
+          resolved = f.path.trim();
+        }
+        if (resolved) pushPath(resolved);
+      }
+
+      if (!paths.length) {
+        try {
+          const uriList = String(dt.getData('text/uri-list') || '');
+          for (const line of uriList.split(/\r?\n/)) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) continue;
+            const fp = decodeFileUriToPath(trimmed);
+            if (fp && !/\.(?:png|jpe?g|gif|webp|bmp|ico|avif)$/i.test(fp)) {
+              pushPath(fp);
+            }
+          }
+        } catch {}
+      }
+
+      return { paths, hasImageFiles };
+    }
+
+    function resolveTargetComposerEditor(targetNode) {
+      const el = targetNode instanceof Element ? targetNode : (targetNode && targetNode.parentElement);
+      if (!el) return null;
+      if (el.closest('.ag-ps-inline-editor, #ag-ps-popover, [data-testid="ssh-connect-dialog"], .monaco-editor, .cm-editor, .xterm')) {
+        return null;
+      }
+      const directEditable = el.closest('[contenteditable="true"], textarea');
+      if (directEditable) {
+        const hostCard = directEditable.closest(
+          '[id="antigravity.agentSidePanelInputBox"], [data-testid*="composer"], [data-testid*="input"], form'
+        ) || directEditable.parentElement;
+        return { editor: directEditable, card: hostCard || directEditable };
+      }
+      const wrapper = el.closest('[id="antigravity.agentSidePanelInputBox"], [data-testid*="composer"]');
+      if (wrapper) {
+        const inner = wrapper.querySelector('[contenteditable="true"], textarea');
+        if (inner) return { editor: inner, card: wrapper };
+      }
+      return null;
+    }
+
+    function insertTextIntoTargetEditor(editor, text) {
+      if (!editor || !text) return false;
+      try {
+        editor.focus();
+        if (editor.tagName === 'TEXTAREA' || editor.tagName === 'INPUT') {
+          const cur = String(editor.value || '');
+          const sep = cur && !/\s$/.test(cur) ? ' ' : '';
+          setNativeInputValue(editor, `${cur}${sep}${text} `);
+          return true;
+        }
+        const curTxt = String(editor.textContent || '');
+        const prefix = curTxt && !/\s$/.test(curTxt) ? ' ' : '';
+        return Boolean(document.execCommand('insertText', false, `${prefix}${text} `));
+      } catch {
+        return false;
+      }
+    }
+
+    function formatFileRefTokens(paths) {
+      return paths.map((p) => (/\s/.test(p) ? `@"${p.replace(/"/g, '')}"` : `@${p}`)).join(' ');
+    }
+
+    document.addEventListener('dragover', (e) => {
+      if (disposed || !getPrefs().composerFileDrop || e.defaultPrevented) return;
+      const dt = e.dataTransfer;
+      if (!dt || !Array.from(dt.types || []).some((t) => t === 'Files' || t === 'text/uri-list')) return;
+      const hit = resolveTargetComposerEditor(e.target);
+      if (!hit) {
+        clearDropHighlight();
+        return;
+      }
+      e.preventDefault();
+      if (dt) dt.dropEffect = 'copy';
+      if (activeDropCard !== hit.card) {
+        clearDropHighlight();
+        activeDropCard = hit.card;
+        activeDropCard.classList.add('ag-ps-drop-target');
+      }
+    }, { capture: false, signal });
+
+    document.addEventListener('dragleave', (e) => {
+      if (!activeDropCard) return;
+      const related = e.relatedTarget;
+      if (!related || !(related instanceof Node) || !activeDropCard.contains(related)) {
+        clearDropHighlight();
+      }
+    }, { capture: false, signal });
+
+    document.addEventListener('drop', (e) => {
+      const hadCard = activeDropCard;
+      clearDropHighlight();
+      if (disposed || !getPrefs().composerFileDrop || e.defaultPrevented) return;
+      const hit = resolveTargetComposerEditor(e.target) || (hadCard ? resolveTargetComposerEditor(hadCard) : null);
+      if (!hit) return;
+      const { paths, hasImageFiles } = extractNonImageLocalPaths(e.dataTransfer);
+      if (!paths.length) return;
+      if (!hasImageFiles) {
+        e.preventDefault();
+      }
+      const refText = formatFileRefTokens(paths);
+      if (insertTextIntoTargetEditor(hit.editor, refText)) {
+        try { bus.toast?.(`已插入 ${paths.length} 个本地文件/目录引用`); } catch {}
+      }
+    }, { capture: false, signal });
+
+    document.addEventListener('paste', (e) => {
+      if (disposed || !getPrefs().composerFileDrop || e.defaultPrevented) return;
+      const dt = e.clipboardData;
+      if (!dt) return;
+      // Do not intercept normal text pastes
+      const plain = String(dt.getData('text/plain') || '').trim();
+      if (plain && (!dt.files || dt.files.length === 0)) return;
+      const hit = resolveTargetComposerEditor(e.target);
+      if (!hit) return;
+      const { paths, hasImageFiles } = extractNonImageLocalPaths(dt);
+      if (!paths.length || hasImageFiles) return;
+      e.preventDefault();
+      const refText = formatFileRefTokens(paths);
+      if (insertTextIntoTargetEditor(hit.editor, refText)) {
+        try { bus.toast?.(`已粘贴 ${paths.length} 个本地文件/目录引用`); } catch {}
+      }
+    }, { capture: false, signal });
+
+    /* ========================================================================
      * 4. 2.34–2.35 & Swarm Incremental i18n Supplement (Zero Body Observer)
      * ======================================================================== */
     const i18nOriginals = new WeakMap(); // TextNode -> { orig: string, applied: string }
@@ -1669,7 +1900,14 @@
       '[data-testid*="load-older"]',
       '[data-testid*="step-"]',
       '[data-testid*="overview-panel"]',
-      '[data-testid*="status-bar"]'
+      '[data-testid*="status-bar"]',
+      '#ag-claude-model-popover',
+      '#ag-claude-model-subpop',
+      '#ag-claude-model-tripop',
+      '[data-testid*="marketplace"]',
+      '[data-testid*="plugin"]',
+      '[data-testid*="skill"]',
+      '[data-testid*="customization"]'
     ].join(', ');
 
     const I18N_SKIP_ANCESTOR_SELECTOR = [
@@ -2388,6 +2626,13 @@
                   <span class="ag-ps-toggle-sub">自动拆解端口与主机，安全丢弃密码</span>
                 </div>
                 <button type="button" class="ag-ps-switch" data-wf-toggle="sshPaste" data-on="${p.sshPaste !== false ? '1' : '0'}" aria-label="SSH 粘贴命令自动解析"></button>
+              </div>
+              <div class="ag-ps-toggle-row">
+                <div class="ag-ps-toggle-label">
+                  <span>输入框拖入/粘贴本地文件</span>
+                  <span class="ag-ps-toggle-sub">项目与对话输入框拖放/粘贴文件转 @路径（与原生零冲突）</span>
+                </div>
+                <button type="button" class="ag-ps-switch" data-wf-toggle="composerFileDrop" data-on="${p.composerFileDrop !== false ? '1' : '0'}" aria-label="输入框拖入/粘贴本地文件"></button>
               </div>
               <div class="ag-ps-toggle-row">
                 <div class="ag-ps-toggle-label">

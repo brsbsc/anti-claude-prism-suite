@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { installExtensions, installPlugin, installAll } from '../install.mjs';
-import { uninstallExtensions, uninstallPlugin, uninstallAll } from '../uninstall.mjs';
+import { installExtensions, installKernel, installPlugin, installAll } from '../install.mjs';
+import { uninstallExtensions, uninstallKernel, uninstallPlugin, uninstallAll } from '../uninstall.mjs';
 import { inspectLocalDaemon } from '../scripts/check-upstream.mjs';
 import {
   createPrismFilesServer,
@@ -36,14 +36,22 @@ import {
   createAccountManager,
   parseQuotaText,
   computeEffectiveQuota,
+  evaluateQuotaPoolHealth,
   readLocalAntigravityQuotaCache,
   sanitizePrismUiPrefs,
   readLocalPrismPrefsFromLevelDb
 } from '../plugin/server/account-manager.mjs';
-import { localizeCommitLocally, checkPrismSelfUpdate, applyPrismSelfUpdate } from '../plugin/server/upstream-radar.mjs';
+import {
+  localizeCommitLocally,
+  polishZhTechTerms,
+  extractZhReleaseHighlights,
+  checkPrismSelfUpdate,
+  applyPrismSelfUpdate
+} from '../plugin/server/upstream-radar.mjs';
 import {
   createClientRelauncher,
   buildWinRelaunchWorkerScript,
+  buildWinDetachedDispatchScript,
   resolveLocalAntigravityTarget
 } from '../plugin/server/relaunch-client.mjs';
 import { createHandoffMemoryStore, redactMemoryText } from '../plugin/server/handoff-memory.mjs';
@@ -619,15 +627,44 @@ test('v0.5.0 isolated account relay enforces email verification, ownership prese
     assert.equal(effPrimary.families.gemini.reset5hPassed, true);
     assert.equal(effPrimary.families.gemini.pct7d, 2.8, 'Future family 7d window must preserve actual remaining %');
 
-    // Critically exhausted primary (e.g. 7d = 2.8%) must NOT beat a healthy backup in recommendation
+    // Critically exhausted primary — even when top-level window7dPct came from healthy Claude (96.8%) while Gemini 7d is 2.8% — must NEVER get recommended badge over healthy backup!
     mgr.updateAccount(capPrimary.account.id, {
-      quota: { window7dPct: 2.8, window5hPct: 100, reset7dAt: new Date(nowRef + 86400000).toISOString() }
+      quota: {
+        window7dPct: 96.8,
+        window5hPct: 100,
+        reset7dAt: new Date(nowRef + 86400000).toISOString(),
+        families: {
+          gemini: { pct5h: 15.7, pct7d: 2.8, reset7dAt: new Date(nowRef + 86400000).toISOString() },
+          claude: { pct5h: 100, pct7d: 96.8 }
+        }
+      }
     });
     mgr.updateAccount(capBackup.account.id, {
-      quota: { window7dPct: 49.5, window5hPct: 100, reset7dAt: new Date(nowRef + 86400000).toISOString() }
+      quota: {
+        window7dPct: 49.5,
+        window5hPct: 91.8,
+        reset7dAt: new Date(nowRef + 86400000).toISOString(),
+        families: {
+          gemini: { pct5h: 91.8, pct7d: 49.5 },
+          claude: { pct5h: 100, pct7d: 100 }
+        }
+      }
     });
-    const recWhenPrimaryExhausted = mgr.pickRecommendedTarget({ currentId: 'acc_other_online', activeModel: 'gemini-4' });
-    assert.equal(recWhenPrimaryExhausted.recommended?.accountId, capBackup.account.id, 'Healthy backup must be recommended over exhausted primary');
+    const recWhenPrimaryGeminiExhausted = mgr.pickRecommendedTarget({ currentId: 'acc_other_online' });
+    assert.equal(recWhenPrimaryGeminiExhausted.recommended?.accountId, capBackup.account.id, 'Bottleneck Gemini 2.8% on primary must disqualify it in general recommendation');
+    assert.equal(recWhenPrimaryGeminiExhausted.primaryRecovery, null, 'Depleted Gemini pool must also suppress primaryRecovery banner');
+
+    // When ALL standby candidates are depleted (<20%), recommended must be null (never recommend an exhausted account)
+    mgr.updateAccount(capBackup.account.id, {
+      quota: {
+        window7dPct: 5,
+        window5hPct: 8,
+        reset7dAt: new Date(nowRef + 86400000).toISOString(),
+        families: { gemini: { pct5h: 8, pct7d: 5 } }
+      }
+    });
+    const recWhenAllExhausted = mgr.pickRecommendedTarget({ currentId: 'acc_other_online' });
+    assert.equal(recWhenAllExhausted.recommended, null, 'Must never attach recommended badge when all candidates have <20% bottleneck pool');
 
     const syncedQ = mgr.syncActiveAccountQuota({ window5hPct: 88, window7dPct: 92 });
     assert.equal(syncedQ.ok, true);
@@ -814,10 +851,10 @@ test('v0.5.0 selective Upstream Radar keeps root/plugin upstream.json identical 
       upstreamConfigPath: tmpCfg,
       upstreamFetch: mockFetch
     });
+    const origObsidianCommit = JSON.parse(rootUpstream).upstreams.obsidianPrism.baselineCommit;
     const mcpSync = await srv.handleToolCall('sync_upstream_baseline', { keys: ['obsidianPrism'] });
     assert.deepEqual(mcpSync.structuredContent.updatedKeys, ['obsidianPrism']);
-    assert.equal(JSON.parse(rootUpstream).upstreams.obsidianPrism.baselineCommit, '2e27680');
-    assert.equal(JSON.parse(fs.readFileSync(path.join(REPO, 'upstream.json'), 'utf8')).upstreams.obsidianPrism.baselineCommit, '2e27680');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(REPO, 'upstream.json'), 'utf8')).upstreams.obsidianPrism.baselineCommit, origObsidianCommit);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -1426,10 +1463,10 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.5.9');
-    assert.equal(pluginJson.version, '0.5.9');
+    assert.equal(pkgJson.version, '0.6.0');
+    assert.equal(pluginJson.version, '0.6.0');
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.5\.9'/);
+    assert.match(jsSrc, /SUITE_VERSION = '0\.6\.0'/);
     assert.match(jsSrc, /COOKIE_PREFS_KEY = 'ag_prism_prefs_v1'/);
     assert.match(jsSrc, /getActiveInputBox/);
     assert.match(jsSrc, /getInputBoxEl: getActiveInputBox/);
@@ -1444,15 +1481,20 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(fxSrc, /collectRightFloatingPanelRects/);
     assert.match(appHtml, /is-hero-active/);
     assert.match(appHtml, /is-standby-compact/);
+    assert.match(appHtml, /evalAccountPoolHealthClient/);
+    assert.match(appHtml, /radar-copy-all-picked/);
+    assert.match(appHtml, /radar-sync-all/);
+    assert.match(appHtml, /handleListDragStart/);
     assert.match(appHtml, /btn-accounts-sort/);
     assert.match(appHtml, /save-alias/);
     assert.match(fxSrc, /borderBeamMode/);
     assert.match(fxSrc, /scrollbarW/);
     assert.match(wfSrc, /registerPrismModule\('workflow', initWorkflowModule\)/);
     assert.match(wfSrc, /resolveTurnActionHost/);
+    assert.match(wfSrc, /composerFileDrop/);
     assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
     assert.match(jsSrc, /readAntiClaudeQuotaCache/);
-    assert.match(inlineHtml, /version: '0\.5\.9'/);
+    assert.match(inlineHtml, /version: '0\.6\.0'/);
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1481,8 +1523,10 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(appHtml, /expectedEmail/);
     assert.match(csSrc, /PruneObsoletePluginEntries/);
     assert.match(csSrc, /CheckDebugPortShortcutStatus/);
+    assert.match(csSrc, /EnsureDebugPortOnUserShortcuts/);
+    assert.match(csSrc, /InstallKernel/);
     assert.match(csSrc, /prism-suite-00-prefs\.js/);
-    assert.match(csSrc, /v0\.5\.9/);
+    assert.match(csSrc, /v0\.6\.0/);
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
   } finally {
@@ -1627,6 +1671,168 @@ test('v0.5.7 cross-port UI prefs persistence, compaction guard, Starter tier non
       })
     });
     assert.deepEqual(resolvedCustom.launchArgs, ['--remote-debugging-port=9333']);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('v0.6.0 bundled Anti-Claude v3.1.9 kernel, per-pool quota recommendation veto, radar polish, and AV-safe relauncher', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-v060-'));
+  try {
+    // 1. Bundled vendor/anti-claude kernel has full Prism RPC compatibility + 3-way user config preservation
+    const vendorKernelDir = path.join(REPO, 'vendor', 'anti-claude');
+    assert.equal(fs.existsSync(path.join(REPO, 'THIRD_PARTY_NOTICES.md')), true);
+    const daemonCompat = inspectLocalDaemon(vendorKernelDir);
+    assert.equal(daemonCompat.found, true);
+    assert.equal(daemonCompat.compatible, true, `Bundled kernel missing hooks: ${daemonCompat.missing.join(', ')}`);
+    const vendorPkg = JSON.parse(fs.readFileSync(path.join(vendorKernelDir, 'package.json'), 'utf8'));
+    assert.equal(vendorPkg.version, '3.1.9');
+
+    const sandboxStateDir = path.join(tmp, 'anti-claude');
+    const sandboxUserDir = path.join(sandboxStateDir, 'user');
+    const sandboxPluginsDir = path.join(tmp, 'plugins');
+    const res1 = installAll({ userDir: sandboxUserDir, pluginsDir: sandboxPluginsDir, activateKernelDaemon: false });
+    assert.ok(res1.kernel);
+    assert.equal(fs.existsSync(path.join(sandboxStateDir, 'runtime', 'core', 'daemon.mjs')), true);
+    assert.equal(fs.existsSync(path.join(sandboxUserDir, 'custom.js')), true);
+    assert.equal(fs.existsSync(path.join(sandboxUserDir, 'config.json')), true);
+
+    // Simulate user customizing config.json -> re-running installKernel must preserve user's custom key via 3-way merge
+    const liveCfgPath = path.join(sandboxUserDir, 'config.json');
+    const liveCfg = JSON.parse(fs.readFileSync(liveCfgPath, 'utf8'));
+    liveCfg.userCustomFlag = 'keep-me-across-upgrade';
+    fs.writeFileSync(liveCfgPath, `${JSON.stringify(liveCfg, null, 2)}\n`, 'utf8');
+
+    const res2 = installKernel({ userDir: sandboxUserDir, activateDaemon: false });
+    assert.ok(res2.userLayer.merged.includes('config.json') || res2.userLayer.keptLocal.includes('config.json'));
+    const afterCfg = JSON.parse(fs.readFileSync(liveCfgPath, 'utf8'));
+    assert.equal(afterCfg.userCustomFlag, 'keep-me-across-upgrade');
+
+    const unWithKernel = uninstallAll({ userDir: sandboxUserDir, pluginsDir: sandboxPluginsDir, withKernel: true, deactivateKernelDaemon: false });
+    assert.ok(unWithKernel.kernel);
+    assert.equal(fs.existsSync(path.join(sandboxStateDir, 'runtime')), false);
+
+    // 2. Per-pool quota bottleneck veto (reproduces screenshot: Gemini 7d 2.8% + Claude 7d 96.8% must NEVER get 推荐)
+    const futureIso = new Date(Date.now() + 4 * 24 * 3600 * 1000).toISOString();
+    const fakeCredStore = new Map();
+    const mkBlob = (email, tok) => Buffer.from(JSON.stringify({ id_token_email: email, refresh_token: tok }), 'utf8');
+    const mockVaultRun = (_bin, _args, { input = '' } = {}) => {
+      const req = JSON.parse(input);
+      const handle = (r) => {
+        if (r.op === 'probe') return { ok: true };
+        if (r.op === 'read') {
+          const b = fakeCredStore.get(r.target);
+          return b ? { ok: true, found: true, blobB64: b.toString('base64') } : { ok: true, found: false };
+        }
+        if (r.op === 'write') {
+          fakeCredStore.set(r.target, Buffer.from(r.blobB64, 'base64'));
+          return { ok: true, written: true };
+        }
+        return { ok: true };
+      };
+      if (req.op === 'batch') return { status: 0, stdout: JSON.stringify({ ok: true, results: req.ops.map(handle) }) + '\n', stderr: '' };
+      return { status: 0, stdout: JSON.stringify(handle(req)) + '\n', stderr: '' };
+    };
+    const vault = createAccountVault({ platform: 'win32', isWsl: false, homeDir: tmp, runCmd: mockVaultRun, enableBatch: true });
+    const mgr = createAccountManager({ stateDir: path.join(tmp, 'acc-state'), vault, disableLocalQuotaScan: true });
+    mgr.setEnabled(true);
+
+    fakeCredStore.set('gemini:antigravity', mkBlob('primary.lowgem@example.com', 'tok-main'));
+    const capPrimary = mgr.captureCurrentAccount({ alias: '主号', role: 'primary', priority: 10 });
+    mgr.updateAccount(capPrimary.account.id, {
+      quota: {
+        // Top-level looks healthy (96.8% from last active Claude session), but Gemini 7d is 2.8%!
+        window5hPct: 100,
+        window7dPct: 96.8,
+        reset5hAt: futureIso,
+        reset7dAt: futureIso,
+        families: {
+          gemini: { pct5h: 15.7, pct7d: 2.8, reset5hAt: futureIso, reset7dAt: futureIso },
+          claude: { pct5h: 100, pct7d: 96.8, reset5hAt: futureIso, reset7dAt: futureIso }
+        }
+      }
+    });
+
+    fakeCredStore.set('gemini:antigravity', mkBlob('backup.healthy@example.com', 'tok-bak1'));
+    const capHealthy = mgr.captureCurrentAccount({ alias: '健康备用', role: 'backup', priority: 20 });
+    mgr.updateAccount(capHealthy.account.id, {
+      quota: {
+        window5hPct: 91.8,
+        window7dPct: 49.5,
+        reset5hAt: futureIso,
+        reset7dAt: futureIso,
+        families: {
+          gemini: { pct5h: 91.8, pct7d: 49.5, reset5hAt: futureIso, reset7dAt: future7d => futureIso, reset7dAt: futureIso },
+          claude: { pct5h: 100, pct7d: 100, reset5hAt: futureIso, reset7dAt: futureIso }
+        }
+      }
+    });
+
+    fakeCredStore.set('gemini:antigravity', mkBlob('current.online@example.com', 'tok-cur'));
+    const capCur = mgr.captureCurrentAccount({ alias: '当前在线', role: 'backup', priority: 30 });
+    mgr.updateAccount(capCur.account.id, {
+      quota: { window5hPct: 90.5, window7dPct: 97.1, reset5hAt: futureIso, reset7dAt: futureIso }
+    });
+
+    const statusAllPools = mgr.getStatus({ forceRefresh: true });
+    assert.equal(statusAllPools.recommendation.recommended?.accountId, capHealthy.account.id, 'Must recommend healthy backup over Gemini-exhausted primary');
+    assert.equal(statusAllPools.recommendation.primaryRecovery, null, 'Must NOT trigger primaryRecovery when Gemini pool is 2.8%');
+
+    // Explicit single-model query for Claude CAN still pick primary since its Claude pool is 96.8%
+    const statusClaudeOnly = mgr.getStatus({ activeModel: 'claude-sonnet-5-5-high', forceRefresh: true });
+    assert.equal(statusClaudeOnly.recommendation.recommended?.accountId, capPrimary.account.id);
+
+    // Partial-family guard: if activeModel=gemini and families only has claude=0 while top-level effective is 80, fall back to top-level 80
+    const partialHealth = evaluateQuotaPoolHealth(
+      { effective5hPct: 80, effective7dPct: 80, families: { claude: { pct5h: 0, pct7d: 0 } } },
+      'gemini-4-neon-high'
+    );
+    assert.equal(partialHealth.minPct, 80);
+
+    // Symlink/junction containment guard in installKernel
+    const symStateDir = path.join(tmp, 'sym-state');
+    const symUserDir = path.join(symStateDir, 'user');
+    fs.mkdirSync(symStateDir, { recursive: true });
+    const outsideDir = path.join(tmp, 'outside-target');
+    fs.mkdirSync(outsideDir, { recursive: true });
+    fs.symlinkSync(outsideDir, path.join(symStateDir, 'base'), process.platform === 'win32' ? 'junction' : 'dir');
+    assert.throws(() => installKernel({ userDir: symUserDir, activateDaemon: false }), /symlink/i);
+
+    // 3. Upstream Radar: pre-release, inspiration-only classification, release highlights, and tech-term polish
+    const polished = polishZhTechTerms('用纯节点助手替换 VBScript 并收紧门户隔离与滤波器');
+    assert.doesNotMatch(polished, /纯节点|门户隔离|滤波器/);
+    assert.match(polished, /纯 Node\.js|浮层容器隔离|过滤条件/);
+
+    const relNotes = '## 更新亮点\n- 新增项目框本地文件与目录拖拽引用\n- 模型菜单支持运行中范围提示（tooltipNote）\n- Build artefact checksums';
+    const zhHighlights = extractZhReleaseHighlights(relNotes);
+    assert.equal(zhHighlights.length, 2);
+
+    const gplEval = evaluateRepoUpdate(
+      'obsidianPrism',
+      { repo: 'RMvdesi/obsidian-prism', role: 'inspiration-only', license: 'GPL-3.0' },
+      {
+        latestTag: 'v1.0.8-beta.3',
+        latestIsPrerelease: true,
+        latestCommit: '41cc481999',
+        aheadBy: 2,
+        releaseBodies: [relNotes],
+        commits: [
+          { sha: '1111111', message: 'fix: adjust internal variable spacing in settings tab' },
+          { sha: '41cc481', message: 'feat: add translucent tab bar pill indicator' }
+        ]
+      }
+    );
+    assert.equal(gplEval.latestIsPrerelease, true);
+    assert.equal(gplEval.compatFixes.length, 0, 'GPL inspiration-only internal fixes must not be auto-checked as mandatory compatFixes');
+    assert.equal(gplEval.featureCandidates.length, 2);
+    assert.equal(gplEval.zhReleaseHighlights.length, 2);
+
+    // 4. Windows AV-friendly detached relauncher: zero Win32_Process.Create and zero nested -EncodedCommand
+    const dispatchSrc = buildWinDetachedDispatchScript('dGVzdA==');
+    const workerSrc = buildWinRelaunchWorkerScript({ targetPath: 'C:\\App\\Antigravity.exe', preserveDebugPort: true });
+    assert.doesNotMatch(dispatchSrc, /Win32_Process|-EncodedCommand/i);
+    assert.doesNotMatch(workerSrc, /Win32_Process\.Create|-EncodedCommand/i);
+    assert.match(dispatchSrc, /-File/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

@@ -20,7 +20,7 @@ import { resolveSafeExecCwd, resolveWslInteropEnv } from './account-vault.mjs';
 const execFileAsync = promisify(execFile);
 
 export const UPSTREAM_SCHEMA_VERSION = 2;
-const RADAR_CACHE_SCHEMA_VERSION = 3;
+const RADAR_CACHE_SCHEMA_VERSION = 4;
 export const PRISM_OFFICIAL_REPO = 'wushuai0802/anti-claude-prism-suite';
 const DEFAULT_CACHE_TTL_MS = 10 * 60 * 1000;
 const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
@@ -94,17 +94,72 @@ function tagZhForPrefix(prefix, msg) {
   return '更新';
 }
 
-function polishZhTechTerms(text) {
+const PRE_MT_TERM_REPLACEMENTS = [
+  [/\bpure[-\s]?Node(?:\.js)?\b/gi, '纯Node.js'],
+  [/\bNode\.js\b/gi, 'Node.js'],
+  [/\bWindows\s+\.lnk\s+helper\b/gi, 'Windows快捷方式启动器'],
+  [/\.lnk\b/gi, '.lnk快捷方式'],
+  [/\bLNK\b/g, '.lnk快捷方式'],
+  [/\btooltipNote\b/gi, '运行中提示条(tooltipNote)'],
+  [/\bProject\s+composer\b/gi, '项目输入框'],
+  [/\bcomposer\b/gi, '输入框'],
+  [/\bmodel\s+menu\b/gi, '模型选择菜单'],
+  [/\bHoverCard\s+portal\s+isolation\b/gi, 'HoverCard浮层隔离'],
+  [/\bportal\s+isolation\b/gi, '浮层容器隔离'],
+  [/\bhost[-\s]?i18n\s+hot[-\s]?heal\b/gi, '宿主汉化热自愈'],
+  [/\bhost[-\s]?i18n\b/gi, '宿主汉化'],
+  [/\bhot[-\s]?heal\b/gi, '热自愈'],
+  [/\bhot[-\s]?reload\b/gi, '热重载'],
+  [/\bACP\s+filter\b/gi, 'ACP进程过滤'],
+  [/\bloop\s+throttle\b/gi, '循环节流'],
+  [/\bsubtle[-\s]?motion\s+mascot\s+guard\b/gi, '微动效模式桌宠防误触保护'],
+  [/\bsubtle[-\s]?motion\b/gi, '微动效模式'],
+  [/\bmascot\s+guard\b/gi, '桌宠防误触保护'],
+  [/\bmascot\b/gi, '像素桌宠'],
+  [/\bdark\s+aura\s+presets?\b/gi, '深色极光背景预设'],
+  [/\bOrchestrator\s+L2\s+submenu\b/gi, 'Orchestrator二级子菜单'],
+  [/\bcamp[-\s]?aware\s+colors?\b/gi, '模型家族区分配色'],
+  [/\bModels\s+tab\b/gi, '模型页签'],
+  [/\bcustom\s+property\b/gi, 'CSS变量'],
+  [/\bexternal\s+dashboard\b/gi, '外部面板'],
+  [/\bFile\.Replace\s+stall\b/gi, 'File.Replace杀软卡顿'],
+  [/\brepo[-\s]?hygiene\s+gates?\b/gi, '仓库规范门禁'],
+  [/\bzero[-\s]?AMSI\b/gi, '防杀软误报(免AMSI拦截)'],
+  [/\bToS\s+sync\b/gi, '服务条款状态同步'],
+  [/\brelaunch\b/gi, '自动重启'],
+  [/\bi18n\b/gi, '多语言汉化']
+];
+
+function preRewriteTermsForMt(text) {
+  let out = String(text || '');
+  for (const [re, rep] of PRE_MT_TERM_REPLACEMENTS) {
+    out = out.replace(re, rep);
+  }
+  return out;
+}
+
+export function polishZhTechTerms(text) {
   return String(text || '')
-    .replace(/\.lnk\s*(?:helper|快捷方式)?/gi, '桌面快捷方式')
-    .replace(/\btooltipNote\b/gi, '悬停提示文案')
+    .replace(/纯节点/g, '纯 Node.js ')
+    .replace(/滤波器/g, '过滤')
+    .replace(/环路节流阀|节流阀/g, '循环节流')
+    .replace(/微妙运动/g, '微动效模式')
+    .replace(/吉祥物护卫|吉祥物守卫/g, '桌宠防误触保护')
+    .replace(/吉祥物/g, '像素桌宠')
+    .replace(/门户隔离/g, '浮层容器隔离')
+    .replace(/主机[-\s]*多语言汉化/g, '宿主多语言汉化')
+    .replace(/黑暗光环/g, '深色极光背景')
+    .replace(/模型选项卡/g, '模型页签')
+    .replace(/外部仪表板/g, '外部面板')
+    .replace(/\.lnk\s*(?:helper|快捷方式)?/gi, '.lnk 快捷方式')
+    .replace(/\btooltipNote\b/gi, '运行中提示条(tooltipNote)')
     .replace(/\bProject composer\b/gi, '项目输入框')
     .replace(/\bcomposer\b/gi, '输入框')
     .replace(/\bmodel menu\b/gi, '模型选择菜单')
     .replace(/\brelaunch\b/gi, '自动重启')
     .replace(/\bToS\s*sync\b/gi, '服务条款状态同步')
-    .replace(/\bzero-AMSI\b/gi, '防杀软误报(无AMSI拦截)')
-    .replace(/\bAMSI\b/g, '安全扫描(AMSI)')
+    .replace(/\bzero-AMSI\b/gi, '防杀软误报(免AMSI拦截)')
+    .replace(/\bAMSI\b/g, 'AMSI')
     .replace(/\bi18n\b/gi, '多语言汉化')
     .replace(/\bCI test\b/gi, 'CI 自动测试')
     .replace(/\s+/g, ' ')
@@ -119,17 +174,57 @@ export function localizeCommitLocally(rawMsg) {
   }
   const phraseRules = [
     [/^support dragging and pasting local files\s*(?:&|and)\s*folders in Project composer$/i, '支持在项目输入框中直接拖拽和粘贴本地文件与文件夹'],
-    [/^adapt model menu to Antigravity\s+(v?[\d.]+)\s+tooltipNote$/i, '适配 Antigravity $1 模型菜单的悬停提示文案变更'],
-    [/^extend Windows \.lnk helper timeout to (\d+s) and pass full env in CI test$/i, '延长 Windows 快捷方式启动器超时至 $1，并在 CI 测试中传递完整环境变量'],
-    [/^zero-AMSI Windows \.lnk relaunch, multi-account ToS sync, Skills i18n, and auto-check update reminders(?:\s*\((v?[\d.]+)\))?$/i, '防杀软误报的 Windows 快捷方式重启、多账号服务条款同步、Skills 汉化与自动更新提醒']
+    [/^adapt model menu to Antigravity\s+(v?[\d.]+)\s+tooltipNote$/i, '适配 Antigravity $1 运行中模型菜单提示属性(tooltipNote)与双语提示条'],
+    [/^extend Windows \.lnk helper timeout to (\d+s) and pass full env in CI test$/i, '延长 Windows .lnk 快捷方式启动器超时至 $1，并在 CI 测试中传递完整环境变量'],
+    [/^zero-AMSI Windows \.lnk relaunch, multi-account ToS sync, Skills i18n, and auto-check update reminders(?:\s*\((v?[\d.]+)\))?$/i, '防杀软误报的 Windows .lnk 快捷方式重启、多账号服务条款同步、Skills 汉化与自动检查更新提醒'],
+    [/^use fileURLToPath instead of URL\.pathname for spaced\/non-ASCII repo paths(.*)$/i, '改用 fileURLToPath 修复含空格或非 ASCII 中文路径下的跨平台测试解析$1'],
+    [/^bump version to\s+(.+)$/i, '版本号升级至 $1']
   ];
   for (const [re, rep] of phraseRules) {
     if (re.test(body)) {
-      return { tagZh, summaryZh: body.replace(re, rep) };
+      return { tagZh, summaryZh: body.replace(re, rep).trim() };
     }
   }
   // Avoid awkward word-by-word Chinglish on unknown commits; keep clean stripped subject when offline
   return { tagZh, summaryZh: body || String(rawMsg || '').trim() };
+}
+
+export function extractZhReleaseHighlights(releaseBodies = [], maxItems = 12) {
+  const bodies = Array.isArray(releaseBodies) ? releaseBodies : [releaseBodies];
+  const out = [];
+  const seen = new Set();
+  for (const rawBody of bodies) {
+    if (!rawBody || typeof rawBody !== 'string') continue;
+    let inAckOrSkipSection = false;
+    for (const rawLine of rawBody.split(/\r?\n/)) {
+      const trimmed = rawLine.trim();
+      if (!trimmed) continue;
+      if (/^#{1,4}\s+/.test(trimmed)) {
+        inAckOrSkipSection = /acknowledg|credits|致谢|standalone installers|独立安装包|english\s+(?:release\s+)?notes/i.test(trimmed);
+        continue;
+      }
+      if (inAckOrSkipSection) continue;
+      const m = trimmed.match(/^[-*]\s+(.+)$/);
+      if (!m) continue;
+      // Skip pure English italic translation lines like `*Unified Smoked...*`
+      if (/^\*[^*]+\*$/.test(m[1].trim()) && !/[\u4e00-\u9fff]{4,}/.test(m[1])) continue;
+      const cleaned = m[1]
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+        .replace(/\*\*/g, '')
+        .replace(/`/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!cleaned || cleaned.length < 8 || !/[\u4e00-\u9fff]{4,}/.test(cleaned)) continue;
+      if (/^(?:代码贡献|问题定位|衷心感谢|Windows\s*\(|macOS\s*\(|Linux\s*\()/i.test(cleaned)) continue;
+      const shortLine = cleaned.length > 140 ? `${cleaned.slice(0, 138)}…` : cleaned;
+      const dedupKey = shortLine.slice(0, 36);
+      if (seen.has(dedupKey)) continue;
+      seen.add(dedupKey);
+      out.push(shortLine);
+      if (out.length >= maxItems) return out;
+    }
+  }
+  return out;
 }
 
 async function translateBatchToZh(texts, { fetchImpl = globalThis.fetch } = {}) {
@@ -143,9 +238,9 @@ async function translateBatchToZh(texts, { fetchImpl = globalThis.fetch } = {}) 
   }
   const map = new Map();
   if (!unique.length || typeof fetchImpl !== 'function') return map;
-  const batch = unique.slice(0, 18);
-  // Numbered lines survive machine translation reliably without delimiter corruption
-  const joined = batch.map((line, i) => `[${i + 1}] ${line}`).join('\n');
+  const batch = unique.slice(0, 28);
+  // Pre-rewrite domain terms & use numbered lines so machine translation stays idiomatic
+  const joined = batch.map((line, i) => `[${i + 1}] ${preRewriteTermsForMt(line)}`).join('\n');
   try {
     const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${encodeURIComponent(joined)}`;
     const res = await fetchImpl(url, {
@@ -179,13 +274,17 @@ function pathMatchesPattern(filePath, pattern) {
   return f === p || f.startsWith(`${p}/`);
 }
 
-function classifyCommitMessage(msg) {
+function classifyCommitMessage(msg, role = '') {
   const first = String(msg || '').split(/\r?\n/)[0].trim();
   const low = first.toLowerCase();
   if (/^(docs?|chore|ci|build|style|test)(\(.+\))?:|\b(readme|changelog|bump version|release v|typo|license)\b/i.test(low)) {
     return 'noise';
   }
-  if (/^(fix|perf|refactor|security)(\(.+\))?:|\b(compat|credential|keychain|credman|daemon|hook|crash|leak)\b/i.test(low)) {
+  const isHostOrSecuritySignal = /\b(antigravity\s*v?\d+\.\d+|v2\.3\d|compat|credential|keychain|credman|oauth|amsi|defender|klif|kaspersky)\b/i.test(low);
+  if (role === 'inspiration-only' || role === 'ecosystem-watch') {
+    return isHostOrSecuritySignal ? 'compat' : 'feature';
+  }
+  if (isHostOrSecuritySignal || /^(fix|perf|refactor|security)(\(.+\))?:|\b(daemon|hook|crash|leak)\b/i.test(low)) {
     return 'compat';
   }
   if (/^(feat|add|support)(\(.+\))?:|\b(new|feature|theme|widget|orb|mascot|tab|search|switch)\b/i.test(low)) {
@@ -207,11 +306,16 @@ export function evaluateRepoUpdate(key, entry, fetched = {}) {
   const excludedPaths = Array.isArray(entry.excludedPaths) ? entry.excludedPaths : [];
 
   const latestTag = String(fetched.latestTag || '').trim();
+  const latestIsPrerelease = Boolean(fetched.latestIsPrerelease);
   const latestCommit = String(fetched.latestCommit || '').trim();
   const latestDate = String(fetched.latestDate || '').trim();
-  const latestMessage = String(fetched.latestMessage || '').split(/\r?\n/)[0].slice(0, 100);
+  const latestMessage = String(fetched.latestMessage || '').split(/\r?\n/)[0].slice(0, 120);
   const releaseName = String(fetched.releaseName || latestTag || '').trim();
-  const releaseNotes = String(fetched.releaseNotes || '').trim().slice(0, 1200);
+  const releaseBodies = Array.isArray(fetched.releaseBodies) && fetched.releaseBodies.length
+    ? fetched.releaseBodies
+    : (fetched.releaseNotes ? [String(fetched.releaseNotes)] : []);
+  const releaseNotes = String(fetched.releaseNotes || releaseBodies[0] || '').trim().slice(0, 1600);
+  const zhReleaseHighlights = extractZhReleaseHighlights(releaseBodies, 12);
   const releaseUrl = String(fetched.releaseUrl || (latestTag ? `https://github.com/${entry.repo}/releases/tag/${latestTag}` : '')).trim();
   const compareCommits = Array.isArray(fetched.commits) ? fetched.commits : [];
   const changedFiles = Array.isArray(fetched.changedFiles) ? fetched.changedFiles : [];
@@ -297,13 +401,14 @@ export function evaluateRepoUpdate(key, entry, fetched = {}) {
   const featureCandidates = [];
   const skippedNoise = [];
 
-  for (const c of compareCommits.slice(0, 20)) {
+  for (const c of compareCommits.slice(0, 30)) {
     const sha = String(c?.sha || '').slice(0, 7);
     const msg = String(c?.message || c?.commit?.message || '').split(/\r?\n/)[0].trim();
     if (!msg) continue;
     const loc = localizeCommitLocally(msg);
-    const item = { sha, message: msg, tagZh: loc.tagZh, summaryZh: loc.summaryZh };
-    const kind = classifyCommitMessage(msg);
+    const kind = classifyCommitMessage(msg, entry.role || '');
+    const tagZh = kind === 'compat' && loc.tagZh === '新功能' ? '兼容适配' : loc.tagZh;
+    const item = { sha, message: msg, tagZh, summaryZh: loc.summaryZh };
     if (kind === 'compat') compatFixes.push(item);
     else if (kind === 'feature') featureCandidates.push(item);
     else if (kind === 'noise') skippedNoise.push(item);
@@ -315,11 +420,12 @@ export function evaluateRepoUpdate(key, entry, fetched = {}) {
   }
 
   // Fallback signal if commit list empty (e.g., tag changed without compare)
-  if (!compatFixes.length && !featureCandidates.length && latestMessage) {
-    const fallbackKind = classifyCommitMessage(latestMessage);
+  if (!compatFixes.length && !featureCandidates.length && !skippedNoise.length && latestMessage) {
+    const fallbackKind = classifyCommitMessage(latestMessage, entry.role || '');
     const loc = localizeCommitLocally(latestMessage);
     const fallbackItem = { sha: latestCommit.slice(0, 7), message: latestMessage, tagZh: loc.tagZh, summaryZh: loc.summaryZh };
     if (fallbackKind === 'compat') compatFixes.push(fallbackItem);
+    else if (fallbackKind === 'noise') skippedNoise.push(fallbackItem);
     else featureCandidates.push(fallbackItem);
   }
 
@@ -345,19 +451,21 @@ export function evaluateRepoUpdate(key, entry, fetched = {}) {
     baselineTag,
     baselineCommit,
     latestTag: latestTag || baselineTag,
+    latestIsPrerelease,
     latestCommit: (latestCommit || baselineCommit).slice(0, 7),
     latestDate,
     latestMessage,
     releaseName,
     releaseNotes,
+    zhReleaseHighlights,
     releaseUrl,
     hasUpdate: true,
     impactLevel,
     aheadBy,
     watchedHits: watchedHits.slice(0, 12),
-    compatFixes: compatFixes.slice(0, 8),
-    featureCandidates: featureCandidates.slice(0, 8),
-    skippedNoise: skippedNoise.slice(0, 6),
+    compatFixes: compatFixes.slice(0, 20),
+    featureCandidates: featureCandidates.slice(0, 20),
+    skippedNoise: skippedNoise.slice(0, 10),
     rateLimited: false,
     error: ''
   };
@@ -417,14 +525,36 @@ export async function checkUpstreams({
       const entry = upstreams[key];
       const repo = entry.repo;
       try {
-        const [rel, commits] = await Promise.all([
-          defaultFetchJson(`https://api.github.com/repos/${repo}/releases/latest`, { fetchImpl, token }).catch((err) => {
-            if (err && (err.status === 404 || err.status === 403 && !err.rateLimited)) return null;
+        const fetchReleasesWithFallback = async () => {
+          try {
+            const list = await defaultFetchJson(`https://api.github.com/repos/${repo}/releases?per_page=6`, { fetchImpl, token });
+            if (Array.isArray(list) && list.length > 0) return list;
+          } catch (err) {
             if (err && err.rateLimited) throw err;
-            return null;
-          }),
+          }
+          try {
+            const single = await defaultFetchJson(`https://api.github.com/repos/${repo}/releases/latest`, { fetchImpl, token });
+            return single && typeof single === 'object' ? [single] : [];
+          } catch (err) {
+            if (err && err.rateLimited) throw err;
+            return [];
+          }
+        };
+
+        const [relList, commits] = await Promise.all([
+          fetchReleasesWithFallback(),
           defaultFetchJson(`https://api.github.com/repos/${repo}/commits?per_page=1`, { fetchImpl, token })
         ]);
+        const rel = Array.isArray(relList) && relList.length > 0 ? relList[0] : null;
+        const baselineTagClean = String(entry.baselineTag || '').trim();
+        const newerRelBodies = [];
+        if (Array.isArray(relList)) {
+          for (const item of relList) {
+            if (!item || typeof item !== 'object') continue;
+            if (baselineTagClean && item.tag_name === baselineTagClean) break;
+            if (item.body) newerRelBodies.push(String(item.body));
+          }
+        }
         const head = Array.isArray(commits) ? commits[0] : null;
         const headSha = String(head?.sha || '').trim();
         const baselineCommit = String(entry.baselineCommit || '').trim();
@@ -439,8 +569,10 @@ export async function checkUpstreams({
 
         return evaluateRepoUpdate(key, entry, {
           latestTag: rel?.tag_name || '',
+          latestIsPrerelease: Boolean(rel?.prerelease),
           releaseName: rel?.name || rel?.tag_name || '',
           releaseNotes: rel?.body || '',
+          releaseBodies: newerRelBodies,
           releaseUrl: rel?.html_url || '',
           latestCommit: headSha,
           latestDate: String(head?.commit?.committer?.date || '').slice(0, 10),
@@ -465,7 +597,8 @@ export async function checkUpstreams({
   if (fetchImpl === globalThis.fetch) {
     const bodiesToTranslate = [];
     for (const r of results) {
-      for (const c of [...(r.compatFixes || []), ...(r.featureCandidates || [])]) {
+      for (const c of [...(r.compatFixes || []), ...(r.featureCandidates || []), ...(r.skippedNoise || [])]) {
+        if (c.sha === '-') continue;
         if (/[\u4e00-\u9fff]{4,}/.test(String(c.summaryZh || ''))) continue;
         const { body } = stripConventionalPrefix(c.message);
         if (body && !/[\u4e00-\u9fff]{4,}/.test(body)) bodiesToTranslate.push(body);
@@ -475,8 +608,8 @@ export async function checkUpstreams({
       const zhMap = await translateBatchToZh(bodiesToTranslate, { fetchImpl });
       if (zhMap.size > 0) {
         for (const r of results) {
-          for (const c of [...(r.compatFixes || []), ...(r.featureCandidates || [])]) {
-            if (/[\u4e00-\u9fff]{4,}/.test(String(c.summaryZh || ''))) continue;
+          for (const c of [...(r.compatFixes || []), ...(r.featureCandidates || []), ...(r.skippedNoise || [])]) {
+            if (c.sha === '-' || /[\u4e00-\u9fff]{4,}/.test(String(c.summaryZh || ''))) continue;
             const { body } = stripConventionalPrefix(c.message);
             if (zhMap.has(body)) {
               c.summaryZh = zhMap.get(body);

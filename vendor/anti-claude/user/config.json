@@ -1,0 +1,34 @@
+{
+  "enabled": true,
+  "channel": "auto",
+  "preset": "claude-desktop-purewhite",
+  "contextLimit": 256000,
+  "cjkFontScale": "95",
+  "modules": {
+    "i18n": false,
+    "metrics": true,
+    "composerWaxSeal": false,
+    "deadlockHealer": true,
+    "coldBootHealer": true,
+    "zoomShortcuts": true,
+    "customCss": true,
+    "customJs": true,
+    "claudeUxStepUnfold": true,
+    "claudeUxCollapseAnimation": true,
+    "claudeUxRunningTimer": true,
+    "claudeUxContextRing": true,
+    "claudeUxModelMenu": true,
+    "claudeUxInlineUndo": true,
+    "claudeUxFolderStatus": true,
+    "claudeUxRecentSection": false,
+    "claudeUxProjects": true,
+    "claudeUxHideSidebarProjects": true,
+    "claudeUxCustomizations": true,
+    "claudeUxCodeFold": true,
+    "claudeUxOverviewPanel": true
+  },
+  "selectors": {
+    "excludeI18n": "[data-testid=\"permissions-selector-trigger\"], [data-testid=\"model-selector-trigger\"], [data-ag-i18n-ignore=\"1\"], #ag-claude-model-popover, #ag-claude-model-subpop"
+  },
+  "themeVars": {}
+}

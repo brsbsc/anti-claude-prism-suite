@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.0 - 2026-11-26
+
+- **一体化内嵌继承 `Anti-Claude v3.1.9` 增强内核（独立完整版，告别二次安装）**：
+  - 将 `hongqi7/Anti-Claude`（MIT 协议，最新 `v3.1.9`）完整运行时与本项目定制的 `user/extensions/*.{css,js}` 热加载器、`getUsageSummary` 近 14 天/12 周本地用量统计、`translateText` 分片中译及 WSL↔Windows 会话桥接钩子一体化打包进 `vendor/anti-claude/`（附 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 完整 MIT 归属声明）；
+  - 升级跨平台 [install.mjs](install.mjs) / [uninstall.mjs](uninstall.mjs) 与 Windows 一键安装器 [PrismSuiteInstaller.cs](installer/win/PrismSuiteInstaller.cs)：单次安装自动部署 `~/.gemini/antigravity/anti-claude/runtime/`、3-way 合并保护用户本地配置、为 Windows 快捷方式幂等补齐 `--remote-debugging-port=0`，并自动注册拉起后台 CDP 守护进程，**新用户仅装本项目一个安装包即 100% 开箱即用，无需再单独安装其他前置项目**；老用户通过工作台「🚀 一键更新」也会同步升级底层内核。
+- **修复分池短板账号误挂「推荐」徽章与窄栏折行**：
+  - 前后端双重引入全模型池木桶短板校验（`evaluateQuotaPoolHealth` / `evalAccountPoolHealthClient`）：即使某账号顶层或 `Claude/GPT` 池接近满血，只要 `Gemini`（或任一池）剩余额度 `< 20%` 红灯告警，一律一票否决主号恢复提醒、主号优先加权与 `推荐` 徽章（仅当显式指定单一模型时按单池评估），前端独立兜底计算无需等待后台服务进程重启即刻生效；
+  - 收紧窄侧边栏下待切换紧凑卡头部单行弹性布局（标题自动省略截断，按钮精简为 `⚡ 切换` 绝不挤压折行）。
+- **Clean-room 择优融合三家上游更新并同步基线**（`Anti-Claude v3.1.9` / `agy-powertools v2.16.3` / `obsidian-prism v1.0.8-beta.3`）：
+  - 补全 Antigravity `v2.35.1–2.35.2` 运行中模型菜单生效范围提示（`tooltipNote`）、旁路追问（`/btw`）与 Skills / Customizations / Marketplace 简繁词条（[prism-suite-workflow.js](extensions/prism-suite-workflow.js)）；
+  - 新增零冲突的「输入框拖入/粘贴本地文件与文件夹转 `@路径` 引用」兜底助手（原生或 `Anti-Claude v3.1.9` 已消费事件时自动避让不重复插入），并为 `Prism 工作台` 目录/产物/收藏列表行开启原生拖拽直投；
+  - 升级 Windows 脱离重启器（[relaunch-client.mjs](plugin/server/relaunch-client.mjs)）：移除嵌套 `-EncodedCommand` 与 `Win32_Process.Create`，改用受限临时自清理 `.ps1` 文件 + `15s` 超时拉起，消除杀软误报拦截。
+- **「上游生态动态（Upstream Radar）」全库一键合并复制与精准中文摘要重构**：
+  - 将分散在各仓库的复制按钮整合为顶栏统一的 **「📋 一键复制已勾融合指令 (N)」** 与 **「✅ 一键同步全部基线」**，自动按仓库分组生成单条结构化融合指令（附精准中文摘要 + 原文对照 + 未勾选仓库基线归拢），彻底告别重复粘贴与空段落；
+  - 修复预发布版本（如 `v1.0.8-beta.3`）漏检、多提交截断吞项、`inspiration-only`（GPL）仓库默认误全勾，以及 `pure-Node`→“纯节点”、`filter`→“滤波器”等生硬机翻，新增原版 Release 官方中文升级要点折叠展示。
+
 ## 0.5.9 - 2026-11-26
 
 - **保持概览面板跨侧栏折叠展开**：修复当「概览（Overview）」面板与右侧辅助侧边面板（如 `Prism 工作台`）同时展开时，收起侧边面板导致分屏重排连带关闭概览面板的问题；新增可见面板识别、滑动窗口防环保护与焦点还原，仅在手动点击概览开关或按 `Escape` 关闭时收起。

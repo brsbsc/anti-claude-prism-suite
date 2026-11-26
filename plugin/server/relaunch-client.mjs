@@ -4,8 +4,8 @@
  * Design guarantees:
  * - Zero external dependencies, MIT clean-room implementation.
  * - Preserves `--remote-debugging-port=0` when active or Anti-Claude extensions are present.
- * - Uses Explorer ShellExecute COM -> WMI Win32_Process.Create -> Start-Process fallback
- *   on Windows/WSL2 so closing the current Antigravity window does NOT kill the relaunch worker.
+ * - Uses Explorer ShellExecute COM -> Start-Process fallback executing a self-cleaning `-File` script
+ *   on Windows/WSL2 (no WMI creation, no nested EncodedCommand) so closing Antigravity never kills the worker.
  * - Only signals Antigravity.exe matching the resolved executable path; never touches unrelated apps.
  */
 import fs from 'node:fs';
@@ -178,7 +178,11 @@ export function buildWinDetachedDispatchScript(workerEncoded) {
     "$ErrorActionPreference = 'Stop'",
     "$psExe = Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'",
     "if (-not (Test-Path -LiteralPath $psExe)) { $psExe = 'powershell.exe' }",
-    `$psArgs = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand ' + ${psSingleQuote(workerEncoded)}`,
+    `$rawWorker = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String(${psSingleQuote(workerEncoded)}))`,
+    "$workerPath = Join-Path $env:TEMP ('prism-relaunch-' + [Guid]::NewGuid().ToString('N').Substring(0, 12) + '.ps1')",
+    "$wrapped = \"try {`r`n\" + $rawWorker + \"`r`n} finally {`r`n  Remove-Item -LiteralPath `$PSCommandPath -Force -ErrorAction SilentlyContinue`r`n}\"",
+    "[System.IO.File]::WriteAllText($workerPath, $wrapped, (New-Object System.Text.UTF8Encoding($true)))",
+    "$psArgs = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"' + $workerPath + '\"'",
     "$method = ''",
     'try {',
     "  $sw = [Activator]::CreateInstance([Type]::GetTypeFromCLSID([Guid]'9BA05972-F6A8-11CF-A442-00A0C90A8F39'))",
@@ -189,13 +193,6 @@ export function buildWinDetachedDispatchScript(workerEncoded) {
     "    $method = 'explorer'",
     '  }',
     '} catch {}',
-    'if (-not $method) {',
-    '  try {',
-    '    $cmdLine = \'"\' + $psExe + \'" \' + $psArgs',
-    "    $wmi = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmdLine }",
-    '    if ($wmi -and [int]$wmi.ReturnValue -eq 0) { $method = \'wmi\' }',
-    '  } catch {}',
-    '}',
     'if (-not $method) {',
     '  Start-Process -FilePath $psExe -ArgumentList $psArgs -WindowStyle Hidden',
     "  $method = 'start-process'",
@@ -338,7 +335,7 @@ export function createClientRelauncher(options = {}) {
       const res = runCmd(
         psExe,
         ['-NoProfile', '-NonInteractive', '-EncodedCommand', dispatchEncoded],
-        { timeoutMs: 10000, cwd: execCwd, env: execEnv }
+        { timeoutMs: 15000, cwd: execCwd, env: execEnv }
       );
       if (res.status !== 0) {
         return {
