@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.8 - 2026-11-26
+
+- **修复多会话切换后小精灵消失 & 障碍探测误隐藏**：
+  - [extensions/prism-suite.js](extensions/prism-suite.js)、[extensions/prism-suite-fx.js](extensions/prism-suite-fx.js) 与 [extensions/prism-suite-workflow.js](extensions/prism-suite-workflow.js) 新增可见多会话输入框与视口定位器（`getActiveInputBox` / `getActiveViewportEl`），解决 Antigravity 切换对话缓存后台 DOM 节点时 `getElementById` 命中首个隐藏旧输入框导致小精灵、流光边框、思考球与轮次圆点停留在旧对话的问题（切换侧边栏对话 65ms 瞬时跟随）；
+  - 收紧 `scanDockObstacles` 探测带（不再向下探入输入框内部，并排除对话滚动区内的常规文本链接与消息操作按钮），消除对话末尾链接/按钮触发 `data-yield="1"` 误将小精灵透明隐藏的问题。
+- **小精灵「全局大小」实时跨会话同步与防漏存**：
+  - 将 `--ag-ps-sprite-w` / `--ag-ps-sprite-h` 提升至 `:root` 全局 CSS 变量，滑块拖动过程中自动 140ms 防抖持久化至本地存储与跨端口 Cookie，所有历史/新建对话与多账号全局共用同一尺寸，无需重复调节。
+- **修复开启「用户消息气泡着色」后气泡底部多出一截空白的问题**：
+  - 根因：[extensions/prism-suite-workflow.js](extensions/prism-suite-workflow.js) 的轮次悬停操作条 `.ag-ps-turn-actions`（高 22px + `margin-top: 4px`）原以文档流插在 `[data-testid="user-message-bubble"]` 内部且默认 `opacity: 0`，撑高了气泡底部 26px；
+  - 修复：将 `.ag-ps-turn-actions` 移至气泡外层包裹容器并改为右上角脱离文档流的毛玻璃悬浮胶囊（带无缝悬停桥接热区），同时清零着色气泡内尾段多余下边距并排除原生内联编辑态卡片，气泡高度 100% 紧贴文字。
+
 ## 0.5.7 - 2026-11-26
 
 - **彻底修复切换账号 / 重启客户端后 `✦ 棱镜` 扩展设置丢失的问题（跨端口三层持久化 + 自动找回旧设置）**：

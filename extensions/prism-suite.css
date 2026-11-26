@@ -898,13 +898,11 @@ html[data-ag-ps-dark="marine"] body.dark {
 }
 
 #ag-ps-mascot-dock {
-  --ag-ps-sprite-w: 24px;
-  --ag-ps-sprite-h: 22px;
   position: absolute;
   left: 0;
   right: 0;
   bottom: calc(100% + 2px);
-  height: var(--ag-ps-sprite-h);
+  height: var(--ag-ps-sprite-h, 22px);
   z-index: 18;
   pointer-events: none;
   user-select: none;
@@ -929,8 +927,8 @@ html[data-ag-ps-dark="marine"] body.dark {
   position: absolute;
   left: 0;
   bottom: 0;
-  width: var(--ag-ps-sprite-w);
-  height: var(--ag-ps-sprite-h);
+  width: var(--ag-ps-sprite-w, 24px);
+  height: var(--ag-ps-sprite-h, 22px);
   pointer-events: auto;
   cursor: pointer;
   transform: translate3d(var(--ag-ps-x, 0px), 0, 0);

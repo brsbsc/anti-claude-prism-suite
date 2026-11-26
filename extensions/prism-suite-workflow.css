@@ -136,19 +136,48 @@ body.dark .ag-ps-ssh-status[data-tone="warn"] {
   border-color: rgba(245, 158, 11, 0.28);
 }
 
-/* ---- 3. Turn Hover Micro-Actions (Edit / Fork) ---- */
+/* ---- 3. Turn Hover Micro-Actions (Edit / Fork) — Out-of-Flow Top-Right Rim Pill (0px Bubble Height Impact) ---- */
 .ag-ps-turn-host {
   position: relative;
+  overflow: visible !important;
 }
 
 .ag-ps-turn-actions {
+  position: absolute;
+  top: -11px;
+  right: 6px;
+  z-index: 15;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  margin-top: 4px;
+  gap: 3px;
+  margin: 0;
+  padding: 2px;
+  border-radius: 8px;
+  background-color: color-mix(in srgb, var(--background, #FFFFFF) 92%, transparent);
+  border: 1px solid var(--sidebar-border, rgba(128, 128, 128, 0.16));
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   opacity: 0;
+  transform: translateY(2px);
   pointer-events: none;
-  transition: opacity 140ms ease;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.ag-ps-turn-actions::after {
+  content: '';
+  position: absolute;
+  inset: -4px -4px -8px -4px;
+  z-index: -1;
+}
+
+.ag-ps-turn-actions[data-below="1"] {
+  top: auto;
+  bottom: -11px;
+}
+
+.ag-ps-turn-actions[data-below="1"]::after {
+  inset: -8px -4px -4px -4px;
 }
 
 .ag-ps-turn-host:hover .ag-ps-turn-actions,
@@ -156,12 +185,14 @@ body.dark .ag-ps-ssh-status[data-tone="warn"] {
 .ag-ps-turn-actions:focus-within,
 .ag-ps-turn-actions[data-pinned="1"] {
   opacity: 1;
+  transform: translateY(0);
   pointer-events: auto;
 }
 
-@media (hover: none) {
-  .ag-ps-turn-actions {
-    opacity: 0.85;
+@media (hover: none) and (pointer: coarse) {
+  .ag-ps-turn-host:focus-within .ag-ps-turn-actions {
+    opacity: 0.95;
+    transform: translateY(0);
     pointer-events: auto;
   }
 }
@@ -209,6 +240,15 @@ body.dark .ag-ps-ssh-status[data-tone="warn"] {
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
   font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
   font-size: 12.5px;
+}
+
+.ag-ps-inline-editor.ag-ps-inline-editor-float {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(92vw, 520px);
+  z-index: 20;
+  margin-top: 0;
 }
 
 html[data-ag-theme-mode="dark"] .ag-ps-inline-editor,

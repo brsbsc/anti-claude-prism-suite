@@ -817,7 +817,8 @@
     }
 
     function getComposerEditor() {
-      const box = (typeof bus.getComposerEl === 'function' && bus.getComposerEl())
+      const box = (typeof bus.getInputBoxEl === 'function' && bus.getInputBoxEl())
+        || (typeof bus.getComposerEl === 'function' && bus.getComposerEl())
         || document.getElementById('antigravity.agentSidePanelInputBox');
       if (box) {
         if (box.isContentEditable || box.tagName === 'TEXTAREA') return box;
@@ -864,8 +865,13 @@
     }
 
     function getUserTurnElements() {
-      const nodes = Array.from(document.querySelectorAll('[data-testid="user-message-content"]'));
-      return nodes.filter((n) => n && n.isConnected && (n.textContent || '').trim().length > 0);
+      const scope = getViewport() || document;
+      const nodes = Array.from(scope.querySelectorAll('[data-testid="user-message-content"]'));
+      return nodes.filter((n) => {
+        if (!n || !n.isConnected || !(n.textContent || '').trim().length) return false;
+        const r = n.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
     }
 
     function getCurrentConversationId() {
@@ -2091,6 +2097,11 @@
       });
 
       if (actionsEl) actionsEl.setAttribute('data-pinned', '1');
+      const hostCs = window.getComputedStyle(turnBubble);
+      const isRowFlex = hostCs.display === 'flex' && hostCs.flexDirection !== 'column' && hostCs.flexDirection !== 'column-reverse';
+      if (isRowFlex) {
+        editorEl.classList.add('ag-ps-inline-editor-float');
+      }
       turnBubble.appendChild(editorEl);
       activeInlineEditor = { editorEl, textarea, contentEl, actionsEl, triggerBtn };
       textarea.focus();
@@ -2202,8 +2213,12 @@
       });
     }
 
+    let turnActionsAc = new AbortController();
+
     function cleanupAllTurnActions() {
       closeActiveInlineEditor();
+      try { turnActionsAc.abort(); } catch {}
+      turnActionsAc = new AbortController();
       document.querySelectorAll('.ag-ps-turn-actions').forEach((el) => el.remove());
       document.querySelectorAll('[data-ag-ps-edit-bound]').forEach((el) => {
         el.removeAttribute('data-ag-ps-edit-bound');
@@ -2212,6 +2227,39 @@
     }
 
     addCleanup(cleanupAllTurnActions);
+
+    function resolveTurnActionHost(bubble, contentEl) {
+      if (!bubble) return null;
+      const p = bubble.parentElement;
+      if (
+        bubble !== contentEl &&
+        p &&
+        p.isConnected &&
+        !p.matches('[data-testid="autoscroll-viewport"], main, body') &&
+        p.querySelectorAll('[data-testid="user-message-content"]').length === 1
+      ) {
+        const bs = window.getComputedStyle(p);
+        const br = bubble.getBoundingClientRect();
+        const pr = p.getBoundingClientRect();
+        const isHorizontalFlex = bs.display === 'flex' && bs.flexDirection !== 'column' && bs.flexDirection !== 'column-reverse';
+        const isBroadRow = pr.width > br.width + 48 || pr.left < br.left - 24 || pr.right > br.right + 24;
+        if (!isHorizontalFlex && !isBroadRow) return p;
+      }
+      return bubble;
+    }
+
+    function syncTurnActionEdgeFlip(bar, host) {
+      if (!bar || !host) return;
+      const vp = host.closest('[data-testid="autoscroll-viewport"]');
+      if (!vp) return;
+      const vr = vp.getBoundingClientRect();
+      const hr = host.getBoundingClientRect();
+      if (hr.top - vr.top < 14) {
+        bar.setAttribute('data-below', '1');
+      } else {
+        bar.removeAttribute('data-below');
+      }
+    }
 
     function syncTurnActionBars() {
       if (disposed || document.hidden) return;
@@ -2231,19 +2279,30 @@
         const contentEl = turns[i];
         const bubble = findTurnBubble(contentEl);
         if (!bubble || !bubble.isConnected) continue;
+        const host = resolveTurnActionHost(bubble, contentEl) || bubble;
+
+        // Ensure no legacy in-flow action bar stays inside the colored bubble itself
+        if (host !== bubble) {
+          bubble.querySelectorAll(':scope > .ag-ps-turn-actions').forEach((n) => n.remove());
+          bubble.removeAttribute('data-ag-ps-edit-bound');
+          bubble.classList.remove('ag-ps-turn-host');
+        }
 
         const isStreamingTurn = busy && i === turns.length - 1;
-        let bar = bubble.querySelector(':scope > .ag-ps-turn-actions');
+        let bar = host.querySelector(':scope > .ag-ps-turn-actions');
 
         if (!bar) {
-          bubble.setAttribute('data-ag-ps-edit-bound', '1');
-          bubble.classList.add('ag-ps-turn-host');
+          host.setAttribute('data-ag-ps-edit-bound', '1');
+          host.classList.add('ag-ps-turn-host');
 
           bar = document.createElement('div');
           bar.className = 'ag-ps-turn-actions';
           bar.setAttribute('data-ag-i18n-ignore', '1');
-          bubble.appendChild(bar);
+          host.addEventListener('pointerenter', () => syncTurnActionEdgeFlip(bar, host), { passive: true, signal: turnActionsAc.signal });
+          host.addEventListener('focusin', () => syncTurnActionEdgeFlip(bar, host), { passive: true, signal: turnActionsAc.signal });
+          host.appendChild(bar);
         }
+        syncTurnActionEdgeFlip(bar, host);
 
         // Sync Edit button idempotently
         let editBtn = bar.querySelector('[data-ps-act="edit"]');
@@ -2257,11 +2316,11 @@
             editBtn.textContent = '编辑';
             editBtn.addEventListener('click', (ev) => {
               ev.stopPropagation();
-              const liveContentEl = bubble.matches('[data-testid="user-message-content"]')
-                ? bubble
-                : bubble.querySelector('[data-testid="user-message-content"]');
+              const liveContentEl = host.matches('[data-testid="user-message-content"]')
+                ? host
+                : host.querySelector('[data-testid="user-message-content"]');
               if (!liveContentEl || !liveContentEl.isConnected) return;
-              openInlineEditForTurn(liveContentEl, bubble, bar, editBtn);
+              openInlineEditForTurn(liveContentEl, host, bar, editBtn);
             });
             bar.insertBefore(editBtn, bar.firstChild);
           }
@@ -2281,9 +2340,9 @@
             forkBtn.textContent = '分支';
             forkBtn.addEventListener('click', (ev) => {
               ev.stopPropagation();
-              const liveContentEl = bubble.matches('[data-testid="user-message-content"]')
-                ? bubble
-                : bubble.querySelector('[data-testid="user-message-content"]');
+              const liveContentEl = host.matches('[data-testid="user-message-content"]')
+                ? host
+                : host.querySelector('[data-testid="user-message-content"]');
               if (!liveContentEl || !liveContentEl.isConnected) return;
               const curIdx = getUserTurnElements().indexOf(liveContentEl);
               void triggerSessionFork(curIdx, liveContentEl, forkBtn);

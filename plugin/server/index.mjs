@@ -38,7 +38,7 @@ const PLUGIN_ROOT = path.resolve(__dirname, '..');
 export const APP_URI = 'ui://prism-files/app.html';
 export const INLINE_URI = 'ui://prism-files/inline.html';
 export const APP_MIME_TYPE = 'text/html;profile=mcp-app';
-const SERVER_INFO = { name: 'prism-files', version: '0.5.7' };
+const SERVER_INFO = { name: 'prism-files', version: '0.5.8' };
 const MAX_TEXT_PREVIEW_BYTES = 256 * 1024;
 const MAX_IMAGE_PREVIEW_BYTES = 4 * 1024 * 1024;
 const MAX_SAVE_BYTES = 512 * 1024;

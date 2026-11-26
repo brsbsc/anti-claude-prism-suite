@@ -1396,11 +1396,13 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.5.7');
-    assert.equal(pluginJson.version, '0.5.7');
+    assert.equal(pkgJson.version, '0.5.8');
+    assert.equal(pluginJson.version, '0.5.8');
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.5\.7'/);
+    assert.match(jsSrc, /SUITE_VERSION = '0\.5\.8'/);
     assert.match(jsSrc, /COOKIE_PREFS_KEY = 'ag_prism_prefs_v1'/);
+    assert.match(jsSrc, /getActiveInputBox/);
+    assert.match(jsSrc, /getInputBoxEl: getActiveInputBox/);
     assert.match(jsSrc, /hydrateDiskPrefs/);
     assert.match(jsSrc, /formatShortTierName/);
     assert.match(jsSrc, /window\.__agPrismModules/);
@@ -1411,9 +1413,10 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(fxSrc, /borderBeamMode/);
     assert.match(fxSrc, /scrollbarW/);
     assert.match(wfSrc, /registerPrismModule\('workflow', initWorkflowModule\)/);
+    assert.match(wfSrc, /resolveTurnActionHost/);
     assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
     assert.match(jsSrc, /readAntiClaudeQuotaCache/);
-    assert.match(inlineHtml, /version: '0\.5\.7'/);
+    assert.match(inlineHtml, /version: '0\.5\.8'/);
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1443,7 +1446,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(csSrc, /PruneObsoletePluginEntries/);
     assert.match(csSrc, /CheckDebugPortShortcutStatus/);
     assert.match(csSrc, /prism-suite-00-prefs\.js/);
-    assert.match(csSrc, /v0\.5\.7/);
+    assert.match(csSrc, /v0\.5\.8/);
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
   } finally {

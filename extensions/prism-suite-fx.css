@@ -176,7 +176,11 @@ html[data-ag-ps-orb-replace="1"] #ag-ps-orb-dock {
 }
 
 /* ---- 3. User Message Bubble Tinting ---- */
-html[data-ag-ps-bubble-tint="1"] :where([data-testid="user-message-bubble"], [data-testid="user-message"]:not(:has([data-testid="user-message-bubble"]))) {
+html[data-ag-ps-bubble-tint="1"] :where(
+  [data-testid="user-message-bubble"]:not(.ag-claude-editing-bubble),
+  .agy-user-bubble:not(.ag-claude-editing-bubble),
+  [data-testid="user-message"]:not(:has([data-testid="user-message-bubble"], .agy-user-bubble))
+) {
   background-color: color-mix(
     in srgb,
     var(--ag-ps-bubble-color, var(--primary, #2F75C3)) var(--ag-ps-bubble-mix, 22%),
@@ -190,19 +194,27 @@ html[data-ag-ps-bubble-tint="1"] :where([data-testid="user-message-bubble"], [da
   transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease;
 }
 
+html[data-ag-ps-bubble-tint="1"] :where([data-testid="user-message-content"]) > :first-child {
+  margin-top: 0;
+}
+
+html[data-ag-ps-bubble-tint="1"] :where([data-testid="user-message-content"]) > :last-child {
+  margin-bottom: 0;
+}
+
 /* High-strength (>=70%) automatic text contrast adaptation */
-html[data-ag-ps-bubble-tint="1"][data-ag-ps-bubble-contrast="light"] :where([data-testid="user-message-bubble"], [data-testid="user-message"]:not(:has([data-testid="user-message-bubble"]))),
-html[data-ag-ps-bubble-tint="1"][data-ag-ps-bubble-contrast="light"] :where([data-testid="user-message-bubble"] [data-testid="user-message-content"], [data-testid="user-message"] [data-testid="user-message-content"]) {
+html[data-ag-ps-bubble-tint="1"][data-ag-ps-bubble-contrast="light"] :where([data-testid="user-message-bubble"]:not(.ag-claude-editing-bubble), .agy-user-bubble:not(.ag-claude-editing-bubble), [data-testid="user-message"]:not(:has([data-testid="user-message-bubble"], .agy-user-bubble))),
+html[data-ag-ps-bubble-tint="1"][data-ag-ps-bubble-contrast="light"] :where([data-testid="user-message-bubble"]:not(.ag-claude-editing-bubble) [data-testid="user-message-content"], [data-testid="user-message"]:not(:has(.ag-claude-editing-bubble)) [data-testid="user-message-content"]) {
   color: #FFFFFF !important;
 }
 
-html[data-ag-ps-bubble-tint="1"][data-ag-ps-bubble-contrast="light"] :where([data-testid="user-message-bubble"] a, [data-testid="user-message"] a) {
+html[data-ag-ps-bubble-tint="1"][data-ag-ps-bubble-contrast="light"] :where([data-testid="user-message-bubble"]:not(.ag-claude-editing-bubble) a, [data-testid="user-message"]:not(:has(.ag-claude-editing-bubble)) a) {
   color: #E0F2FE !important;
   text-decoration-color: rgba(255, 255, 255, 0.55);
 }
 
-html[data-ag-ps-bubble-tint="1"][data-ag-ps-bubble-contrast="dark"] :where([data-testid="user-message-bubble"], [data-testid="user-message"]:not(:has([data-testid="user-message-bubble"]))),
-html[data-ag-ps-bubble-tint="1"][data-ag-ps-bubble-contrast="dark"] :where([data-testid="user-message-bubble"] [data-testid="user-message-content"], [data-testid="user-message"] [data-testid="user-message-content"]) {
+html[data-ag-ps-bubble-tint="1"][data-ag-ps-bubble-contrast="dark"] :where([data-testid="user-message-bubble"]:not(.ag-claude-editing-bubble), .agy-user-bubble:not(.ag-claude-editing-bubble), [data-testid="user-message"]:not(:has([data-testid="user-message-bubble"], .agy-user-bubble))),
+html[data-ag-ps-bubble-tint="1"][data-ag-ps-bubble-contrast="dark"] :where([data-testid="user-message-bubble"]:not(.ag-claude-editing-bubble) [data-testid="user-message-content"], [data-testid="user-message"]:not(:has(.ag-claude-editing-bubble)) [data-testid="user-message-content"]) {
   color: #0F172A !important;
 }
 

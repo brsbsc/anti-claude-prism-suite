@@ -199,19 +199,21 @@
     function safeGetComposerEl() {
       try {
         const el = bus.getComposerEl && bus.getComposerEl();
-        if (el && el.isConnected) return el;
+        if (el && el.isConnected && el.getBoundingClientRect().width > 0) return el;
       } catch {}
-      const fallback = document.getElementById('antigravity.agentSidePanelInputBox');
-      return fallback && fallback.isConnected ? fallback : null;
+      const boxes = Array.from(document.querySelectorAll('[id="antigravity.agentSidePanelInputBox"]'));
+      const vis = boxes.filter((b) => b.isConnected && b.getBoundingClientRect().width > 0);
+      return vis[vis.length - 1] || null;
     }
 
     function safeGetViewportEl() {
       try {
         const el = bus.getViewportEl && bus.getViewportEl();
-        if (el && el.isConnected) return el;
+        if (el && el.isConnected && el.getBoundingClientRect().width > 0) return el;
       } catch {}
-      const fallback = document.querySelector('[data-testid="autoscroll-viewport"]');
-      return fallback && fallback.isConnected ? fallback : null;
+      const vps = Array.from(document.querySelectorAll('[data-testid="autoscroll-viewport"]'));
+      const vis = vps.filter((v) => v.isConnected && v.getBoundingClientRect().width > 0);
+      return vis[vis.length - 1] || null;
     }
 
     function safeGetThemeAccent() {
@@ -907,10 +909,13 @@
     }
 
     function safeGetOrbHostEl() {
-      const inputBox = document.getElementById('antigravity.agentSidePanelInputBox');
-      if (inputBox && inputBox.isConnected) return inputBox;
-      if (composerHost && composerHost.isConnected) return composerHost;
-      return safeGetComposerEl();
+      try {
+        const activeInput = typeof bus.getInputBoxEl === 'function' ? bus.getInputBoxEl() : null;
+        if (activeInput && activeInput.isConnected) return activeInput;
+      } catch {}
+      const boxes = Array.from(document.querySelectorAll('[id="antigravity.agentSidePanelInputBox"]'));
+      const vis = boxes.filter((b) => b.isConnected && b.getBoundingClientRect().width > 0);
+      return vis[vis.length - 1] || null;
     }
 
     function updateOrbButtonTip() {
@@ -1563,13 +1568,14 @@
     let railActiveIdx = -1;
 
     function getUserTurns() {
-      const nodes = document.querySelectorAll('[data-testid="user-message-content"]');
+      const scope = safeGetViewportEl() || document;
+      const nodes = scope.querySelectorAll('[data-testid="user-message-content"]');
       const out = [];
       for (let i = 0; i < nodes.length; i++) {
         const n = nodes[i];
-        if (n && n.isConnected && (n.textContent || '').trim().length > 0) {
-          out.push(n);
-        }
+        if (!n || !n.isConnected || !(n.textContent || '').trim().length) continue;
+        const r = n.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) out.push(n);
       }
       return out;
     }

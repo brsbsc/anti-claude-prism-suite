@@ -12,7 +12,7 @@
     try { window.__agPrismSuiteDispose(); } catch {}
   }
 
-  const SUITE_VERSION = '0.5.7';
+  const SUITE_VERSION = '0.5.8';
   const REPO_RELEASES_API = 'https://api.github.com/repos/wushuai0802/anti-claude-prism-suite/releases/latest';
   const REPO_RELEASES_URL = 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest';
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';
@@ -404,14 +404,82 @@
   }
   onCleanup(() => clearTimeout(jumpToastTimer));
 
+  function isElementRendered(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.hidden || el.closest('[hidden], [aria-hidden="true"]')) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+
+  function getActiveCascadeId() {
+    try {
+      if (window.__ag_watched_cascade_id) return String(window.__ag_watched_cascade_id);
+      const sel = document.querySelector('[data-testid="conversation-row-sidebar"][data-selected="true"]');
+      return (sel && sel.getAttribute('data-cascade-id')) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function getActiveInputBox(anchorEl = null) {
+    if (anchorEl && anchorEl.closest) {
+      const own = anchorEl.closest('[id="antigravity.agentSidePanelInputBox"]');
+      if (own && isElementRendered(own)) return own;
+      const view = anchorEl.closest('[data-testid="conversation-view"]');
+      if (view) {
+        const inView = view.querySelector('[id="antigravity.agentSidePanelInputBox"]');
+        if (inView && isElementRendered(inView)) return inView;
+      }
+    }
+    const allBoxes = Array.from(document.querySelectorAll('[id="antigravity.agentSidePanelInputBox"]'));
+    if (!allBoxes.length) return null;
+    const pool = allBoxes.filter(isElementRendered);
+    if (!pool.length) return null;
+    if (pool.length === 1) return pool[0];
+
+    const ae = document.activeElement;
+    if (ae && ae.closest) {
+      const aeOwn = ae.closest('[id="antigravity.agentSidePanelInputBox"]');
+      if (aeOwn && pool.includes(aeOwn)) return aeOwn;
+      const aeView = ae.closest('[data-testid="conversation-view"]');
+      if (aeView) {
+        const aeBox = aeView.querySelector('[id="antigravity.agentSidePanelInputBox"]');
+        if (aeBox && pool.includes(aeBox)) return aeBox;
+      }
+    }
+    const cid = getActiveCascadeId();
+    if (cid) {
+      for (const b of pool) {
+        const v = b.closest('[data-testid="conversation-view"]');
+        if (v && v.getAttribute('data-cascade-id') === cid) return b;
+      }
+    }
+    return pool[pool.length - 1];
+  }
+
+  function getActiveViewportEl() {
+    const box = getActiveInputBox();
+    if (box && box.closest) {
+      const view = box.closest('[data-testid="conversation-view"]');
+      if (view) {
+        const vp = view.querySelector('[data-testid="autoscroll-viewport"]');
+        if (vp && isElementRendered(vp)) return vp;
+      }
+    }
+    const vps = Array.from(document.querySelectorAll('[data-testid="autoscroll-viewport"]'));
+    const vis = vps.filter(isElementRendered);
+    return vis[vis.length - 1] || null;
+  }
+
   function getUserTurnElements() {
-    const nodes = Array.from(document.querySelectorAll('[data-testid="user-message-content"]'));
-    return nodes.filter((n) => n && n.isConnected && (n.textContent || '').trim().length > 0);
+    const scope = getActiveViewportEl() || document;
+    const nodes = Array.from(scope.querySelectorAll('[data-testid="user-message-content"]'));
+    return nodes.filter((n) => isElementRendered(n) && (n.textContent || '').trim().length > 0);
   }
 
   function detectViewportTurnIndex(turns) {
     if (!turns.length) return -1;
-    const vp = document.querySelector('[data-testid="autoscroll-viewport"]');
+    const vp = getActiveViewportEl();
     const vpRect = vp ? vp.getBoundingClientRect() : { top: 0, height: window.innerHeight };
     const anchorY = vpRect.top + vpRect.height * 0.35;
     let bestIdx = 0;
@@ -441,7 +509,7 @@
 
   function insertBtwQuote(text) {
     const snippet = `/btw 关于「${String(text || '').replace(/\s+/g, ' ').trim().slice(0, 48)}」：`;
-    const box = document.getElementById('antigravity.agentSidePanelInputBox');
+    const box = getActiveInputBox();
     const editor = box && box.querySelector('[contenteditable="true"], textarea');
     let inserted = false;
     if (editor) {
@@ -985,7 +1053,7 @@
       if (!isBusy) clearInkHighlights();
       return;
     }
-    const vp = document.querySelector('[data-testid="autoscroll-viewport"]');
+    const vp = getActiveViewportEl();
     if (!vp) return;
     if (streamObserver && observedStreamVp === vp) return;
     detachStreamObserver();
@@ -1231,7 +1299,7 @@
   }
 
   function sampleLatestResponseLen() {
-    const vp = document.querySelector('[data-testid="autoscroll-viewport"]');
+    const vp = getActiveViewportEl();
     if (!vp) return 0;
     const resps = vp.querySelectorAll('[data-testid="planner-response-text"], [data-testid="agent-response"]');
     if (resps.length) {
@@ -1413,17 +1481,28 @@
     if (!dock || !dock.isConnected) return { zones: [], crowded: false, sig: '' };
     const dockRect = dock.getBoundingClientRect();
     if (!dockRect.width) return { zones: [], crowded: false, sig: '' };
-    const { w, h, gap } = getMascotDims();
-    const bandTop = dockRect.top - Math.max(h, 26) - 10;
-    const bandBottom = dockRect.bottom + 12;
-    const searchRoot = dock.closest('main, [role="main"]') || document.body;
+    const { w, gap } = getMascotDims();
+    const hostBox = dock.parentElement;
+    // Match the actual mascot dock height (adapts automatically from 16px..36px) without probing inside inputBox
+    const bandTop = dockRect.top - 6;
+    const bandBottom = dockRect.bottom;
+    const searchRoot = dock.closest('[data-testid="conversation-view"], main, [role="main"]') || document.body;
     if (!searchRoot) return { zones: [], crowded: false, sig: '' };
 
     const rawZones = [];
     const controls = searchRoot.querySelectorAll('button, [role="button"], a[href], input:not([type="hidden"]), [role="tab"], [role="radio"]');
     for (let i = 0; i < controls.length; i++) {
       const el = controls[i];
-      if (!el.isConnected || dock.contains(el) || el.closest('#ag-ps-orb-dock, #ag-ps-popover, #ag-ps-tooltip')) continue;
+      if (!el.isConnected || dock.contains(el)) continue;
+      if (hostBox && hostBox.contains(el)) continue;
+      if (el.closest('#ag-ps-orb-dock, #ag-ps-popover, #ag-ps-tooltip, #ag-ps-outline, .ag-ps-turn-actions')) continue;
+      // Scrolling chat messages/links inside autoscroll-viewport are NOT composer toolbar obstacles (unless inside a floating approval/question prompt)
+      if (
+        el.closest('[data-testid="autoscroll-viewport"]') &&
+        !el.closest('[role="dialog"], [data-testid*="approval"], [data-testid*="question"], [data-testid*="confirm"]')
+      ) {
+        continue;
+      }
       const r = el.getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0 || r.width > 280) continue;
       if (r.bottom < bandTop || r.top > bandBottom) continue;
@@ -1883,18 +1962,24 @@
   }
 
   function applyMascotSizeVars(dock, repositionHome) {
-    if (!dock) return;
     const { w, h } = getMascotDims();
-    dock.style.setProperty('--ag-ps-sprite-w', `${w}px`);
-    dock.style.setProperty('--ag-ps-sprite-h', `${h}px`);
+    // Single source of truth on :root so every conversation view inherits the global mascot size
+    setStyleVarIfChanged(document.documentElement, '--ag-ps-sprite-w', `${w}px`);
+    setStyleVarIfChanged(document.documentElement, '--ag-ps-sprite-h', `${h}px`);
+    if (!dock) return;
     if (repositionHome) {
       parkActorsHome(dock, true, mascotRoamingActive);
       clampRoamingActorsInBounds(dock);
     }
   }
+  applyMascotSizeVars(null, false);
+  onCleanup(() => {
+    setStyleVarIfChanged(document.documentElement, '--ag-ps-sprite-w', null);
+    setStyleVarIfChanged(document.documentElement, '--ag-ps-sprite-h', null);
+  });
 
   function syncMascotCompactGuard() {
-    const box = document.getElementById('antigravity.agentSidePanelInputBox');
+    const box = getActiveInputBox();
     const dock = document.getElementById('ag-ps-mascot-dock');
     if (!box || !dock) return;
     const w = box.getBoundingClientRect().width;
@@ -1913,7 +1998,7 @@
   }
 
   function syncMascotDock(busy) {
-    const box = document.getElementById('antigravity.agentSidePanelInputBox');
+    const box = getActiveInputBox();
     let dock = document.getElementById('ag-ps-mascot-dock');
     if (!prefs.mascot || !box) {
       stopMascotRoaming(false);
@@ -2327,9 +2412,11 @@
   let cachedComposerEl = null;
 
   function getComposerEl() {
-    if (cachedComposerEl && cachedComposerEl.isConnected) return cachedComposerEl;
-    const inputBox = document.getElementById('antigravity.agentSidePanelInputBox');
+    const inputBox = getActiveInputBox();
     if (inputBox) {
+      if (cachedComposerEl && isElementRendered(cachedComposerEl) && cachedComposerEl.contains(inputBox)) {
+        return cachedComposerEl;
+      }
       cachedComposerEl =
         inputBox.closest('[data-testid="composer-container"]') ||
         inputBox.closest('form') ||
@@ -2337,8 +2424,8 @@
         inputBox;
       return cachedComposerEl;
     }
-    const fallback = document.querySelector('[data-testid="composer-container"]');
-    cachedComposerEl = fallback || null;
+    const fallbacks = Array.from(document.querySelectorAll('[data-testid="composer-container"]'));
+    cachedComposerEl = fallbacks.find(isElementRendered) || fallbacks[0] || null;
     return cachedComposerEl;
   }
 
@@ -2377,7 +2464,9 @@
 
       const detectActiveFamily = () => {
         try {
-          const trig = document.querySelector('#antigravity\\.agentSidePanelInputBox button[data-testid="model-selector-trigger"], button[data-testid="model-selector-trigger"]');
+          const activeBox = getActiveInputBox();
+          const trig = (activeBox && activeBox.querySelector('button[data-testid="model-selector-trigger"]'))
+            || document.querySelector('button[data-testid="model-selector-trigger"]');
           const txt = String(trig?.textContent || '').toLowerCase();
           if (/claude|sonnet|opus/i.test(txt)) return 'claude';
           if (/gpt/i.test(txt)) return 'gpt';
@@ -2864,6 +2953,9 @@
     if (norm === undefined || Object.is(prefs[key], norm)) return false;
     prefs[key] = norm;
     savePrefs();
+    if (key === 'mascotSize') {
+      applyMascotSizeVars(document.getElementById('ag-ps-mascot-dock'), true);
+    }
     emitBus('prefs');
     const pop = document.getElementById('ag-ps-popover');
     if (pop && pop.getAttribute('data-open') === '1') {
@@ -3174,10 +3266,10 @@
                     <button type="button" class="ag-ps-seg-btn" data-mascot-vibe="lively" data-selected="${prefs.mascotVibe !== 'calm' ? '1' : '0'}">活泼</button>
                   </div>
                 </div>
-                <div class="ag-ps-toggle-row">
-                  <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">大小</span></div>
+                <div class="ag-ps-toggle-row" title="全局生效：所有对话与账号共用同一大小，调节一次处处生效">
+                  <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">全局大小</span></div>
                   <div class="ag-ps-range-wrap">
-                    <input type="range" class="ag-ps-range" data-mascot-size="1" min="${MASCOT_SIZE_MIN}" max="${MASCOT_SIZE_MAX}" step="2" value="${clampMascotSize(prefs.mascotSize)}" aria-label="像素伙伴大小" />
+                    <input type="range" class="ag-ps-range" data-mascot-size="1" min="${MASCOT_SIZE_MIN}" max="${MASCOT_SIZE_MAX}" step="2" value="${clampMascotSize(prefs.mascotSize)}" aria-label="像素伙伴全局大小" />
                     <span class="ag-ps-range-val" data-mascot-size-val="1">${clampMascotSize(prefs.mascotSize)}px</span>
                     <button type="button" class="ag-ps-mini-reset" data-mascot-size-reset="1" ${clampMascotSize(prefs.mascotSize) === MASCOT_SIZE_DEFAULT ? 'disabled' : ''}>复位</button>
                   </div>
@@ -3364,6 +3456,8 @@
         renderPopoverContent(pop);
       }
     });
+    let mascotSizeSaveTimer = 0;
+    onCleanup(() => { if (mascotSizeSaveTimer) clearTimeout(mascotSizeSaveTimer); });
     pop.addEventListener('input', (e) => {
       const extSecEl = e.target.closest('[data-ext-sec]');
       if (extSecEl) {
@@ -3382,6 +3476,13 @@
       if (valEl) valEl.textContent = `${sz}px`;
       const resetBtn = pop.querySelector('[data-mascot-size-reset]');
       if (resetBtn) resetBtn.disabled = sz === MASCOT_SIZE_DEFAULT;
+      if (mascotSizeSaveTimer) clearTimeout(mascotSizeSaveTimer);
+      mascotSizeSaveTimer = setTimeout(() => {
+        mascotSizeSaveTimer = 0;
+        if (disposed) return;
+        savePrefs();
+        emitBus('prefs');
+      }, 140);
     });
     pop.addEventListener('change', (e) => {
       const extSecEl = e.target.closest('[data-ext-sec]');
@@ -3394,6 +3495,10 @@
       }
       const slider = e.target.closest('[data-mascot-size]');
       if (!slider) return;
+      if (mascotSizeSaveTimer) {
+        clearTimeout(mascotSizeSaveTimer);
+        mascotSizeSaveTimer = 0;
+      }
       const sz = clampMascotSize(slider.value);
       prefs.mascotSize = sz;
       savePrefs();
@@ -3707,12 +3812,35 @@
   });
 
   let lastPath = window.location.pathname;
+  let lastActiveBox = null;
   let lastDarkState = isCurrentlyDark();
+  let navSwitchTimer = 0;
+
+  function onNavClickHint(e) {
+    if (disposed) return;
+    const t = e.target;
+    if (!t || !t.closest) return;
+    if (t.closest('[data-testid="conversation-row-sidebar"], aside, nav, [role="tab"]')) {
+      if (navSwitchTimer) clearTimeout(navSwitchTimer);
+      navSwitchTimer = setTimeout(() => {
+        navSwitchTimer = 0;
+        if (!disposed) tickAll();
+      }, 65);
+    }
+  }
+  document.addEventListener('click', onNavClickHint, { capture: true, passive: true });
+  onCleanup(() => {
+    if (navSwitchTimer) clearTimeout(navSwitchTimer);
+    document.removeEventListener('click', onNavClickHint, true);
+  });
+
   function tickAll() {
     if (disposed || document.hidden) return;
-    // Detect SPA conversation switch and close stale outline drawer
-    if (window.location.pathname !== lastPath) {
+    const curBox = getActiveInputBox();
+    // Detect SPA conversation switch (either URL pathname change OR cached multi-view inputBox switch)
+    if (window.location.pathname !== lastPath || (curBox && curBox !== lastActiveBox)) {
       lastPath = window.location.pathname;
+      lastActiveBox = curBox;
       cachedComposerEl = null;
       const drawer = document.getElementById('ag-ps-outline');
       if (drawer && drawer.getAttribute('data-open') === '1') {
@@ -3781,6 +3909,7 @@
       replacePrefsInPlace(cand);
       persistPrefsMirrors(prefs);
       applyPalettes();
+      applyMascotSizeVars(document.getElementById('ag-ps-mascot-dock'), true);
       const busy = isAgentGenerating();
       syncStreamObserver(busy);
       syncToolbarButtons();
@@ -3830,8 +3959,9 @@
     isBusy: isAgentGenerating,
     isDark: isCurrentlyDark,
     isTyping: isUserActivelyTyping,
+    getInputBoxEl: getActiveInputBox,
     getComposerEl,
-    getViewportEl: () => document.querySelector('[data-testid="autoscroll-viewport"]'),
+    getViewportEl: getActiveViewportEl,
     getThemeAccent,
     getQuotaState,
     openWorkbench: openPrismWorkbenchQuick,
