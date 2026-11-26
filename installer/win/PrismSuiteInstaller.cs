@@ -12,8 +12,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Anti-Claude Prism Suite 一键安装器")]
 [assembly: AssemblyDescription("Anti-Claude Prism Suite & Antigravity prism-files MCP App Installer")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.5.5.0")]
-[assembly: AssemblyFileVersion("0.5.5.0")]
+[assembly: AssemblyVersion("0.5.6.0")]
+[assembly: AssemblyFileVersion("0.5.6.0")]
 
 namespace AntiClaudePrismSuiteInstaller
 {
@@ -751,7 +751,7 @@ namespace AntiClaudePrismSuiteInstaller
 
         private void InitializeUi()
         {
-            Text = "Anti-Claude Prism Suite 一键安装器 v0.5.5";
+            Text = "Anti-Claude Prism Suite 一键安装器 v0.5.6";
             Size = new Size(740, 660);
             MinimumSize = new Size(660, 580);
             StartPosition = FormStartPosition.CenterScreen;
@@ -769,7 +769,7 @@ namespace AntiClaudePrismSuiteInstaller
             header.Paint += PaintHeaderAccent;
 
             Label lblTitle = new Label();
-            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.5.5";
+            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.5.6";
             lblTitle.ForeColor = Color.White;
             lblTitle.Font = new Font("Microsoft YaHei UI", 13.5f, FontStyle.Bold);
             lblTitle.AutoSize = true;

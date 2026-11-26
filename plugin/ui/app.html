@@ -2182,6 +2182,8 @@
       const appInstanceId = `pf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
       const processedIntentIds = new Set();
       let focusFlashTimer = 0;
+      let quotaWaitRetryTimer = 0;
+      let quotaWaitRetryCount = 0;
       const RESTORABLE_TABS = ['browse', 'artifacts', 'pins', 'search'];
       let navigationIntent = {
         tab: 'browse',
@@ -2355,6 +2357,7 @@
         if (toastTimer) clearTimeout(toastTimer);
         if (filterDebounceTimer) clearTimeout(filterDebounceTimer);
         if (focusFlashTimer) clearTimeout(focusFlashTimer);
+        if (quotaWaitRetryTimer) clearTimeout(quotaWaitRetryTimer);
         if (countdownRaf) cancelAnimationFrame(countdownRaf);
         for (const pending of pendingRequests.values()) {
           clearTimeout(pending.timer);
@@ -3292,6 +3295,10 @@
           panel.classList.toggle('is-active', k === tab);
         }
         renderTopbar();
+        if (tab !== 'accounts' && quotaWaitRetryTimer) {
+          clearTimeout(quotaWaitRetryTimer);
+          quotaWaitRetryTimer = 0;
+        }
         if (tab === 'artifacts' && !appState.artifacts.loaded && !appState.artifacts.loading) {
           loadArtifacts();
         } else if (tab === 'pins' && !appState.pins.loaded && !appState.pins.loading) {
@@ -3875,16 +3882,46 @@
         renderPreviewDrawer();
       }
 
-      async function loadAccountsTab({ forceRefresh = false } = {}) {
+      function clearQuotaWaitRetry() {
+        if (quotaWaitRetryTimer) {
+          clearTimeout(quotaWaitRetryTimer);
+          quotaWaitRetryTimer = 0;
+        }
+      }
+
+      function scheduleQuotaWaitRetryIfNeeded(st) {
+        clearQuotaWaitRetry();
+        if (appState.activeTab !== 'accounts' || document.hidden) return;
+        const curOnline = (st?.accounts || []).find((a) => a.isCurrentActive);
+        if (!curOnline || curOnline.effectiveQuota) {
+          quotaWaitRetryCount = 0;
+          return;
+        }
+        const delays = [4000, 6000, 10000, 15000, 20000];
+        if (quotaWaitRetryCount >= delays.length) return;
+        const delay = delays[quotaWaitRetryCount++];
+        quotaWaitRetryTimer = setTimeout(() => {
+          quotaWaitRetryTimer = 0;
+          if (appState.activeTab === 'accounts' && !document.hidden && !appState.accounts.loading && !appState.accounts.switching) {
+            loadAccountsTab({ forceRefresh: false, silent: true });
+          }
+        }, delay);
+      }
+
+      async function loadAccountsTab({ forceRefresh = false, silent = false } = {}) {
         const seq = ++appState.accounts.seq;
-        appState.accounts.loading = true;
-        appState.accounts.error = '';
-        setTopProgress(true);
-        if (!appState.accounts.data) renderAccounts();
+        if (!silent) {
+          appState.accounts.loading = true;
+          appState.accounts.error = '';
+          setTopProgress(true);
+          if (!appState.accounts.data) renderAccounts();
+        }
         try {
           const [st, mem] = await Promise.all([
             callServerTool('accounts_status', { forceRefresh: Boolean(forceRefresh) }),
-            callServerTool('handoff_memory_list', { limit: 8 }).catch(() => ({ entries: [] }))
+            silent && appState.accounts.memories.length
+              ? Promise.resolve({ entries: appState.accounts.memories })
+              : callServerTool('handoff_memory_list', { limit: 8 }).catch(() => ({ entries: [] }))
           ]);
           if (seq !== appState.accounts.seq) return;
           appState.accounts.data = st || null;
@@ -3895,18 +3932,21 @@
             appState.accounts.openSections.guide = true;
           }
           broadcastAccountSummary(st);
-          setTopProgress(false);
+          if (!silent) setTopProgress(false);
           if (latestBridgeQuota) {
             const curOnline = (st?.accounts || []).find((a) => a.isCurrentActive);
             if (curOnline && !curOnline.effectiveQuota) {
               syncLiveQuotaFromMain(latestBridgeQuota, { force: true });
             }
           }
+          scheduleQuotaWaitRetryIfNeeded(st);
         } catch (err) {
           if (seq !== appState.accounts.seq) return;
           appState.accounts.loading = false;
-          setTopProgress(false);
-          appState.accounts.error = err?.message || '读取账号接力状态失败';
+          if (!silent) {
+            setTopProgress(false);
+            appState.accounts.error = err?.message || '读取账号接力状态失败';
+          }
         }
         renderAccounts();
       }
@@ -4046,7 +4086,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.5.5，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.5.6，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -4230,7 +4270,7 @@
               const tierBadge = eff?.tierName ? `<span class="pill">${escapeHtml(eff.tierName)}</span>` : '';
               const quotaBlock = (q5Html || q7Html)
                 ? `<div class="quota-bars">${q5Html}${q7Html}${(famChips.length || syncTag) ? `<div class="quota-fam-row">${famChips.join('')}${syncTag}</div>` : ''}</div>`
-                : `<p class="relay-sub">${a.isCurrentActive ? '暂未读到本机实时额度缓存（点右上 ↻ 刷新，或点左下角「录入额度」手动补充）' : '切过去登录一次即自动记录实时额度与秒级重置倒计时（也可点左下角手动录入）'}</p>`;
+                : `<p class="relay-sub">${a.isCurrentActive ? (quotaWaitRetryTimer ? '等待客户端首次拉取该账号实时额度，将自动刷新（也可点右上 ↻ 立即刷新）' : '暂未读到本机实时额度缓存（点右上 ↻ 刷新，或点左下角「录入额度」手动补充）') : '切过去登录一次即自动记录实时额度与秒级重置倒计时（也可点左下角手动录入）'}</p>`;
               const isEditingQuota = st.editingQuotaId === a.id;
               const editorHtml = isEditingQuota
                 ? `<div class="quota-editor" data-quota-editor="${escapeHtml(a.id)}">` +
@@ -4443,7 +4483,7 @@
               ? `<span class="pill pill-warn">新版本 ${escapeHtml(suInfo.latestTag)}</span>`
               : st.radarLoading
                 ? '<span class="pill">检查中</span>'
-                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.5.5</span>');
+                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.5.6</span>');
         const radarOpen = Boolean(st.openSections?.radar || st.radarLoading || rad || st.selfUpdateChecking || st.selfUpdateApplying || suInfo || suRes);
         parts.push(
           `<details class="relay-accordion" data-sec="radar" ${radarOpen ? 'open' : ''}>` +
@@ -4839,7 +4879,7 @@
             appState.accounts.selfUpdateChecking = false;
             appState.accounts.selfUpdateInfo = info;
             renderAccounts();
-            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.5.5'}`);
+            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.5.6'}`);
           } else if (act === 'self-update-repair-ask') {
             appState.accounts.selfUpdateConfirmRepair = true;
             renderAccounts();
@@ -5567,7 +5607,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.5.5' },
+            appInfo: { name: 'prism-files', version: '0.5.6' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};

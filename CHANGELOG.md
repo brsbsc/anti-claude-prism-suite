@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.6 - 2026-11-26
+
+- **修复切号并完成自动重启后，顶部仍残留「待重启生效」提示横幅**：
+  - [plugin/server/account-manager.mjs](plugin/server/account-manager.mjs) 在切号落盘 `pendingSwitch` 时记录 `switchedAtMs`、`originPid` 与 `originBootMs`；重启后新拉起的 `prism-files` 进程在 `getStatus()` 时自动识别自身启动时间晚于切换时间（或 PID 已更换且当前活跃凭据已为目标账号），立即自动清除 `pendingSwitch` 并持久化，不再误提示重启。
+- **切到新号刚重启后自动补刷首次额度（免手动点刷新）**：
+  - [plugin/ui/app.html](plugin/ui/app.html) 在「账号接力」页检测到当前在线号刚重启尚未落盘额度时，自动按阶梯间隔（`4s → 6s → 10s → 15s → 20s`）静默补刷，一旦客户端完成首次额度拉取立即自动展示并停止轮询。
+
 ## 0.5.5 - 2026-11-26
 
 - **新增「✨ Prism Suite 官方一键更新（推荐）」**：

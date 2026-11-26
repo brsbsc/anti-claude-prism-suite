@@ -503,6 +503,10 @@ export function createAccountManager(options = {}) {
     runCmd: options.runCmd
   });
   const handoffMemory = options.handoffMemory || null;
+  const serverPid = Number(options.serverPid) || process.pid;
+  const serverBootMs = Number.isFinite(Number(options.serverBootMs))
+    ? Number(options.serverBootMs)
+    : Math.round(Date.now() - Math.max(0, process.uptime()) * 1000);
   let lastAccountsMtimeMs = -1;
   let localQuotaCacheSig = '';
   let localQuotaCacheResult = null;
@@ -759,6 +763,20 @@ export function createAccountManager(options = {}) {
     const matchedActive = activeCred.email
       ? state.accounts.find((a) => a.email === activeCred.email) || null
       : null;
+
+    // Auto-clear pendingSwitch once Antigravity has restarted (new MCP server instance booted after swap)
+    if (state.pendingSwitch && state.pendingSwitch.phase === 'active-swapped') {
+      const ps = state.pendingSwitch;
+      const switchedMs = Number(ps.switchedAtMs || Date.parse(ps.switchedAt || '') || 0);
+      const restartedAfterSwap = switchedMs > 0 && serverBootMs > switchedMs;
+      const differentProcessOnTarget =
+        Boolean(ps.originPid && ps.originPid !== serverPid) &&
+        Boolean(activeCred.email && ps.targetEmail && activeCred.email === ps.targetEmail);
+      if (restartedAfterSwap || differentProcessOnTarget) {
+        state.pendingSwitch = null;
+        try { saveState(state); } catch {}
+      }
+    }
 
     let savedPresenceMap = null;
     if (vaultProbe.supported && state.accounts.length > 0 && typeof vault.inspectSavedMany === 'function') {
@@ -1248,6 +1266,9 @@ export function createAccountManager(options = {}) {
         targetEmail: target.email,
         phase: 'active-swapped',
         switchedAt: nowIso,
+        switchedAtMs: nowMs,
+        originPid: serverPid,
+        originBootMs: serverBootMs,
         expiresAt: nowMs + PENDING_SWITCH_TTL_MS
       };
       saveState(state);
