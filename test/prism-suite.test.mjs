@@ -801,13 +801,24 @@ test('v0.5.0 in-place plugin installer preserves directory inode and batch vault
     assert.equal(fs.existsSync(staleFile), false, 'Stale file must be removed during in-place sync');
     assert.equal(fs.existsSync(staleDir), false, 'Stale directory must be removed during in-place sync');
 
-    // 2. resolveSafeExecCwd survives deleted process.cwd() and returns safe path
-    const ghostDir = path.join(tmp, 'ghost-cwd');
-    fs.mkdirSync(ghostDir, { recursive: true });
-    process.chdir(ghostDir);
-    fs.rmdirSync(ghostDir);
-    const safeNonWsl = resolveSafeExecCwd({ isWsl: false, homeDir: tmp, tmpDir: tmp });
-    assert.equal(fs.existsSync(safeNonWsl), true);
+    // 2. resolveSafeExecCwd survives deleted/ENOENT process.cwd() and returns safe path (cross-platform)
+    if (process.platform === 'win32') {
+      const safeNonWsl = resolveSafeExecCwd({
+        isWsl: false,
+        homeDir: tmp,
+        tmpDir: tmp,
+        getCwd: () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); }
+      });
+      assert.equal(safeNonWsl, tmp);
+    } else {
+      const ghostDir = path.join(tmp, 'ghost-cwd');
+      fs.mkdirSync(ghostDir, { recursive: true });
+      process.chdir(ghostDir);
+      fs.rmdirSync(ghostDir);
+      const safeNonWsl = resolveSafeExecCwd({ isWsl: false, homeDir: tmp, tmpDir: tmp });
+      assert.equal(fs.existsSync(safeNonWsl), true);
+      process.chdir(origCwd);
+    }
     const safeWslMock = resolveSafeExecCwd({
       isWsl: true,
       homeDir: tmp,
@@ -815,7 +826,6 @@ test('v0.5.0 in-place plugin installer preserves directory inode and batch vault
       existsSync: (p) => p === '/mnt/c' || p === tmp
     });
     assert.equal(safeWslMock, '/mnt/c');
-    process.chdir(origCwd);
 
     // 3. resolveWslInteropEnv replaces dead WSL_INTEROP socket with newest live *_interop socket
     const interopDir = path.join(tmp, 'wsl-sockets');

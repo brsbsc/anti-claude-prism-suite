@@ -111,7 +111,7 @@ export function detectWsl() {
 }
 
 export function fallbackLinuxToWindowsPath(linuxPath, distroName = process.env.WSL_DISTRO_NAME || 'Ubuntu') {
-  const norm = path.resolve(linuxPath);
+  const norm = path.posix.resolve(String(linuxPath || '').replace(/\\/g, '/'));
   const mnt = norm.match(/^\/mnt\/([a-zA-Z])(?:\/(.*))?$/);
   if (mnt) {
     const drive = mnt[1].toUpperCase();
