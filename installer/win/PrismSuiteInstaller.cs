@@ -13,8 +13,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Anti-Claude Prism Suite 一键安装器")]
 [assembly: AssemblyDescription("Anti-Claude Prism Suite Standalone All-in-One Installer (Kernel + Extensions + prism-files MCP App)")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.6.1.0")]
-[assembly: AssemblyFileVersion("0.6.1.0")]
+[assembly: AssemblyVersion("0.7.0.0")]
+[assembly: AssemblyFileVersion("0.7.0.0")]
 
 namespace AntiClaudePrismSuiteInstaller
 {
@@ -1264,7 +1264,7 @@ namespace AntiClaudePrismSuiteInstaller
             {
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = "wsl.exe";
-                psi.Arguments = string.Format("-d \"{0}\" -- sh -lc \"printf %s \\\"$HOME\\\"\"", distro.Replace("\"", string.Empty));
+                psi.Arguments = string.Format("-d \"{0}\" -- sh -c \"printf %s \\\"$HOME\\\" </dev/null\"", distro.Replace("\"", string.Empty));
                 psi.UseShellExecute = false;
                 psi.CreateNoWindow = true;
                 psi.RedirectStandardOutput = true;
@@ -1337,12 +1337,19 @@ namespace AntiClaudePrismSuiteInstaller
         private static string RunProcessAndReadStdout(ProcessStartInfo psi, int timeoutMs)
         {
             StringBuilder output = new StringBuilder();
+            psi.RedirectStandardInput = true;
+            using (ManualResetEvent outDone = new ManualResetEvent(false))
+            using (ManualResetEvent errDone = new ManualResetEvent(false))
             using (Process proc = new Process())
             {
                 proc.StartInfo = psi;
                 proc.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e)
                 {
-                    if (e.Data != null)
+                    if (e.Data == null)
+                    {
+                        try { outDone.Set(); } catch { }
+                    }
+                    else
                     {
                         lock (output)
                         {
@@ -1350,21 +1357,33 @@ namespace AntiClaudePrismSuiteInstaller
                         }
                     }
                 };
-                proc.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) { };
+                proc.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e)
+                {
+                    if (e.Data == null)
+                    {
+                        try { errDone.Set(); } catch { }
+                    }
+                };
 
                 if (!proc.Start())
                 {
                     return null;
                 }
+                try { proc.StandardInput.Close(); } catch { }
                 proc.BeginOutputReadLine();
                 proc.BeginErrorReadLine();
 
                 if (!proc.WaitForExit(timeoutMs))
                 {
+                    try { proc.CancelOutputRead(); } catch { }
+                    try { proc.CancelErrorRead(); } catch { }
                     try { proc.Kill(); } catch { }
                     return null;
                 }
-                proc.WaitForExit();
+                outDone.WaitOne(400);
+                errDone.WaitOne(200);
+                try { proc.CancelOutputRead(); } catch { }
+                try { proc.CancelErrorRead(); } catch { }
             }
 
             lock (output)
@@ -1402,7 +1421,7 @@ namespace AntiClaudePrismSuiteInstaller
 
         private void InitializeUi()
         {
-            Text = "Anti-Claude Prism Suite 一键安装器 v0.6.1（独立完整版）";
+            Text = "Anti-Claude Prism Suite 一键安装器 v0.7.0（独立完整版）";
             Size = new Size(740, 660);
             MinimumSize = new Size(660, 580);
             StartPosition = FormStartPosition.CenterScreen;
@@ -1420,7 +1439,7 @@ namespace AntiClaudePrismSuiteInstaller
             header.Paint += PaintHeaderAccent;
 
             Label lblTitle = new Label();
-            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.6.1";
+            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.7.0";
             lblTitle.ForeColor = Color.White;
             lblTitle.Font = new Font("Microsoft YaHei UI", 13.5f, FontStyle.Bold);
             lblTitle.AutoSize = true;
@@ -1868,7 +1887,7 @@ namespace AntiClaudePrismSuiteInstaller
                         MessageBox.Show(
                             this,
                             isInstall
-                                ? "Anti-Claude Prism Suite v0.6.1（独立完整版）安装成功！\n\n已一并部署内置 Anti-Claude v3.1.9 增强内核、棱镜扩展套件与 Prism 工作台插件，无需再单独安装其他项目。若 Antigravity 正在运行，重启一次应用即可全面生效。"
+                                ? "Anti-Claude Prism Suite v0.7.0（独立完整版）安装成功！\n\n已一并部署内置 Anti-Claude v3.1.9 增强内核、棱镜扩展套件与 Prism 工作台插件，无需再单独安装其他项目。若 Antigravity 正在运行，重启一次应用即可全面生效。"
                                 : "已干净卸载选中的 Anti-Claude Prism Suite 组件。",
                             isInstall ? "安装成功" : "卸载完成",
                             MessageBoxButtons.OK,

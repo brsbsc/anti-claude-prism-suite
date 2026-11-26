@@ -21,8 +21,10 @@ import { spawnSync } from 'node:child_process';
 export const ACTIVE_WIN_TARGET = 'gemini:antigravity';
 export const PRISM_WIN_PREFIX = 'prism-suite:account:';
 export const PRISM_WSL_PREFIX = 'prism-suite:wsl:';
+export const PRISM_PROVIDER_PREFIX = 'prism-suite:provider:';
 export const WSL_CRED_ENVELOPE_KIND = 'prism-wsl-cred-v1';
 const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9_-]{1,47}$/;
+const PROVIDER_SECRET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 const PS_CREDMAN_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -1129,6 +1131,87 @@ export function createAccountVault(options = {}) {
     return { ok: true, accountId: cleanId, deleted };
   }
 
+  function sanitizeProviderSecretId(providerId) {
+    const clean = String(providerId ?? '').trim();
+    if (!PROVIDER_SECRET_ID_RE.test(clean) || clean.includes('..')) {
+      throw Object.assign(new Error('非法 Provider ID'), { code: 'INVALID_PROVIDER_ID' });
+    }
+    return clean;
+  }
+
+  function providerSecretTargetName(cleanId) {
+    return backendInfo.backend === 'wsl-wincred'
+      ? `${PRISM_WSL_PREFIX}${wslDistro}:provider:${cleanId}`
+      : `${PRISM_PROVIDER_PREFIX}${cleanId}`;
+  }
+
+  function getProviderSecret(providerId) {
+    const cleanId = sanitizeProviderSecretId(providerId);
+    let buf = null;
+    try {
+      if (backendInfo.backend === 'win32-credman' || backendInfo.backend === 'wsl-wincred') {
+        buf = readWinCredBuffer(providerSecretTargetName(cleanId));
+      } else if (backendInfo.backend === 'darwin-keychain') {
+        buf = readKeychainBuffer('prism-suite-provider', cleanId);
+      } else if (backendInfo.backend === 'linux-secret-service') {
+        buf = readSecretToolBuffer('prism-suite-provider', cleanId);
+      } else {
+        return '';
+      }
+      return buf && buf.length ? buf.toString('utf8') : '';
+    } finally {
+      if (buf) buf.fill(0);
+    }
+  }
+
+  function setProviderSecret(providerId, secretValue) {
+    const cleanId = sanitizeProviderSecretId(providerId);
+    const str = String(secretValue ?? '').trim();
+    if (!str) {
+      throw Object.assign(new Error('Provider API Key 不能为空'), { code: 'EMPTY_PROVIDER_SECRET' });
+    }
+    const buf = Buffer.from(str, 'utf8');
+    try {
+      if (backendInfo.backend === 'win32-credman' || backendInfo.backend === 'wsl-wincred') {
+        writeWinCredBuffer(providerSecretTargetName(cleanId), buf);
+        return true;
+      }
+      if (backendInfo.backend === 'darwin-keychain') {
+        writeKeychainBuffer('prism-suite-provider', cleanId, buf);
+        return true;
+      }
+      if (backendInfo.backend === 'linux-secret-service') {
+        writeSecretToolBuffer('prism-suite-provider', cleanId, `Prism Model Hub (${cleanId})`, buf);
+        return true;
+      }
+      throw Object.assign(new Error(`当前系统不支持原生凭据库: ${backendInfo.backend}`), { code: 'UNSUPPORTED_VAULT' });
+    } finally {
+      buf.fill(0);
+    }
+  }
+
+  function deleteProviderSecret(providerId) {
+    const cleanId = sanitizeProviderSecretId(providerId);
+    if (backendInfo.backend === 'win32-credman' || backendInfo.backend === 'wsl-wincred') {
+      return deleteWinCred(providerSecretTargetName(cleanId));
+    }
+    if (backendInfo.backend === 'darwin-keychain') {
+      return deleteKeychain('prism-suite-provider', cleanId);
+    }
+    if (backendInfo.backend === 'linux-secret-service') {
+      return deleteSecretTool('prism-suite-provider', cleanId);
+    }
+    return false;
+  }
+
+  function asProviderSecretStore() {
+    return {
+      getSecret: getProviderSecret,
+      setSecret: setProviderSecret,
+      deleteSecret: deleteProviderSecret
+    };
+  }
+
   return {
     backendInfo,
     probe,
@@ -1138,6 +1221,10 @@ export function createAccountVault(options = {}) {
     inspectSavedMany,
     saveActiveTo,
     swapActiveFromSaved,
-    deleteSaved
+    deleteSaved,
+    getProviderSecret,
+    setProviderSecret,
+    deleteProviderSecret,
+    asProviderSecretStore
   };
 }

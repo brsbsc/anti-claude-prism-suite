@@ -1,19 +1,22 @@
 #!/usr/bin/env node
 /**
  * Prism Files MCP App Server (Clean-Room Original, MIT, Zero External Dependencies)
- * Part of Anti-Claude Prism Suite v0.5.0
+ * Part of Anti-Claude Prism Suite v0.7.0
  *
  * Implements MCP stdio JSON-RPC 2.0 + SEP-1865 MCP Apps UI resources:
- *   - Model-visible tools (strictly 5):
+ *   - Model-visible tools (strictly 8):
  *       1. show_files_inline      -> inline interactive file card in conversation
- *       2. open_prism_files       -> Aux Pane + Global Sidebar file, search & account relay workbench
- *       3. prism_memory_store     -> zero-dependency sanitized 4-element slot handoff memory
- *       4. prism_memory_list      -> chronological (newest-first) handoff memory reader
- *       5. prism_memory_search    -> literal + multi-term handoff memory search
+ *       2. open_prism_files       -> Aux Pane + Global Sidebar 6-in-1 responsive workbench
+ *       3. prism_memory_store     -> dual-mode SQLite FTS5 sanitized slot handoff memory
+ *       4. prism_memory_list      -> chronological (newest-first) handoff memory & catalog:master reader
+ *       5. prism_memory_search    -> bilingual FTS5 + literal handoff memory search
+ *       6. prism_quota_sync       -> email-verified 5h/7d & per-family quota snapshot sync
+ *       7. prism_list_models      -> T1-T4 cross-vendor Model Hub catalog (zero secret exposure)
+ *       8. prism_ask_model        -> zero-dep SSE streaming cross-vendor consultation & review
  *   - App-only tools (visibility: ["app"], hidden from model):
  *       - list_directory / read_file_preview / save_file_content / list_recent_artifacts
  *       - reveal_in_explorer / get_state / update_state / list_open_targets / open_with_target / search_transcripts
- *       - accounts_* (primary/backup credential relay), handoff_memory_*, check_upstreams
+ *       - model_hub_* (provider/model CRUD, /v1/models discovery, batch import, TTFT probe), accounts_*, handoff_*, check_upstreams
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -25,9 +28,11 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createAccountManager } from './account-manager.mjs';
-import { resolveSafeExecCwd, resolveWslInteropEnv } from './account-vault.mjs';
+import { createAccountVault, resolveSafeExecCwd, resolveWslInteropEnv } from './account-vault.mjs';
 import { createClientRelauncher } from './relaunch-client.mjs';
 import { createHandoffMemoryStore } from './handoff-memory.mjs';
+import { createPrismProfileManager } from './prism-profile.mjs';
+import { createModelHub } from './model-hub.mjs';
 import { checkUpstreams, renderMarkdownReport, syncUpstreamBaseline, checkPrismSelfUpdate, applyPrismSelfUpdate } from './upstream-radar.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -38,7 +43,7 @@ const PLUGIN_ROOT = path.resolve(__dirname, '..');
 export const APP_URI = 'ui://prism-files/app.html';
 export const INLINE_URI = 'ui://prism-files/inline.html';
 export const APP_MIME_TYPE = 'text/html;profile=mcp-app';
-const SERVER_INFO = { name: 'prism-files', version: '0.6.1' };
+const SERVER_INFO = { name: 'prism-files', version: '0.7.0' };
 const MAX_TEXT_PREVIEW_BYTES = 256 * 1024;
 const MAX_IMAGE_PREVIEW_BYTES = 4 * 1024 * 1024;
 const MAX_SAVE_BYTES = 512 * 1024;
@@ -65,8 +70,20 @@ const IMAGE_MIME_BY_EXT = {
 };
 
 const SENSITIVE_SEGMENTS = new Set(['.ssh', '.gnupg', '.aws', '.codex', '.claude', '.cc-switch']);
-const SENSITIVE_BASENAME_RE = /^(?:\.env(?:\..+)?|\.npmrc|\.pypirc|\.netrc|\.git-credentials|id_rsa(?:\.pub)?|id_ed25519(?:\.pub)?|auth\.json|credentials\.json|cc-switch\.db|jetski-standalone-oauth-token|credential-user-scope|.*\.(?:pem|key|p12|pfx|kdbx))$/i;
-const PRISM_PROTECTED_FILES = new Set(['accounts.json', 'switch.lock', 'handoff-memories.jsonl', 'handoff-snapshot.json', 'upstream-cache.json']);
+const SENSITIVE_BASENAME_RE = /^(?:\.env(?:\..+)?|\.npmrc|\.pypirc|\.netrc|\.git-credentials|id_rsa(?:\.pub)?|id_ed25519(?:\.pub)?|auth\.json|credentials\.json|cc-switch\.db|prism-profile\.json|handoff-memory\.sqlite(?:-wal|-shm|-journal)?|handoff-catalog\.json|jetski-standalone-oauth-token|credential-user-scope|.*\.(?:pem|key|p12|pfx|kdbx))$/i;
+const PRISM_PROTECTED_FILES = new Set([
+  'accounts.json',
+  'switch.lock',
+  'handoff-memories.jsonl',
+  'handoff-memory.sqlite',
+  'handoff-memory.sqlite-wal',
+  'handoff-memory.sqlite-shm',
+  'handoff-memory.sqlite-journal',
+  'handoff-catalog.json',
+  'handoff-snapshot.json',
+  'upstream-cache.json',
+  'prism-profile.json'
+]);
 
 export function isSensitivePath(targetPath) {
   const raw = String(targetPath || '');
@@ -1003,6 +1020,7 @@ function spawnDetachedSafe(bin, args, options = {}) {
         shell: false,
         detached: true,
         stdio: 'ignore',
+        windowsHide: true,
         ...options
       });
     } catch (err) {
@@ -1463,11 +1481,16 @@ export function createPrismFilesServer({
   dataDir = '',
   defaultRoot = process.cwd(),
   accountStateDir = '',
+  profilePath = '',
   accountManager: injectedAccountManager = null,
   handoffMemory: injectedHandoffMemory = null,
+  prismProfile: injectedPrismProfile = null,
+  modelHub: injectedModelHub = null,
   clientRelauncher: injectedClientRelauncher = null,
   upstreamConfigPath = '',
-  upstreamFetch = null
+  upstreamFetch = null,
+  modelFetch = null,
+  searchLookupFn = null
 } = {}) {
   const stateFile = dataDir ? path.join(path.resolve(dataDir), 'state.json') : '';
   const { home, brainDir } = resolveHomeAndBrain();
@@ -1475,9 +1498,38 @@ export function createPrismFilesServer({
   const resolvedAccountStateDir = accountStateDir
     ? path.resolve(accountStateDir)
     : path.join(home, '.gemini', 'antigravity', 'prism-suite');
+  const isExternalSandboxState = Boolean(accountStateDir && !isPathInside(resolvedAccountStateDir, home));
+  const resolvedProfilePath = profilePath
+    ? path.resolve(profilePath)
+    : (isExternalSandboxState ? path.join(resolvedAccountStateDir, 'prism-profile.json') : '');
+  const sharedProviderVault = createAccountVault({ homeDir: home, isWsl });
+  const prismProfile = injectedPrismProfile || createPrismProfileManager({
+    homeDir: home,
+    ...(resolvedProfilePath ? { profilePath: resolvedProfilePath } : {}),
+    secretStore: sharedProviderVault.asProviderSecretStore()
+  });
   const handoffMemory = injectedHandoffMemory || createHandoffMemoryStore({
     homeDir: home,
-    stateDir: resolvedAccountStateDir
+    stateDir: resolvedAccountStateDir,
+    getRemoteConfig: () => {
+      try {
+        const rm = prismProfile.loadProfile().settings?.remoteMemory;
+        if (!rm || typeof rm !== 'object') return { enabled: false };
+        return {
+          enabled: Boolean(rm.enabled),
+          url: rm.endpointUrl || rm.url || '',
+          authEnv: rm.apiKeyEnv || rm.authEnv || '',
+          syncCatalog: rm.syncCatalog !== false
+        };
+      } catch {
+        return { enabled: false };
+      }
+    }
+  });
+  const modelHub = injectedModelHub || createModelHub({
+    profileManager: prismProfile,
+    ...(modelFetch ? { fetchFn: modelFetch } : {}),
+    ...(searchLookupFn ? { lookupFn: searchLookupFn } : {})
   });
   const accountManager = injectedAccountManager || createAccountManager({
     homeDir: home,
@@ -1533,8 +1585,8 @@ export function createPrismFilesServer({
     };
   }
 
-  const VALID_TABS = new Set(['browse', 'artifacts', 'pins', 'search', 'accounts']);
-  const RESTORABLE_TABS = new Set(['browse', 'artifacts', 'pins', 'search']);
+  const VALID_TABS = new Set(['browse', 'artifacts', 'pins', 'search', 'models', 'accounts']);
+  const RESTORABLE_TABS = new Set(['browse', 'artifacts', 'pins', 'search', 'models']);
 
   function loadState() {
     const defaults = {
@@ -1543,7 +1595,8 @@ export function createPrismFilesServer({
       lastTab: 'browse',
       showHidden: false,
       doubleClickAction: 'reveal', // 'reveal' | 'open_tab'
-      allowLanSmb: false // explicit opt-in for LAN SMB/UNC paths
+      allowLanSmb: false, // explicit opt-in for LAN SMB/UNC paths
+      dismissedGuides: []
     };
     if (!stateFile) return defaults;
     try {
@@ -1555,7 +1608,10 @@ export function createPrismFilesServer({
           lastTab: RESTORABLE_TABS.has(parsed.lastTab) ? parsed.lastTab : 'browse',
           showHidden: Boolean(parsed.showHidden),
           doubleClickAction: parsed.doubleClickAction === 'open_tab' ? 'open_tab' : 'reveal',
-          allowLanSmb: Boolean(parsed.allowLanSmb)
+          allowLanSmb: Boolean(parsed.allowLanSmb),
+          dismissedGuides: Array.isArray(parsed.dismissedGuides)
+            ? parsed.dismissedGuides.filter((g) => typeof g === 'string' && /^[a-z0-9:_-]{2,48}$/i.test(g)).slice(0, 32)
+            : []
         };
       }
     } catch {}
@@ -1570,7 +1626,10 @@ export function createPrismFilesServer({
       lastTab: RESTORABLE_TABS.has(patch?.lastTab) ? patch.lastTab : cur.lastTab,
       showHidden: typeof patch?.showHidden === 'boolean' ? patch.showHidden : cur.showHidden,
       doubleClickAction: patch?.doubleClickAction === 'open_tab' || patch?.doubleClickAction === 'reveal' ? patch.doubleClickAction : cur.doubleClickAction,
-      allowLanSmb: typeof patch?.allowLanSmb === 'boolean' ? patch.allowLanSmb : cur.allowLanSmb
+      allowLanSmb: typeof patch?.allowLanSmb === 'boolean' ? patch.allowLanSmb : cur.allowLanSmb,
+      dismissedGuides: Array.isArray(patch?.dismissedGuides)
+        ? Array.from(new Set(patch.dismissedGuides.filter((g) => typeof g === 'string' && /^[a-z0-9:_-]{2,48}$/i.test(g)))).slice(0, 32)
+        : cur.dismissedGuides
     };
     if (stateFile) {
       fs.mkdirSync(path.dirname(stateFile), { recursive: true });
@@ -2078,6 +2137,7 @@ export function createPrismFilesServer({
         try {
           await execFileAsync(explorerBin, args, {
             timeout: 8000,
+            windowsHide: true,
             cwd: resolveSafeExecCwd({ isWsl: true, homeDir: home }),
             env: resolveWslInteropEnv(process.env, true)
           });
@@ -2109,6 +2169,7 @@ export function createPrismFilesServer({
         try {
           await execFileAsync('explorer.exe', explorerArgs, {
             windowsVerbatimArguments: useVerbatim,
+            windowsHide: true,
             timeout: 8000
           });
         } catch (err) {
@@ -2127,6 +2188,7 @@ export function createPrismFilesServer({
         try {
           await execFileAsync(explorerBin, args, {
             timeout: 8000,
+            windowsHide: true,
             cwd: resolveSafeExecCwd({ isWsl: true, homeDir: home }),
             env: resolveWslInteropEnv(process.env, true)
           });
@@ -2136,7 +2198,7 @@ export function createPrismFilesServer({
         return { ok: true, path: abs, winPath, method: 'wsl-windows-explorer' };
       }
       const openTarget = isDir ? abs : path.dirname(abs);
-      await execFileAsync('xdg-open', [openTarget], { timeout: 8000 });
+      await execFileAsync('xdg-open', [openTarget], { timeout: 8000, windowsHide: true });
       return { ok: true, path: abs, method: 'linux-xdg-open' };
     } catch (err) {
       return { ok: false, error: `打开系统文件管理器失败：${err.message}`, path: abs };
@@ -2323,12 +2385,12 @@ export function createPrismFilesServer({
     {
       name: 'open_prism_files',
       title: 'Prism 工作台',
-      description: 'Open the Prism workbench in the side pane or sidebar for workspace file tree browsing, live code/Markdown/image preview & safe editing, selection quoting to AI, recent brain artifacts, cross-session transcript search, opt-in primary/backup account relay, and Upstream Radar.',
+      description: 'Open the Prism workbench in the side pane or sidebar for workspace file tree browsing, live code/Markdown/image preview & safe editing, selection quoting to AI, recent brain artifacts, cross-session transcript search, Model Hub (T1-T4 cross-vendor gateway), opt-in primary/backup account relay, dual-mode SQLite FTS5 handoff memory, and Upstream Radar.',
       inputSchema: {
         type: 'object',
         properties: {
           dir: { type: 'string', description: 'Optional initial directory path' },
-          tab: { type: 'string', enum: ['browse', 'artifacts', 'pins', 'search', 'accounts'], description: 'Optional initial tab' },
+          tab: { type: 'string', enum: ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'], description: 'Optional initial tab' },
           selectFile: { type: 'string', description: 'Optional file path to preview immediately' }
         }
       },
@@ -2413,7 +2475,7 @@ export function createPrismFilesServer({
         properties: {
           pinnedPaths: { type: 'array', items: { type: 'string' } },
           lastPath: { type: 'string' },
-          lastTab: { type: 'string', enum: ['browse', 'artifacts', 'pins', 'search', 'accounts'] },
+          lastTab: { type: 'string', enum: ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'] },
           showHidden: { type: 'boolean' },
           doubleClickAction: { type: 'string', enum: ['reveal', 'open_tab'] },
           allowLanSmb: { type: 'boolean' }
@@ -2510,6 +2572,35 @@ export function createPrismFilesServer({
           tierName: { type: 'string', description: 'Optional subscription tier label e.g. Pro / Ultra' },
           families: { type: 'object', description: 'Optional per-family summary e.g. { gemini: { pct5h, pct7d }, claude: { pct5h, pct7d } }' }
         }
+      }
+    },
+    {
+      name: 'prism_list_models',
+      title: '列出可用会诊模型',
+      description: 'List configured cross-vendor consultation models in Prism Model Hub grouped by capability tiers (T1 flagship, T2 workhorse, T3 balanced, T4 fast) and ordered by user favorites. Never exposes gateway URLs or API keys.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          tier: { type: 'string', enum: ['T1', 'T2', 'T3', 'T4'], description: 'Optional capability tier filter (T1..T4)' },
+          excludeVendor: { type: 'string', description: 'Optional comma-separated vendor family to exclude to avoid same-family self-review (e.g. anthropic, google, openai)' }
+        }
+      }
+    },
+    {
+      name: 'prism_ask_model',
+      title: '跨厂商模型会诊与审查',
+      description: 'Consult an external model configured in Prism Model Hub via zero-dependency SSE streaming (supports T1-T4 cross-vendor review, adversarial debate, automatic 1-hop fallback routing, outbound secret redaction, and optional anti-SSRF public web search). Never send raw secrets or credentials.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          model: { type: 'string', description: 'Model ID from prism_list_models (omit to use top ready favorite)' },
+          prompt: { type: 'string', description: 'Self-contained question, architecture proposal, or sanitized diff to review' },
+          systemPrompt: { type: 'string', description: 'Optional role or review instructions' },
+          webSearch: { type: 'boolean', description: 'Enable DNS-pinned public HTTPS web search and append [searched sources]' },
+          maxTokens: { type: 'number', description: 'Optional max output tokens' },
+          temperature: { type: 'number', description: 'Optional sampling temperature' }
+        },
+        required: ['prompt']
       }
     },
     {
@@ -2704,6 +2795,168 @@ export function createPrismFilesServer({
           force: { type: 'boolean' }
         }
       },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'handoff_catalog_upsert',
+      description: 'App-only: create or update a catalog:master active slot entry from Workbench UI',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project: { type: 'string' },
+          slot: { type: 'string' },
+          cwd: { type: 'string' },
+          summary: { type: 'string' },
+          gitBranch: { type: 'string' },
+          activeAccount: { type: 'string' },
+          status: { type: 'string' }
+        }
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'handoff_remote_sync',
+      description: 'App-only: trigger manual pull/sync from optional remote Streamable-HTTP MCP Memory bridge',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number' }
+        }
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'model_hub_get_profile',
+      description: 'App-only: read redacted public Model Hub & remote memory profile (zero secrets exposed)',
+      inputSchema: { type: 'object', properties: {} },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'model_hub_update_settings',
+      description: 'App-only: update global Model Hub, anti-SSRF web search, and remote memory bridge settings',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          remoteMemory: {},
+          webSearch: {},
+          defaultTier: { type: 'string' },
+          redactOutboundSecrets: { type: 'boolean' }
+        }
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'model_hub_upsert_provider',
+      description: 'App-only: create or update an OpenAI/Anthropic compatible gateway provider in prism-profile.json',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          label: { type: 'string' },
+          preset: { type: 'string' },
+          protocol: { type: 'string' },
+          baseUrl: { type: 'string' },
+          apiKeyEnv: { type: 'string' },
+          apiKey: { type: ['string', 'null'] },
+          clearVaultKey: { type: 'boolean' },
+          allowKeyless: { type: 'boolean' },
+          enabled: { type: 'boolean' }
+        },
+        required: ['id']
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'model_hub_remove_provider',
+      description: 'App-only: delete a gateway provider and clean up associated vault secret & models',
+      inputSchema: {
+        type: 'object',
+        properties: { providerId: { type: 'string' } },
+        required: ['providerId']
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'model_hub_upsert_model',
+      description: 'App-only: create or update a T1-T4 model entry in Prism Model Hub',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          alias: { type: 'string' },
+          providerId: { type: 'string' },
+          upstreamModel: { type: 'string' },
+          tier: { type: 'string' },
+          vendor: { type: 'string' },
+          roleHint: { type: 'string' },
+          fallbackModelId: { type: 'string' },
+          maxTokens: { type: 'number' },
+          favorite: { type: 'boolean' },
+          enabled: { type: 'boolean' }
+        },
+        required: ['id', 'providerId']
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'model_hub_remove_model',
+      description: 'App-only: remove a model entry from Prism Model Hub',
+      inputSchema: {
+        type: 'object',
+        properties: { modelId: { type: 'string' } },
+        required: ['modelId']
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'model_hub_reorder_favorites',
+      description: 'App-only: persist drag-and-drop favorite model order',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          orderedIds: { type: 'array', items: { type: 'string' } }
+        },
+        required: ['orderedIds']
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'model_hub_probe_speed',
+      description: 'App-only: run 1-click TTFT & tok/s SSE latency probe on a configured model',
+      inputSchema: {
+        type: 'object',
+        properties: { modelId: { type: 'string' } },
+        required: ['modelId']
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'model_hub_discover_models',
+      description: 'App-only: fetch available upstream models from a configured gateway /models endpoint and classify T1-T4 tiers',
+      inputSchema: {
+        type: 'object',
+        properties: { providerId: { type: 'string' } },
+        required: ['providerId']
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'model_hub_batch_import_models',
+      description: 'App-only: idempotently import selected discovered models into Prism Model Hub',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          providerId: { type: 'string' },
+          items: { type: 'array', items: { type: 'object' } }
+        },
+        required: ['providerId', 'items']
+      },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'model_hub_reveal_profile',
+      description: 'App-only: initialize prism-profile.json (0600) if missing and reveal it in native file manager',
+      inputSchema: { type: 'object', properties: {} },
       _meta: { ui: { visibility: ['app'] } }
     }
   ];
@@ -2934,7 +3187,8 @@ export function createPrismFilesServer({
         verified: args.verified,
         nextAction: args.nextAction,
         content: args.content,
-        source: 'mcp-model'
+        source: args.source || 'mcp-model',
+        tainted: Boolean(args.tainted)
       });
       const res = {
         ok: true,
@@ -2948,6 +3202,20 @@ export function createPrismFilesServer({
     }
 
     if (name === 'prism_memory_list') {
+      const cleanTag = String(args.tag || '').trim().toLowerCase();
+      if (cleanTag === 'catalog:master' && typeof handoffMemory.getMasterCatalog === 'function') {
+        const cat = handoffMemory.getMasterCatalog({
+          project: args.project || '',
+          limit: args.limit || 20
+        });
+        const text = cat.slots.length
+          ? cat.slots.map((s) => `- [${s.slotTag}] (${s.updatedAt}) 目录: ${s.cwd || '-'} | 摘要: ${s.summary || '-'}`).join('\n')
+          : '暂无已登记的 catalog:master 主目录槽位';
+        return {
+          content: [{ type: 'text', text }],
+          structuredContent: cat
+        };
+      }
       const res = handoffMemory.list({
         project: args.project || '',
         slot: args.slot || '',
@@ -2985,6 +3253,72 @@ export function createPrismFilesServer({
       return {
         content: [{ type: 'text', text: res.ok ? `已同步「${res.alias || res.email}」额度快照` : res.error }],
         structuredContent: res
+      };
+    }
+
+    if (name === 'prism_list_models') {
+      const catalog = modelHub.listModelsForMcp({
+        tier: args.tier || '',
+        excludeVendor: args.excludeVendor || ''
+      });
+      if (!catalog.models.length) {
+        return {
+          content: [{
+            type: 'text',
+            text: '当前 Prism Model Hub 尚未配置可用会诊模型；请打开 Prism 工作台切换至「模型中枢」页签添加网关与模型。'
+          }],
+          structuredContent: catalog
+        };
+      }
+      const lines = [];
+      if (catalog.favorites.length) {
+        lines.push('Favorites (优先推荐):');
+        for (const m of catalog.favorites) {
+          lines.push(`- ${m.id} (${m.alias}) [${m.tier} · ${m.vendor}${m.ready ? '' : ' · 待配Key'}]${m.roleHint ? ` — ${m.roleHint}` : ''}`);
+        }
+      }
+      for (const tk of ['T1', 'T2', 'T3', 'T4']) {
+        const grp = catalog.tiers?.[tk];
+        if (!grp || !grp.models?.length) continue;
+        lines.push(`${grp.title}:`);
+        for (const m of grp.models) {
+          const spd = m.lastSpeed?.ok && m.lastSpeed.ttftMs !== null ? ` (TTFT ${m.lastSpeed.ttftMs}ms)` : '';
+          lines.push(`- ${m.id} (${m.alias}) [${m.vendor}${m.hasFallback ? ' · 含备用降级' : ''}${m.ready ? '' : ' · 待配Key'}]${spd}`);
+        }
+      }
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+        structuredContent: catalog
+      };
+    }
+
+    if (name === 'prism_ask_model') {
+      const askRes = await modelHub.askModel({
+        model: args.model || '',
+        prompt: args.prompt,
+        systemPrompt: args.systemPrompt || '',
+        webSearch: args.webSearch,
+        maxTokens: args.maxTokens,
+        temperature: args.temperature
+      });
+      const fbBanner = askRes.usedFallback
+        ? `[answered by ${askRes.actualModelId} (fallback from ${askRes.requestedModelId}: ${askRes.fallbackReason}) | TTFT ${askRes.ttftMs}ms | ${askRes.totalMs}ms]\n`
+        : `[answered by ${askRes.actualModelId} (${askRes.tier}/${askRes.vendor}) | TTFT ${askRes.ttftMs}ms | ${askRes.totalMs}ms]\n`;
+      return {
+        content: [{ type: 'text', text: `${fbBanner}${askRes.text}` }],
+        structuredContent: {
+          ok: true,
+          requestedModelId: askRes.requestedModelId,
+          actualModelId: askRes.actualModelId,
+          usedFallback: askRes.usedFallback,
+          fallbackReason: askRes.fallbackReason,
+          tier: askRes.tier,
+          vendor: askRes.vendor,
+          ttftMs: askRes.ttftMs,
+          totalMs: askRes.totalMs,
+          redactedPrompt: askRes.redactedPrompt,
+          searchedSources: askRes.searchedSources
+        }
       };
     }
 
@@ -3126,8 +3460,135 @@ export function createPrismFilesServer({
         externalMemoryPrompt: handoffMemory.formatExternalMemoryStorePrompt(e),
         resumePrompt: handoffMemory.formatResumePrompt(e)
       }));
-      const res = { ok: true, total: listRes.total, entries };
-      return { content: [{ type: 'text', text: `Listed ${entries.length} memories` }], structuredContent: res };
+      const catalogSlots = typeof handoffMemory.getMasterCatalog === 'function'
+        ? handoffMemory.getMasterCatalog({ limit: 24 }).slots.map((s) => ({
+            ...s,
+            resumePrompt: handoffMemory.formatResumePrompt({
+              slot: s.slot,
+              slotTag: s.slotTag,
+              createdAt: s.updatedAt,
+              cwd: s.cwd,
+              verified: s.summary,
+              summary: s.summary,
+              nextAction: '按最新槽位进度继续'
+            })
+          }))
+        : [];
+      const storageInfo = typeof handoffMemory.getStorageInfo === 'function' ? handoffMemory.getStorageInfo() : null;
+      const remoteSync = typeof handoffMemory.getRemoteSyncStatus === 'function' ? handoffMemory.getRemoteSyncStatus() : null;
+      const res = { ok: true, total: listRes.total, entries, catalogSlots, storageInfo, remoteSync };
+      return { content: [{ type: 'text', text: `Listed ${entries.length} memories, ${catalogSlots.length} catalog slots` }], structuredContent: res };
+    }
+
+    if (name === 'handoff_catalog_upsert') {
+      const slot = handoffMemory.upsertCatalogSlot(args || {});
+      const res = { ok: true, slot };
+      return { content: [{ type: 'text', text: `Updated catalog slot ${slot.slotTag}` }], structuredContent: res };
+    }
+
+    if (name === 'handoff_remote_sync') {
+      const syncRes = await handoffMemory.syncRemoteCatalog({ limit: args.limit || 20 });
+      const res = {
+        ...syncRes,
+        remoteSync: typeof handoffMemory.getRemoteSyncStatus === 'function' ? handoffMemory.getRemoteSyncStatus() : null
+      };
+      return {
+        content: [{ type: 'text', text: syncRes.ok ? `Synced ${syncRes.updatedSlots} slots` : (syncRes.error || 'Sync failed') }],
+        structuredContent: res
+      };
+    }
+
+    if (name === 'model_hub_get_profile') {
+      const pub = prismProfile.getPublicProfile();
+      const res = {
+        ok: true,
+        ...pub,
+        memoryStorage: typeof handoffMemory.getStorageInfo === 'function' ? handoffMemory.getStorageInfo() : null,
+        remoteSync: typeof handoffMemory.getRemoteSyncStatus === 'function' ? handoffMemory.getRemoteSyncStatus() : null
+      };
+      return { content: [{ type: 'text', text: `Loaded Model Hub profile (${pub.models.length} models)` }], structuredContent: res };
+    }
+
+    if (name === 'model_hub_update_settings') {
+      const settings = prismProfile.updateSettings(args || {});
+      const res = {
+        ok: true,
+        settings,
+        profile: prismProfile.getPublicProfile(),
+        remoteSync: typeof handoffMemory.getRemoteSyncStatus === 'function' ? handoffMemory.getRemoteSyncStatus() : null
+      };
+      return { content: [{ type: 'text', text: 'Updated Model Hub settings' }], structuredContent: res };
+    }
+
+    if (name === 'model_hub_upsert_provider') {
+      const provider = prismProfile.upsertProvider(args || {});
+      const res = { ok: true, provider, profile: prismProfile.getPublicProfile() };
+      return { content: [{ type: 'text', text: `Saved provider ${provider.id}` }], structuredContent: res };
+    }
+
+    if (name === 'model_hub_remove_provider') {
+      const out = prismProfile.removeProvider(args.providerId);
+      const res = { ok: true, ...out, profile: prismProfile.getPublicProfile() };
+      return { content: [{ type: 'text', text: `Removed provider ${out.providerId}` }], structuredContent: res };
+    }
+
+    if (name === 'model_hub_upsert_model') {
+      const model = prismProfile.upsertModel(args || {});
+      const res = { ok: true, model, profile: prismProfile.getPublicProfile() };
+      return { content: [{ type: 'text', text: `Saved model ${model.id}` }], structuredContent: res };
+    }
+
+    if (name === 'model_hub_remove_model') {
+      const out = prismProfile.removeModel(args.modelId);
+      const res = { ok: true, ...out, profile: prismProfile.getPublicProfile() };
+      return { content: [{ type: 'text', text: `Removed model ${out.modelId}` }], structuredContent: res };
+    }
+
+    if (name === 'model_hub_reorder_favorites') {
+      const favorites = prismProfile.reorderFavorites(args.orderedIds || []);
+      const res = { ok: true, favorites, profile: prismProfile.getPublicProfile() };
+      return { content: [{ type: 'text', text: `Reordered ${favorites.length} favorites` }], structuredContent: res };
+    }
+
+    if (name === 'model_hub_probe_speed') {
+      const probe = await modelHub.probeModelSpeed(args.modelId);
+      const res = { ...probe, profile: prismProfile.getPublicProfile() };
+      return {
+        content: [{ type: 'text', text: probe.ok ? `${probe.modelId}: TTFT ${probe.ttftMs}ms` : `${probe.modelId}: ${probe.error}` }],
+        structuredContent: res
+      };
+    }
+
+    if (name === 'model_hub_discover_models') {
+      const disc = await modelHub.discoverProviderModels(args.providerId);
+      return {
+        content: [{ type: 'text', text: disc.ok ? `Discovered ${disc.total} models` : (disc.error || 'Discovery unavailable') }],
+        structuredContent: disc
+      };
+    }
+
+    if (name === 'model_hub_batch_import_models') {
+      const imp = prismProfile.batchImportModels({
+        providerId: args.providerId,
+        items: Array.isArray(args.items) ? args.items : []
+      });
+      const res = { ok: true, ...imp, profile: prismProfile.getPublicProfile() };
+      return {
+        content: [{ type: 'text', text: `Imported ${imp.added} models (${imp.skipped} skipped)` }],
+        structuredContent: res
+      };
+    }
+
+    if (name === 'model_hub_reveal_profile') {
+      const pPath = prismProfile.profilePath;
+      if (!fs.existsSync(pPath)) {
+        prismProfile.updateSettings({});
+      }
+      const rev = await revealInExplorer(pPath);
+      return {
+        content: [{ type: 'text', text: rev.ok ? `Revealed ${pPath}` : rev.error }],
+        structuredContent: { ...rev, profilePath: pPath }
+      };
     }
 
     if (name === 'handoff_memory_remove') {
@@ -3308,7 +3769,12 @@ export function createPrismFilesServer({
     saveState,
     accountManager,
     handoffMemory,
-    clientRelauncher
+    prismProfile,
+    modelHub,
+    clientRelauncher,
+    close: () => {
+      try { handoffMemory.close?.(); } catch {}
+    }
   };
 }
 

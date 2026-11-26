@@ -144,8 +144,8 @@ function readProcessCommandLine(pid) {
     try {
       return execFileSync(
         'powershell',
-        ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
-        { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }
+        ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
+        { encoding: 'utf8', timeout: 2000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
       ).trim();
     } catch {
       return '';
@@ -2765,18 +2765,24 @@ function pickLocalFilesNative() {
     if (process.platform === 'win32') {
       const ps = [
         'Add-Type -AssemblyName System.Windows.Forms',
+        '$top = New-Object System.Windows.Forms.Form; $top.TopMost = $true',
         '$dlg = New-Object System.Windows.Forms.OpenFileDialog',
         '$dlg.Multiselect = $true',
-        'if ($dlg.ShowDialog() -eq "OK") { $dlg.FileNames -join "`n" }'
+        'try { if ($dlg.ShowDialog($top) -eq "OK") { $dlg.FileNames -join "`n" } } finally { $top.Dispose() }'
       ].join('; ');
-      execFile('powershell', ['-NoProfile', '-STA', '-Command', ps], { timeout: 120000 }, (err, stdout) => {
-        if (err || !stdout) return resolve({ ok: true, canceled: true, paths: [] });
-        const paths = String(stdout)
-          .split(/\r?\n/)
-          .map((s) => s.trim())
-          .filter((s) => s && fs.existsSync(s));
-        resolve({ ok: true, canceled: paths.length === 0, paths });
-      });
+      execFile(
+        'powershell',
+        ['-NoProfile', '-STA', '-Command', ps],
+        { timeout: 120000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] },
+        (err, stdout) => {
+          if (err || !stdout) return resolve({ ok: true, canceled: true, paths: [] });
+          const paths = String(stdout)
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .filter((s) => s && fs.existsSync(s));
+          resolve({ ok: true, canceled: paths.length === 0, paths });
+        }
+      );
       return;
     }
     resolve({ ok: false, error: 'unsupported_platform', paths: [] });
@@ -2810,15 +2816,21 @@ function pickLocalFolderNative() {
     if (process.platform === 'win32') {
       const ps = [
         'Add-Type -AssemblyName System.Windows.Forms',
+        '$top = New-Object System.Windows.Forms.Form; $top.TopMost = $true',
         '$dlg = New-Object System.Windows.Forms.FolderBrowserDialog',
-        'if ($dlg.ShowDialog() -eq "OK") { $dlg.SelectedPath }'
+        'try { if ($dlg.ShowDialog($top) -eq "OK") { $dlg.SelectedPath } } finally { $top.Dispose() }'
       ].join('; ');
-      execFile('powershell', ['-NoProfile', '-STA', '-Command', ps], { timeout: 120000 }, (err, stdout) => {
-        if (err || !stdout) return resolve({ ok: true, canceled: true, folderPath: '' });
-        const folderPath = String(stdout).trim();
-        if (!folderPath || !fs.existsSync(folderPath)) return resolve({ ok: true, canceled: true, folderPath: '' });
-        resolve({ ok: true, canceled: false, folderPath, name: path.basename(folderPath) || folderPath });
-      });
+      execFile(
+        'powershell',
+        ['-NoProfile', '-STA', '-Command', ps],
+        { timeout: 120000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] },
+        (err, stdout) => {
+          if (err || !stdout) return resolve({ ok: true, canceled: true, folderPath: '' });
+          const folderPath = String(stdout).trim();
+          if (!folderPath || !fs.existsSync(folderPath)) return resolve({ ok: true, canceled: true, folderPath: '' });
+          resolve({ ok: true, canceled: false, folderPath, name: path.basename(folderPath) || folderPath });
+        }
+      );
       return;
     }
     resolve({ ok: false, error: 'unsupported_platform', folderPath: '' });
@@ -3108,7 +3120,7 @@ async function revealLocalPath(rawPath, { openFolderContents = false, wslDistro 
         resolve(val);
       };
       try {
-        const child = execFile(bin, args, opts, () => {});
+        const child = execFile(bin, args, { windowsHide: true, ...opts }, () => {});
         child.once('error', (err) => done({ ok: false, error: `spawn_failed:${err?.code || 'error'}`, path: abs }));
         child.once('spawn', () => done({ ok: true, path: abs }));
       } catch (err) {
@@ -3312,7 +3324,13 @@ function execGitAsync(absDir, args, timeoutMs = 1200) {
     execFile(
       'git',
       ['-C', absDir, ...args],
-      { timeout: timeoutMs, maxBuffer: 256 * 1024, encoding: 'utf8' },
+      {
+        timeout: timeoutMs,
+        maxBuffer: 256 * 1024,
+        encoding: 'utf8',
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore']
+      },
       (err, stdout) => {
         if (err) resolve(null);
         else resolve(String(stdout || ''));
@@ -3341,37 +3359,55 @@ function parseNumstatOutput(numstat) {
 export async function readOverviewGitStatusAsync(absDir) {
   const now = Date.now();
   const cached = overviewGitCache.get(absDir);
-  if (cached && now - cached.ts < 5000) return cached.git;
+  if (cached && now - cached.ts < 8000) return cached.git;
   if (overviewGitInFlight.has(absDir)) return overviewGitInFlight.get(absDir);
 
   const task = (async () => {
     let git = null;
     try {
-      const [statusOut, headNumstat] = await Promise.all([
-        execGitAsync(absDir, ['status', '--porcelain=v2', '--branch'], 1200),
-        execGitAsync(absDir, ['diff', 'HEAD', '--numstat'], 1200)
-      ]);
+      const statusOut = await execGitAsync(absDir, ['status', '--porcelain=v2', '--branch'], 1200);
       if (statusOut !== null) {
         let branch = '';
+        let isUnborn = false;
         let changedFiles = 0;
+        let trackedChangedFiles = 0;
         for (const line of statusOut.split(/\r?\n/)) {
           if (!line) continue;
           if (line.startsWith('# branch.head ')) {
             const rawHead = line.slice('# branch.head '.length).trim();
             branch = rawHead === '(detached)' ? 'HEAD' : rawHead;
+          } else if (line.startsWith('# branch.oid ')) {
+            if (line.slice('# branch.oid '.length).trim() === '(initial)') {
+              isUnborn = true;
+            }
           } else if (!line.startsWith('#')) {
             changedFiles += 1;
+            if (/^(?:1|2|u)\s/.test(line)) {
+              trackedChangedFiles += 1;
+            }
           }
         }
         if (branch) {
-          let numstatText = headNumstat;
-          if (numstatText === null && changedFiles > 0) {
-            /* Unborn branch without HEAD commit: fall back to unstaged + cached numstat */
-            const [unstaged, staged] = await Promise.all([
-              execGitAsync(absDir, ['diff', '--numstat'], 1000),
-              execGitAsync(absDir, ['diff', '--cached', '--numstat'], 1000)
-            ]);
-            numstatText = `${unstaged || ''}\n${staged || ''}`;
+          let numstatText = '';
+          if (trackedChangedFiles > 0) {
+            if (isUnborn) {
+              const [unstaged, staged] = await Promise.all([
+                execGitAsync(absDir, ['diff', '--numstat'], 1000),
+                execGitAsync(absDir, ['diff', '--cached', '--numstat'], 1000)
+              ]);
+              numstatText = `${unstaged || ''}\n${staged || ''}`;
+            } else {
+              const headNumstat = await execGitAsync(absDir, ['diff', 'HEAD', '--numstat'], 1200);
+              if (headNumstat !== null) {
+                numstatText = headNumstat;
+              } else {
+                const [unstaged, staged] = await Promise.all([
+                  execGitAsync(absDir, ['diff', '--numstat'], 1000),
+                  execGitAsync(absDir, ['diff', '--cached', '--numstat'], 1000)
+                ]);
+                numstatText = `${unstaged || ''}\n${staged || ''}`;
+              }
+            }
           }
           const { added, deleted } = parseNumstatOutput(numstatText);
           git = { branch, added, deleted, changedFiles };
@@ -4030,6 +4066,125 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
         }
       }
       return { reqId, result: res };
+    }
+    if (action === 'savePrismUiPrefs') {
+      const rawPrefs = payload && typeof payload.prefs === 'object' && !Array.isArray(payload.prefs) ? payload.prefs : null;
+      if (!rawPrefs) return { reqId, result: { ok: false, error: 'invalid_prefs' } };
+      try {
+        const ENUM_ALLOW = {
+          lightPalette: ['default', 'crystal', 'alabaster', 'sage'],
+          darkPalette: ['default', 'obsidian', 'basalt', 'marine'],
+          mascotCountMode: ['fixed', 'agents'],
+          mascotStyle: ['trio', 'zoo', 'cyber', 'crab', 'cat', 'penguin', 'fox'],
+          mascotVibe: ['calm', 'lively'],
+          thoughtMode: ['off', 'bilingual', 'immersive'],
+          borderBeamMode: ['always', 'busy'],
+          borderBeamPalette: ['theme', 'gemini', 'aurora', 'prism', 'neon', 'quota'],
+          quotaRingPeriod: ['auto', 'weekly', '5h'],
+          thinkingOrbMode: ['both', 'replace'],
+          bubbleTintPreset: ['accent', 'sky', 'emerald', 'amber', 'violet'],
+          sidebarSessions: ['default', '10', 'all'],
+          i18nExtraMode: ['off', 'zh-CN', 'zh-TW', 'en']
+        };
+        const BOOL_ALLOW = new Set([
+          'outline', 'usageExtra', 'inkStream', 'mascot', 'mascotRoam',
+          'borderBeam', 'quotaRing', 'thinkingOrb', 'bubbleTint', 'compactLayout',
+          'unreadBadge', 'keepOverviewOpen', 'alwaysOutlineRail', 'switchReturnHelper',
+          'switchAutoReturn', 'autoDismissOnboarding', 'quotaHandoffAlert',
+          'imageContextMenu', 'cleanCopy', 'sshPaste', 'inlineEditHelper',
+          'sessionFork', 'composerFileDrop', 'wslExplorerRevealFix'
+        ]);
+        const sanitizeSeedObj = (obj) => {
+          if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+          const out = {};
+          let cnt = 0;
+          for (const k of Object.keys(BOOL_ALLOW.size ? obj : {})) {
+            if (BOOL_ALLOW.has(k) && typeof obj[k] === 'boolean') {
+              out[k] = obj[k];
+              cnt++;
+            } else if (Object.prototype.hasOwnProperty.call(ENUM_ALLOW, k) && ENUM_ALLOW[k].includes(obj[k])) {
+              out[k] = obj[k];
+              cnt++;
+            } else if (k === 'mascotMinCount' && Number.isFinite(Number(obj[k]))) {
+              out[k] = Math.max(1, Math.min(3, Math.round(Number(obj[k]))));
+              cnt++;
+            } else if (k === 'mascotSize' && Number.isFinite(Number(obj[k]))) {
+              out[k] = Math.max(16, Math.min(36, Math.round(Number(obj[k]) / 2) * 2));
+              cnt++;
+            } else if (k === 'bubbleTintStrength' && Number.isFinite(Number(obj[k]))) {
+              out[k] = Math.max(10, Math.min(100, Math.round(Number(obj[k]))));
+              cnt++;
+            }
+          }
+          if (!cnt) return null;
+          const nowMs = Date.now();
+          const rawTs = Number(obj._ts);
+          const hasExplicitTs = obj._tsOrigin !== 'legacy' && Number.isFinite(rawTs) && rawTs >= 1700000000000;
+          out._ts = hasExplicitTs ? (rawTs > nowMs + 60000 ? nowMs : Math.round(rawTs)) : 0;
+          out._tsOrigin = hasExplicitTs ? 'explicit' : 'legacy';
+          return out;
+        };
+        const cleanIncoming = sanitizeSeedObj(rawPrefs);
+        if (!cleanIncoming) return { reqId, result: { ok: false, error: 'empty_valid_prefs' } };
+        const extDir = path.join(USER_DIR, 'extensions');
+        fs.mkdirSync(extDir, { recursive: true });
+        const seedFile = path.join(extDir, 'prism-suite-00-prefs.js');
+        let merged = cleanIncoming;
+        try {
+          if (fs.existsSync(seedFile)) {
+            const prevTxt = fs.readFileSync(seedFile, 'utf8');
+            const m = prevTxt.match(/const seed = (\{[^\n]+\});/);
+            if (m) {
+              const prevClean = sanitizeSeedObj(JSON.parse(m[1]));
+              if (prevClean) {
+                if (prevClean._tsOrigin === 'explicit' && cleanIncoming._tsOrigin !== 'explicit') {
+                  merged = prevClean;
+                } else {
+                  merged = cleanIncoming._ts >= prevClean._ts
+                    ? Object.assign({}, prevClean, cleanIncoming)
+                    : prevClean;
+                }
+              }
+            }
+          }
+        } catch {}
+        const safeJson = JSON.stringify(merged)
+          .replace(/</g, '\\u003c')
+          .replace(/\u2028/g, '\\u2028')
+          .replace(/\u2029/g, '\\u2029');
+        const scriptBody =
+          `/* Auto-generated by Anti-Claude Prism Suite — cross-port UI preferences seed (zero credentials) */\n` +
+          `(() => {\n` +
+          `  const seed = ${safeJson};\n` +
+          `  window.__agPrismDiskPrefs = seed;\n` +
+          `  if (window.__agPrismBus && typeof window.__agPrismBus.hydrateDiskPrefs === 'function') {\n` +
+          `    try { window.__agPrismBus.hydrateDiskPrefs(seed); } catch {}\n` +
+          `  }\n` +
+          `})();\n`;
+        writeAtomicUtf8(seedFile, scriptBody);
+        try {
+          const prismStateDir = path.join(HOME, '.gemini', 'antigravity', 'prism-suite');
+          fs.mkdirSync(prismStateDir, { recursive: true });
+          writeAtomicUtf8(
+            path.join(prismStateDir, 'ui-prefs.json'),
+            `${JSON.stringify({ schema: 1, updatedAt: new Date(merged._ts).toISOString(), prefs: merged }, null, 2)}\n`
+          );
+        } catch {}
+        rebuildBundleIfNeeded();
+        if (callerEntry && callerEntry.hostConfirmed) {
+          callerEntry.injectedBundleHash = cachedBundleHash;
+          await callerEntry.updateNewDocScript().catch(() => {});
+        }
+        for (const [, other] of attachedTargets.entries()) {
+          if (other !== callerEntry && other.hostConfirmed) {
+            other.updateNewDocScript().catch(() => {});
+            other.checkAndInject(true).catch(() => {});
+          }
+        }
+        return { reqId, result: { ok: true, updatedAt: merged._ts } };
+      } catch (err) {
+        return { reqId, result: { ok: false, error: String(err?.message || err) } };
+      }
     }
     if (action === 'listContexts') {
       const paths = Array.isArray(payload.paths) ? payload.paths.slice(0, 80) : [];

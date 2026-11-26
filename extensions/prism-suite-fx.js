@@ -1,5 +1,5 @@
 /* ============================================================================
- * Anti-Claude Prism Suite v0.5.0 — Visual FX & Layout Polish (Clean-Room, MIT)
+ * Anti-Claude Prism Suite v0.7.0 — Visual FX & Layout Polish (Clean-Room, MIT)
  * Architecture:
  *   - Joins window.__agPrismBus (Frozen v4) safely regardless of script order
  *   - Single shared requestAnimationFrame scheduler (true 0fps idle/hidden/reduced)
@@ -40,7 +40,7 @@
     unreadBadge: true,
     sidebarSessions: 'default',   // 'default' | '10' | 'all'
     keepOverviewOpen: true,
-    alwaysOutlineRail: false,
+    alwaysOutlineRail: true,
     switchReturnHelper: true,
     switchAutoReturn: false,
     autoDismissOnboarding: true,
@@ -373,6 +373,7 @@
       if (changed) {
         applyBeamCanvasSize();
         applyQuotaRingGeometry();
+        if (quotaNudgeEl) positionQuotaNudge();
       }
       return true;
     }
@@ -873,6 +874,70 @@
     let orbColorR = 96;
     let orbColorG = 165;
     let orbColorB = 250;
+    let lastOrbDpr = 0;
+    let dprMql = null;
+    let dprMqlHandler = null;
+
+    function notifyOrbGeometryChange() {
+      if (disposed) return;
+      try {
+        if (typeof bus.syncMascotObstacles === 'function') {
+          bus.syncMascotObstacles();
+        } else if (typeof bus.emit === 'function') {
+          bus.emit('orb-stage');
+        } else {
+          window.dispatchEvent(new CustomEvent('ag-prism-orb-change'));
+        }
+      } catch {}
+    }
+
+    function syncOrbCanvasDpr(forceRedraw = false) {
+      if (!orbCanvas) return false;
+      const dpr = Math.min(3, Math.max(1, window.devicePixelRatio || 1));
+      const targetPx = Math.max(ORB_SIZE, Math.round(ORB_SIZE * dpr));
+      const resized =
+        orbCanvas.width !== targetPx ||
+        orbCanvas.height !== targetPx ||
+        Math.abs(dpr - lastOrbDpr) > 0.001;
+      if (resized) {
+        lastOrbDpr = dpr;
+        orbCanvas.width = targetPx;
+        orbCanvas.height = targetPx;
+      }
+      if ((resized || forceRedraw) && !sharedRafId) {
+        renderThinkingOrbFrame(0, Date.now(), true);
+      }
+      return resized;
+    }
+
+    function detachDprWatcher() {
+      if (dprMql && dprMqlHandler) {
+        try { dprMql.removeEventListener('change', dprMqlHandler); } catch {}
+      }
+      dprMql = null;
+      dprMqlHandler = null;
+    }
+
+    function armDprWatcher() {
+      detachDprWatcher();
+      if (disposed || typeof window.matchMedia !== 'function') return;
+      try {
+        const curDpr = window.devicePixelRatio || 1;
+        dprMql = window.matchMedia(`(resolution: ${curDpr}dppx)`);
+        dprMqlHandler = () => {
+          if (disposed) return;
+          scheduleThrottledMeasure();
+          if (orbCanvas && getPrefs().thinkingOrb) {
+            syncOrbCanvasDpr(true);
+          }
+          armDprWatcher();
+        };
+        if (typeof dprMql.addEventListener === 'function') {
+          dprMql.addEventListener('change', dprMqlHandler, { once: true });
+        }
+      } catch {}
+    }
+    armDprWatcher();
 
     function detectOrbStage(busy, nowMs) {
       if (!busy) {
@@ -951,14 +1016,21 @@
 
       orbCanvas = document.createElement('canvas');
       orbCanvas.className = 'ag-ps-orb-canvas';
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
-      orbCanvas.width = Math.round(ORB_SIZE * dpr);
-      orbCanvas.height = Math.round(ORB_SIZE * dpr);
+      const dpr = Math.min(3, Math.max(1, window.devicePixelRatio || 1));
+      lastOrbDpr = dpr;
+      orbCanvas.width = Math.max(ORB_SIZE, Math.round(ORB_SIZE * dpr));
+      orbCanvas.height = Math.max(ORB_SIZE, Math.round(ORB_SIZE * dpr));
       orbCtx = orbCanvas.getContext('2d', { alpha: true });
 
       orbPill = document.createElement('span');
       orbPill.className = 'ag-ps-orb-pill';
       orbPill.textContent = ORB_STAGE_LABELS[orbStage] || ORB_STAGE_LABELS.idle;
+
+      orbBtn.addEventListener('pointerenter', () => {
+        if (disposed) return;
+        if (orbDock) setAttr(orbDock, 'data-hover', '1');
+        notifyOrbGeometryChange();
+      }, { signal: orbSignal, passive: true });
 
       orbBtn.addEventListener('pointermove', (e) => {
         if (disposed || reducedMotion) return;
@@ -975,6 +1047,8 @@
         orbHovering = false;
         orbTargetTiltX = 0;
         orbTargetTiltY = 0;
+        if (orbDock) setAttr(orbDock, 'data-hover', '');
+        notifyOrbGeometryChange();
         if (!reducedMotion) ensureScheduler();
       }, { signal: orbSignal, passive: true });
 
@@ -991,10 +1065,12 @@
 
       // Paint an immediate crisp static frame so idle looks sharp at 0fps
       renderThinkingOrbFrame(0, Date.now(), true);
+      notifyOrbGeometryChange();
       return orbDock;
     }
 
     function removeOrbDock() {
+      const hadDock = Boolean(orbDock);
       if (orbDockAc) {
         orbDockAc.abort();
         orbDockAc = null;
@@ -1016,6 +1092,9 @@
       orbTargetTiltY = 0;
       orbTiltX = 0;
       orbTiltY = 0;
+      if (hadDock && !disposed) {
+        notifyOrbGeometryChange();
+      }
     }
 
     function syncThinkingOrbMount() {
@@ -1045,6 +1124,7 @@
         if (orbDock) setAttr(orbDock, 'data-stage', orbStage);
         if (orbPill) orbPill.textContent = ORB_STAGE_LABELS[orbStage] || ORB_STAGE_LABELS.idle;
         updateOrbButtonTip();
+        notifyOrbGeometryChange();
         if (reducedMotion && orbCanvas && getPrefs().thinkingOrb) {
           renderThinkingOrbFrame(0, nowMs, true);
         }
@@ -1819,15 +1899,33 @@
     let railTurnNodes = [];
     let railActiveIdx = -1;
 
+    function getTurnPreviewText(el) {
+      if (!el) return '';
+      const contentEl =
+        (el.matches && el.matches('[data-testid="user-message-content"]') && el) ||
+        (el.querySelector && el.querySelector('[data-testid="user-message-content"]')) ||
+        el;
+      const txt = (contentEl.textContent || '').replace(/\s+/g, ' ').trim();
+      if (txt) return txt;
+      if (el.querySelector && el.querySelector('img, [data-testid*="attachment"], [data-testid*="media"], bdi.context-scope-mention')) {
+        return '[图片 / 附件提问]';
+      }
+      return '';
+    }
+
     function getUserTurns() {
       const scope = safeGetViewportEl() || document;
-      const nodes = scope.querySelectorAll('[data-testid="user-message-content"]');
+      let nodes = scope.querySelectorAll('[data-testid="user-input-step"]');
+      if (!nodes.length) {
+        nodes = scope.querySelectorAll('[data-testid="user-message-content"]');
+      }
       const out = [];
       for (let i = 0; i < nodes.length; i++) {
         const n = nodes[i];
-        if (!n || !n.isConnected || !(n.textContent || '').trim().length) continue;
-        const r = n.getBoundingClientRect();
-        if (r.width > 0 && r.height > 0) out.push(n);
+        if (!n || !n.isConnected || n.hidden) continue;
+        if (n.closest && n.closest('[hidden], [aria-hidden="true"]')) continue;
+        if (!getTurnPreviewText(n)) continue;
+        out.push(n);
       }
       return out;
     }
@@ -1892,7 +1990,7 @@
       const rects = [];
       const seen = new Set();
       const pushIfOverlappingRight = (el) => {
-        if (!el || seen.has(el) || !isElementActuallyVisible(el, 40)) return;
+        if (!el || seen.has(el) || !isElementActuallyVisible(el, 28)) return;
         seen.add(el);
         const r = el.getBoundingClientRect();
         if (
@@ -1906,7 +2004,9 @@
         }
       };
       pushIfOverlappingRight(getVisibleOverviewPanel());
-      const floaters = document.querySelectorAll('#ag-ps-popover[data-open="1"], #ag-claude-quota-popover, #ag-claude-model-popover');
+      const floaters = document.querySelectorAll(
+        '#ag-ps-popover[data-open="1"], #ag-ps-outline[data-open="1"], #ag-ps-img-menu, #ag-recent-row-menu, #ag-claude-quota-popover, #ag-claude-model-popover'
+      );
       for (let i = 0; i < floaters.length; i++) {
         pushIfOverlappingRight(floaters[i]);
       }
@@ -1915,6 +2015,12 @@
 
     function positionOutlineRail() {
       if (!railEl) return;
+      const openOutlineDrawer = document.getElementById('ag-ps-outline');
+      if (openOutlineDrawer && openOutlineDrawer.getAttribute('data-open') === '1') {
+        setAttr(railEl, 'data-occluded', '1');
+        hideRailTip();
+        return;
+      }
       const vp = safeGetViewportEl();
       if (vp) {
         const rect = vp.getBoundingClientRect();
@@ -1936,7 +2042,7 @@
             }
           }
 
-          if (targetRightX - rect.left < 180) {
+          if (targetRightX - rect.left < 120) {
             setAttr(railEl, 'data-occluded', '1');
             hideRailTip();
             return;
@@ -2042,14 +2148,24 @@
           if (!dot) return;
           const idx = Number(dot.getAttribute('data-rail-idx'));
           const target = railTurnNodes[idx];
-          if (!target || !target.isConnected) return;
-          const bubble = target.closest('[data-testid="user-message-bubble"]') || target.closest('[data-testid="user-message"]') || target;
+          if (!target || !target.isConnected) {
+            const vp = safeGetViewportEl();
+            if (vp && typeof vp.scrollTo === 'function') {
+              vp.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' });
+            }
+            return;
+          }
+          const bubble =
+            (target.querySelector && target.querySelector('[data-testid="user-message-bubble"]')) ||
+            target.closest('[data-testid="user-message-bubble"]') ||
+            target.closest('[data-testid="user-message"]') ||
+            target;
           bubble.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'center' });
           bubble.classList.remove('ag-ps-turn-pulse');
           void bubble.offsetWidth;
           bubble.classList.add('ag-ps-turn-pulse');
           setTimeout(() => bubble.classList.remove('ag-ps-turn-pulse'), 1500);
-          const preview = (target.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 34);
+          const preview = getTurnPreviewText(target).slice(0, 34);
           safeToast(`第 ${idx + 1} / ${railTurnNodes.length} 轮 · ${preview}`);
           railActiveIdx = -1;
           updateRailActiveDot();
@@ -2060,8 +2176,7 @@
           if (!dot) return;
           const idx = Number(dot.getAttribute('data-rail-idx'));
           const target = railTurnNodes[idx];
-          if (!target) return;
-          const txt = (target.textContent || '').replace(/\s+/g, ' ').trim();
+          const txt = target ? getTurnPreviewText(target) : '当前对话轮次';
           showRailTip(dot, idx, txt);
         }, { signal });
 
@@ -2084,8 +2199,14 @@
         return;
       }
 
+      const vp = safeGetViewportEl();
       const turns = getUserTurns();
-      if (turns.length < 2) {
+      const hasVirtualActiveChat =
+        turns.length === 0 &&
+        isConversationRoute() &&
+        Boolean(vp && vp.querySelector('[data-testid="planner-response-text"], [data-testid="worked-for-collapsible"]'));
+
+      if (turns.length < 1 && !hasVirtualActiveChat) {
         if (railEl) setAttr(railEl, 'data-show', '');
         hideRailTip();
         detachRailScroll();
@@ -2097,31 +2218,34 @@
       ensureOutlineRailEls();
       if (!railEl) return;
 
-      const firstHead = (turns[0].textContent || '').trim().slice(0, 18);
-      const lastHead = (turns[turns.length - 1].textContent || '').trim().slice(0, 18);
-      const sig = `${turns.length}|${firstHead}|${lastHead}`;
+      const dotCount = Math.max(1, turns.length);
+      const firstHead = turns.length ? getTurnPreviewText(turns[0]).slice(0, 18) : 'virtual';
+      const lastHead = turns.length ? getTurnPreviewText(turns[turns.length - 1]).slice(0, 18) : 'virtual';
+      const sig = `${dotCount}|${firstHead}|${lastHead}`;
       railTurnNodes = turns;
 
       if (sig !== railTurnSig) {
         railTurnSig = sig;
         railActiveIdx = -1;
         const frag = document.createDocumentFragment();
-        for (let i = 0; i < turns.length; i++) {
+        for (let i = 0; i < dotCount; i++) {
           const btn = document.createElement('button');
           btn.type = 'button';
           btn.className = 'ag-ps-rail-dot';
           btn.setAttribute('data-rail-idx', String(i));
           btn.setAttribute('aria-label', `跳转到第 ${i + 1} 轮`);
+          if (!turns.length && i === 0) btn.setAttribute('aria-current', 'true');
           frag.appendChild(btn);
         }
         railEl.textContent = '';
         railEl.appendChild(frag);
       }
 
-      positionOutlineRail();
+      setAttr(railEl, 'data-scrollable', dotCount > 16 ? '1' : '');
       setAttr(railEl, 'data-show', '1');
+      positionOutlineRail();
       updateRailActiveDot();
-      attachRailScroll(safeGetViewportEl());
+      attachRailScroll(vp);
     }
 
     /* ========================================================================
@@ -2257,19 +2381,54 @@
       }
     }
 
-    function removeReturnBar() {
+    let returnBarLeaveTimer = 0;
+    let leavingReturnBarEl = null;
+
+    function clearLeavingReturnBar() {
+      if (returnBarLeaveTimer) {
+        clearTimeout(returnBarLeaveTimer);
+        returnBarLeaveTimer = 0;
+      }
+      if (leavingReturnBarEl) {
+        leavingReturnBarEl.remove();
+        leavingReturnBarEl = null;
+      }
+    }
+
+    function removeReturnBar(immediate = false) {
       stopReturnCountdown();
       if (returnBarAc) {
         returnBarAc.abort();
         returnBarAc = null;
       }
-      if (returnBarEl) {
-        returnBarEl.remove();
-        returnBarEl = null;
-      }
       returnBarCountdownEl = null;
       returnBarPath = '';
       returnBarMode = '';
+
+      if (immediate || disposed || reducedMotion || document.hidden) {
+        clearLeavingReturnBar();
+        if (returnBarEl) {
+          returnBarEl.remove();
+          returnBarEl = null;
+        }
+        return;
+      }
+
+      if (!returnBarEl) return;
+      clearLeavingReturnBar();
+      const el = returnBarEl;
+      returnBarEl = null;
+      if (!el.isConnected) {
+        el.remove();
+        return;
+      }
+      leavingReturnBarEl = el;
+      setAttr(el, 'data-leaving', '1');
+      returnBarLeaveTimer = setTimeout(() => {
+        returnBarLeaveTimer = 0;
+        if (leavingReturnBarEl === el) leavingReturnBarEl = null;
+        if (el.isConnected) el.remove();
+      }, 150);
     }
 
     function findNativeSidebarConvLink(targetPath) {
@@ -2376,7 +2535,8 @@
         return;
       }
 
-      removeReturnBar();
+      clearLeavingReturnBar();
+      removeReturnBar(true);
       returnBarAc = new AbortController();
       const barSignal = returnBarAc.signal;
       returnBarPath = savedPath;
@@ -2640,16 +2800,114 @@
       }
     }
 
-    function removeQuotaNudge() {
+    let quotaNudgeLeaveTimer = 0;
+    let leavingQuotaNudgeEl = null;
+
+    function clearLeavingQuotaNudge() {
+      if (quotaNudgeLeaveTimer) {
+        clearTimeout(quotaNudgeLeaveTimer);
+        quotaNudgeLeaveTimer = 0;
+      }
+      if (leavingQuotaNudgeEl) {
+        leavingQuotaNudgeEl.remove();
+        leavingQuotaNudgeEl = null;
+      }
+    }
+
+    function positionQuotaNudge() {
+      if (!quotaNudgeEl || !quotaNudgeEl.isConnected) return;
+      const winW = window.innerWidth || 1280;
+      const winH = window.innerHeight || 800;
+      const nudgeW = Math.round(quotaNudgeEl.offsetWidth || 340);
+      const nudgeH = Math.round(quotaNudgeEl.offsetHeight || 40);
+
+      let rightPx = 18;
+      let bottomPx = 18;
+
+      // 1. Shift left of visible right-side Overview panel when main pane has room
+      const ovPanel = getVisibleOverviewPanel();
+      if (ovPanel) {
+        const ovRect = ovPanel.getBoundingClientRect();
+        if (ovRect.width > 40 && ovRect.left > winW * 0.35 && ovRect.bottom > winH - 220) {
+          const candRight = Math.round(winW - ovRect.left + 14);
+          if (winW - candRight - nudgeW >= 12) {
+            rightPx = Math.max(rightPx, candRight);
+          }
+        }
+      }
+
+      const nudgeRight = winW - rightPx;
+      const nudgeLeft = Math.max(12, nudgeRight - nudgeW);
+
+      // 2. Lift above bottom composer ([id="antigravity.agentSidePanelInputBox"]) with 10px clearance if overlapping
+      const inputBox = safeGetOrbHostEl();
+      if (inputBox && inputBox.isConnected) {
+        const br = inputBox.getBoundingClientRect();
+        if (br.width > 0 && br.height > 0) {
+          const horizOverlap = nudgeRight > br.left - 8 && nudgeLeft < br.right + 8;
+          const curTop = winH - bottomPx - nudgeH;
+          const curBottom = winH - bottomPx;
+          const vertOverlap = curBottom > br.top - 10 && curTop < br.bottom + 10;
+          if (horizOverlap && vertOverlap) {
+            bottomPx = Math.max(bottomPx, Math.round(winH - br.top + 10));
+          }
+        }
+      }
+
+      // 3. Lift above visible jump toast (#ag-ps-jump-toast[data-show="1"]) with 10px clearance if overlapping
+      const toastEl = document.querySelector('#ag-ps-jump-toast[data-show="1"]');
+      if (toastEl && toastEl.isConnected) {
+        const tr = toastEl.getBoundingClientRect();
+        if (tr.width > 0 && tr.height > 0) {
+          const horizOverlap = nudgeRight > tr.left - 8 && nudgeLeft < tr.right + 8;
+          const curTop = winH - bottomPx - nudgeH;
+          const curBottom = winH - bottomPx;
+          const vertOverlap = curBottom > tr.top - 10 && curTop < tr.bottom + 10;
+          if (horizOverlap && vertOverlap) {
+            bottomPx = Math.max(bottomPx, Math.round(winH - tr.top + 10));
+          }
+        }
+      }
+
+      const maxBottom = Math.max(18, winH - nudgeH - 56);
+      bottomPx = Math.max(18, Math.min(maxBottom, Math.round(bottomPx)));
+      rightPx = Math.max(12, Math.min(Math.max(12, winW - nudgeW - 12), Math.round(rightPx)));
+
+      quotaNudgeEl.style.right = `${rightPx}px`;
+      quotaNudgeEl.style.bottom = `${bottomPx}px`;
+    }
+
+    function removeQuotaNudge(immediate = false) {
       if (quotaNudgeAc) {
         quotaNudgeAc.abort();
         quotaNudgeAc = null;
       }
-      if (quotaNudgeEl) {
-        quotaNudgeEl.remove();
-        quotaNudgeEl = null;
-      }
       quotaNudgeSig = '';
+
+      if (immediate || disposed || reducedMotion || document.hidden) {
+        clearLeavingQuotaNudge();
+        if (quotaNudgeEl) {
+          quotaNudgeEl.remove();
+          quotaNudgeEl = null;
+        }
+        return;
+      }
+
+      if (!quotaNudgeEl) return;
+      clearLeavingQuotaNudge();
+      const el = quotaNudgeEl;
+      quotaNudgeEl = null;
+      if (!el.isConnected) {
+        el.remove();
+        return;
+      }
+      leavingQuotaNudgeEl = el;
+      setAttr(el, 'data-leaving', '1');
+      quotaNudgeLeaveTimer = setTimeout(() => {
+        quotaNudgeLeaveTimer = 0;
+        if (leavingQuotaNudgeEl === el) leavingQuotaNudgeEl = null;
+        if (el.isConnected) el.remove();
+      }, 150);
     }
 
     function mountQuotaNudge(winKey, pct, accountEmail = '') {
@@ -2657,9 +2915,13 @@
       const pctStr = formatQuotaPct(pct);
       const acct = String(accountEmail || '').trim().toLowerCase() || 'active';
       const sig = `${acct}:${winKey}:${pctStr}`;
-      if (quotaNudgeEl && quotaNudgeEl.isConnected && quotaNudgeSig === sig) return;
+      if (quotaNudgeEl && quotaNudgeEl.isConnected && quotaNudgeSig === sig) {
+        positionQuotaNudge();
+        return;
+      }
 
-      removeQuotaNudge();
+      clearLeavingQuotaNudge();
+      removeQuotaNudge(true);
       quotaNudgeAc = new AbortController();
       const nudgeSignal = quotaNudgeAc.signal;
       quotaNudgeSig = sig;
@@ -2722,6 +2984,7 @@
       quotaNudgeEl.appendChild(text);
       quotaNudgeEl.appendChild(actions);
       document.body.appendChild(quotaNudgeEl);
+      positionQuotaNudge();
     }
 
     function syncQuotaHandoffNudge() {
@@ -2903,16 +3166,25 @@
     window.addEventListener('resize', () => {
       if (disposed) return;
       scheduleThrottledMeasure();
+      if (orbCanvas && getPrefs().thinkingOrb) syncOrbCanvasDpr(false);
       if (railEl) positionOutlineRail();
+      if (quotaNudgeEl) positionQuotaNudge();
       if (isConversationRoute() && getWantedOverviewOpen() === true && !isOverviewOpenNow()) {
         scheduleEnsureOverviewOpen('layout', 110);
       }
     }, { passive: true, signal });
 
+    window.addEventListener('ag-prism-overlay-change', () => {
+      if (disposed) return;
+      if (railEl) positionOutlineRail();
+      if (quotaNudgeEl) positionQuotaNudge();
+    }, { signal });
+
     // Subscribe to Frozen v4 Bus events
     const unsub = bus.subscribe((ev) => {
       if (disposed) return;
       const type = typeof ev === 'string' ? ev : (ev && ev.type) || 'tick';
+      if (type === 'orb-stage') return;
       if (type === 'theme') {
         beamPaletteCacheKey = '';
         applyBubbleTintAndCompact();
@@ -3056,11 +3328,11 @@
             </div>
 
             <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="多轮对话时在视口右侧常驻纤细圆点目录，展开概览或侧边面板时自动左移避让">
-                <span>常驻轮次圆点目录</span>
-                <span class="ag-ps-toggle-sub">2 轮以上显现 · 面板展开自动避让</span>
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="开启时在对话视口右侧常驻显示轮次圆点目录，关闭即彻底隐藏；展开概览或侧边面板时自动左移避让">
+                <span>轮次圆点目录（右侧常驻）</span>
+                <span class="ag-ps-toggle-sub">开启时右侧常驻，关闭即隐藏 · 面板自动避让</span>
               </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="alwaysOutlineRail" data-on="${p.alwaysOutlineRail ? '1' : '0'}" aria-label="常驻轮次圆点目录"></button>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="alwaysOutlineRail" data-on="${p.alwaysOutlineRail ? '1' : '0'}" aria-label="轮次圆点目录（右侧常驻）"></button>
             </div>
 
             <div class="ag-ps-toggle-row">
@@ -3267,10 +3539,11 @@
 
       clearUnreadBadge();
       clearHiddenSessionMarks();
+      detachDprWatcher();
       removeOutlineRail();
       removeOrbDock();
-      removeReturnBar();
-      removeQuotaNudge();
+      removeReturnBar(true);
+      removeQuotaNudge(true);
 
       if (beamCanvas) {
         beamCanvas.remove();

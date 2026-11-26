@@ -87,6 +87,67 @@
         "dist/",
         "assets/"
       ]
+    },
+    "windowsMcp": {
+      "repo": "CursorTouch/Windows-MCP",
+      "role": "cua-reference",
+      "license": "MIT",
+      "absorptionPolicy": "clean-room-cua-patterns",
+      "adoptionBoundary": "Clean-Room 参考 UIA 无障碍树压缩、control_overlay 边缘指示胶囊与 control_consent 显式授权机制；严禁引入外部二进制或开启遥测，外部兼容连接须强制 ANONYMIZED_TELEMETRY=false 并排除 Shell/Registry/FileSystem/Process。",
+      "baselineTag": "v0.9.0",
+      "baselineCommit": "b32c0ba",
+      "watchedPaths": [
+        "src/",
+        "manifest.json",
+        "server.json"
+      ],
+      "excludedPaths": [
+        "assets/",
+        ".github/",
+        "uv.lock",
+        "README.md"
+      ]
+    },
+    "playwrightMcp": {
+      "repo": "microsoft/playwright-mcp",
+      "role": "browser-cua-reference",
+      "license": "Apache-2.0",
+      "absorptionPolicy": "clean-room-browser-protocol",
+      "adoptionBoundary": "关注 --extension 浏览器扩展桥协议与无障碍快照压缩策略；不捆绑重型浏览器驱动，若复用 Apache-2.0 代码片段须同步登记 THIRD_PARTY_NOTICES.md。",
+      "baselineTag": "v0.0.86",
+      "baselineCommit": "2337aff",
+      "watchedPaths": [
+        "src/",
+        "cli.js",
+        "index.js",
+        "server.json"
+      ],
+      "excludedPaths": [
+        ".azure-pipelines/",
+        ".github/",
+        "tests/",
+        "Dockerfile"
+      ]
+    },
+    "macCodexCua": {
+      "repo": "Cassius-stack/antigravity-codex-computer-control",
+      "role": "feature-reference",
+      "license": "MIT",
+      "absorptionPolicy": "clean-room-safety-diff-only",
+      "adoptionBoundary": "仅以 Clean-Room 方式参考 safety-policy 安全拦截与动作前后增量 diff 设计思路；严禁引入 bin/ 或 native/ 下的任何预编译二进制。",
+      "baselineTag": "",
+      "baselineCommit": "b4c023f",
+      "watchedPaths": [
+        "src/",
+        "extension/",
+        "plugin/"
+      ],
+      "excludedPaths": [
+        "bin/",
+        "native/",
+        "install.sh",
+        "uninstall.sh"
+      ]
     }
   }
 }

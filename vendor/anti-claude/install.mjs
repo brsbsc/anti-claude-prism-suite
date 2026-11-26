@@ -133,8 +133,8 @@ function readProcessCommandLineSync(pid) {
     try {
       return execFileSync(
         'powershell',
-        ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
-        { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }
+        ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
+        { encoding: 'utf8', timeout: 2000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
       ).trim();
     } catch {
       return '';
@@ -416,7 +416,7 @@ function findAgyCliBinary() {
   if (NO_CLI) return null;
   const cmd = process.platform === 'win32' ? 'where' : 'which';
   try {
-    const out = execFileSync(cmd, ['agy'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const out = execFileSync(cmd, ['agy'], { encoding: 'utf8', timeout: 2000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     const first = out.split(/\r?\n/)[0]?.trim();
     if (first && fs.existsSync(first)) return first;
   } catch {}
@@ -437,7 +437,7 @@ function detectAntigravityCli() {
   let version = null;
   if (binary) {
     try {
-      version = execFileSync(binary, ['--version'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null;
+      version = execFileSync(binary, ['--version'], { encoding: 'utf8', timeout: 2000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null;
     } catch {}
   }
   const settings = settingsExists ? readJsonSafe(AGY_CLI_SETTINGS_JSON, null) : null;
@@ -756,7 +756,7 @@ export function validateSourceRoot(root = __dirname) {
       continue;
     }
     try {
-      execFileSync(process.execPath, ['--check', abs], { stdio: 'pipe' });
+      execFileSync(process.execPath, ['--check', abs], { stdio: 'pipe', windowsHide: true });
     } catch (err) {
       problems.push(`${rel}: ${String(err.stderr || err.message).split('\n')[0]}`);
     }
@@ -775,11 +775,11 @@ export function validateSourceRoot(root = __dirname) {
 function pullSelfRepoIfGit() {
   if (!fs.existsSync(path.join(__dirname, '.git'))) return { pulled: false, reason: 'not_git_checkout' };
   try {
-    const headShort = () => execFileSync('git', ['-C', __dirname, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim();
-    const headFull = () => execFileSync('git', ['-C', __dirname, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const headShort = () => execFileSync('git', ['-C', __dirname, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8', windowsHide: true }).trim();
+    const headFull = () => execFileSync('git', ['-C', __dirname, 'rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true }).trim();
     const beforeHead = headShort();
     const beforeFullHead = headFull();
-    execFileSync('git', ['-C', __dirname, 'pull', '--ff-only', '--quiet'], { stdio: 'pipe', timeout: 20000 });
+    execFileSync('git', ['-C', __dirname, 'pull', '--ff-only', '--quiet'], { stdio: 'pipe', timeout: 20000, windowsHide: true });
     const afterHead = headShort();
     return { pulled: true, updated: beforeHead !== afterHead, beforeHead, beforeFullHead, afterHead };
   } catch (err) {
@@ -790,7 +790,7 @@ function pullSelfRepoIfGit() {
 function rollbackSelfRepo(targetSha) {
   if (!targetSha || !/^[0-9a-f]{7,40}$/i.test(targetSha)) return false;
   try {
-    execFileSync('git', ['-C', __dirname, 'reset', '--hard', targetSha], { stdio: 'pipe', timeout: 10000 });
+    execFileSync('git', ['-C', __dirname, 'reset', '--hard', targetSha], { stdio: 'pipe', timeout: 10000, windowsHide: true });
     return true;
   } catch {
     return false;
@@ -1305,6 +1305,7 @@ function runLiveVerify() {
     stdout = execFileSync(process.execPath, [CORE_DAEMON_SCRIPT, '--verify-once', '--user-dir', USER_DIR], {
       encoding: 'utf8',
       timeout: 20000,
+      windowsHide: true,
       env,
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -1333,6 +1334,7 @@ function runLiveTeardownOnce() {
     fs.writeFileSync(path.join(tmpTeardownDir, 'config.json'), JSON.stringify({ enabled: false }), 'utf8');
     execFileSync(process.execPath, [CORE_DAEMON_SCRIPT, '--once', '--user-dir', tmpTeardownDir], {
       timeout: 8000,
+      windowsHide: true,
       stdio: 'ignore'
     });
     return { ok: true };

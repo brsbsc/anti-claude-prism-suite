@@ -1,5 +1,5 @@
 /* ============================================================================
- * Anti-Claude Prism Suite v0.5.0 — FX & Layout Module Styles (MIT, Clean-Room)
+ * Anti-Claude Prism Suite v0.7.0 — FX & Layout Module Styles (MIT, Clean-Room)
  * Scoped strictly via .ag-ps-* / #ag-ps-* / :where(...) to avoid host pollution.
  * ============================================================================ */
 
@@ -170,6 +170,7 @@ html[data-ag-ps-orb-replace="1"] #ag-ps-orb-dock {
 #ag-ps-orb-dock[data-stage="tools"] .ag-ps-orb-pill,
 #ag-ps-orb-dock[data-stage="streaming"] .ag-ps-orb-pill,
 #ag-ps-orb-dock[data-stage="done"] .ag-ps-orb-pill,
+#ag-ps-orb-dock[data-hover="1"] .ag-ps-orb-pill,
 #ag-ps-orb-dock:hover .ag-ps-orb-pill {
   opacity: 0.94;
   transform: translateY(0);
@@ -286,17 +287,21 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
   gap: 5px;
   padding: 6px 4px;
   max-height: 62vh;
-  overflow-y: auto;
-  overflow-x: visible;
-  scrollbar-width: none;
+  overflow: hidden;
+  scrollbar-width: none !important;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--background, #FFFFFF) 74%, transparent);
-  border: 1px solid var(--sidebar-border, rgba(128, 128, 128, 0.14));
+  background: color-mix(in srgb, var(--background, #FFFFFF) 92%, transparent);
+  border: 1px solid var(--sidebar-border, rgba(128, 128, 128, 0.16));
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
   transition: right 180ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease, background-color 180ms ease;
-  opacity: 0.72;
+  opacity: 0.9;
+}
+
+#ag-ps-outline-rail[data-scrollable="1"] {
+  overflow-y: auto;
+  overflow-x: hidden !important;
 }
 
 #ag-ps-outline-rail[data-occluded="1"] {
@@ -304,8 +309,14 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
   pointer-events: none !important;
 }
 
-#ag-ps-outline-rail::-webkit-scrollbar {
-  display: none;
+#ag-ps-outline-rail::-webkit-scrollbar,
+#ag-ps-outline-rail::-webkit-scrollbar-track,
+#ag-ps-outline-rail::-webkit-scrollbar-thumb,
+#ag-ps-outline-rail::-webkit-scrollbar-corner {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+  background: transparent !important;
 }
 
 #ag-ps-outline-rail[data-show="1"] {
@@ -336,7 +347,7 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
 .ag-ps-rail-dot::before {
   content: '';
   position: absolute;
-  inset: -4px -6px;
+  inset: -2px -3px;
 }
 
 .ag-ps-rail-dot:hover {
@@ -485,15 +496,51 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
   box-shadow: 0 0 0 2px var(--background, #FFFFFF), 0 0 0 3.5px var(--primary, #2F75C3);
 }
 
+.ag-ps-orb-btn:focus:not(:focus-visible),
+.ag-ps-rail-dot:focus:not(:focus-visible),
+.ag-ps-fx-preview-btn:focus:not(:focus-visible),
+.ag-ps-fx-chip:focus:not(:focus-visible),
+.ag-ps-fx-swatch-btn:focus:not(:focus-visible),
+.ag-ps-return-btn-primary:focus:not(:focus-visible),
+.ag-ps-return-btn-ghost:focus:not(:focus-visible),
+.ag-ps-nudge-btn-switch:focus:not(:focus-visible),
+.ag-ps-nudge-btn-copy:focus:not(:focus-visible),
+.ag-ps-nudge-btn-close:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.ag-ps-rail-dot:focus-visible,
+.ag-ps-fx-preview-btn:focus-visible,
+.ag-ps-fx-chip:focus-visible,
+.ag-ps-fx-swatch-btn:focus-visible {
+  outline: 1.5px solid var(--primary, #2F75C3);
+  outline-offset: 2px;
+}
+
 /* ---- 8. Settings Safe Manual-Switch Return Banner ---- */
+@keyframes agPsReturnBarIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 #ag-ps-return-bar {
   position: fixed;
   top: 14px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  width: fit-content;
+  margin-inline: auto;
+  transform: none;
+  will-change: auto;
   z-index: 99960;
-  max-width: calc(100vw - 24px);
-  display: inline-flex;
+  max-width: calc(100% - 24px);
+  display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
@@ -508,6 +555,16 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
   font-family: var(--font-sans, system-ui, sans-serif);
   font-size: 12px;
   line-height: 1.35;
+  animation: agPsReturnBarIn 160ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+  transition: opacity 150ms cubic-bezier(0.22, 1, 0.36, 1),
+              transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+#ag-ps-return-bar[data-leaving="1"] {
+  animation: none;
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
 }
 
 .ag-ps-return-dot {
@@ -597,10 +654,23 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
 }
 
 /* ---- 9. 5h / 7d Quota Handoff Nudge Chip ---- */
+@keyframes agPsQuotaNudgeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 #ag-ps-quota-nudge {
   position: fixed;
   bottom: 18px;
   right: 18px;
+  transform: none;
+  will-change: auto;
   z-index: 99955;
   max-width: min(440px, calc(100vw - 24px));
   display: inline-flex;
@@ -618,6 +688,18 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
   font-family: var(--font-sans, system-ui, sans-serif);
   font-size: 11.5px;
   line-height: 1.4;
+  animation: agPsQuotaNudgeIn 160ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+  transition: opacity 150ms cubic-bezier(0.22, 1, 0.36, 1),
+              transform 150ms cubic-bezier(0.22, 1, 0.36, 1),
+              bottom 180ms cubic-bezier(0.22, 1, 0.36, 1),
+              right 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+#ag-ps-quota-nudge[data-leaving="1"] {
+  animation: none;
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
 }
 
 #ag-ps-quota-nudge[data-tier="7d"] {
@@ -711,6 +793,11 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
 
 /* ---- 10. Reduced Motion Guard ---- */
 @media (prefers-reduced-motion: reduce) {
+  #ag-ps-return-bar,
+  #ag-ps-quota-nudge {
+    animation: none !important;
+    transition: none !important;
+  }
   .ag-ps-beam-canvas,
   .ag-ps-quota-ring,
   .ag-ps-qring-arc,
@@ -719,6 +806,9 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
   #ag-ps-outline-rail,
   .ag-ps-rail-dot,
   #ag-ps-rail-tip,
+  .ag-ps-fx-preview-btn,
+  .ag-ps-fx-chip,
+  .ag-ps-fx-swatch-btn,
   .ag-ps-return-btn-primary,
   .ag-ps-return-btn-ghost,
   .ag-ps-nudge-btn-switch,

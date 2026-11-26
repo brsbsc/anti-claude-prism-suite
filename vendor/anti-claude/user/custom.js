@@ -82,6 +82,46 @@
     overviewPanel: effectiveModBool('claudeUxOverviewPanel', true)
   };
   const L = (zh, en) => (FEAT.i18n ? zh : en);
+  const HOST_OS = (() => {
+    const navPlat =
+      (typeof navigator !== 'undefined' &&
+        navigator &&
+        (navigator.userAgentData?.platform || navigator.platform || navigator.userAgent)) ||
+      '';
+    if (/Win/i.test(navPlat)) return 'win32';
+    if (/Mac/i.test(navPlat)) return 'darwin';
+    if (/Linux/i.test(navPlat)) return 'linux';
+    return (typeof ctx !== 'undefined' && ctx && ctx.platform) || 'linux';
+  })();
+  const IS_MAC = HOST_OS === 'darwin';
+  const IS_WIN = HOST_OS === 'win32';
+  const MOD_SLASH_LABEL = IS_MAC ? '⌘/' : 'Ctrl+/';
+  const ALT_KEY_LABEL = IS_MAC ? '⌥' : 'Alt';
+  const ALT_CLICK_ZH = IS_MAC ? '⌥ 点击' : 'Alt+点击';
+  const ALT_CLICK_EN = IS_MAC ? '⌥ Click' : 'Alt+Click';
+  const OS_FILE_MGR_SHORT_ZH = IS_WIN ? '资源管理器' : IS_MAC ? 'Finder' : '文件管理器';
+  const OS_FILE_MGR_SHORT_EN = IS_WIN ? 'Explorer' : IS_MAC ? 'Finder' : 'Files';
+
+  function adaptPlatformUiText(str) {
+    if (IS_MAC || typeof str !== 'string' || !str) return str;
+    let out = str
+      .replace(/⌘\+/g, 'Ctrl+')
+      .replace(/⌘/g, 'Ctrl+')
+      .replace(/⌥\+/g, 'Alt+')
+      .replace(/⌥/g, 'Alt+')
+      .replace(/⌃\+/g, 'Ctrl+')
+      .replace(/⌃/g, 'Ctrl+')
+      .replace(/⇧\+/g, 'Shift+')
+      .replace(/⇧/g, 'Shift+')
+      .replace(/\bCmd\+/g, 'Ctrl+')
+      .replace(/\bOption\+/g, 'Alt+');
+    if (IS_WIN) {
+      out = out.replace(/在访达中显示/g, '在资源管理器中显示');
+    } else {
+      out = out.replace(/在访达中显示/g, '在文件管理器中显示');
+    }
+    return out;
+  }
 
   /* an older instance that was never cleaned up (no ctx.onCleanup) must not keep running */
   if (typeof window.__agClaudeUxDispose === 'function') {
@@ -3572,7 +3612,7 @@
           <span>${L('官方菜单', 'Native menu')}</span>
           ${nativeHasNewFields ? '<span class="ag-cm-dot"></span>' : ''}
         </span>
-        <span class="ag-cm-key">${nativeGaps.soft.length ? L('更多选项', 'More options') : L('⌥ 点击', '⌥ Click')}</span>
+        <span class="ag-cm-key">${nativeGaps.soft.length ? L('更多选项', 'More options') : L(ALT_CLICK_ZH, ALT_CLICK_EN)}</span>
       </button>`
       : '';
 
@@ -3988,15 +4028,23 @@
   const onModelPopoverKeyDown = (e) => {
     if (disposed || !FEAT.modelMenu || isCustomCssDisabled()) return;
     const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key === '/') {
-      const btn = findModelTriggerBtn();
-      const btnApi = btn ? discoverModelSelectorApi(btn) : null;
-      if (btnApi && !shouldDeferToNativeModelMenu(null, btn, btnApi)) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-        toggleClaudeModelPopover(btn, { focus: true });
-        return;
+    const isModSlash =
+      (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey || e.metaKey) &&
+      !e.shiftKey &&
+      !e.altKey &&
+      (e.key === '/' || e.code === 'Slash');
+    if (isModSlash) {
+      const tgt = e.target && e.target.closest ? e.target : null;
+      if (!tgt || !tgt.closest('.monaco-editor, .monaco-diff-editor, .xterm')) {
+        const btn = findModelTriggerBtn();
+        const btnApi = btn ? discoverModelSelectorApi(btn) : null;
+        if (btnApi && !shouldDeferToNativeModelMenu(null, btn, btnApi)) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          toggleClaudeModelPopover(btn, { focus: true });
+          return;
+        }
       }
     }
 
@@ -4394,7 +4442,7 @@
         : '') +
       `<span>${escapeHtml(fileSummary)}</span>` +
       (hasRichRefs
-        ? `<span style="opacity:0.75" title="${escapeHtml(L('自动保留原消息中的 @ 引用、斜杠命令与技能胶囊；按住 ⌥ 点撤回可打开官方撤回界面', 'Preserves original @ mentions, slash commands & skills; Option+click Revert for native UI'))}">· ${L('保留原引用', 'Keep mentions')}</span>`
+        ? `<span style="opacity:0.75" title="${escapeHtml(L(`自动保留原消息中的 @ 引用、斜杠命令与技能胶囊；按住 ${ALT_KEY_LABEL} 点撤回可打开官方撤回界面`, `Preserves original @ mentions, slash commands & skills; ${IS_MAC ? 'Option' : 'Alt'}+click Revert for native UI`))}">· ${L('保留原引用', 'Keep mentions')}</span>`
         : '') +
       (hasMedia
         ? `<span style="opacity:0.75" title="${escapeHtml(L('重发时自动保留原消息图片/附件；如需增删附件请点「移至底栏」', 'Keeps original attachments on resend; click Move to input to edit attachments'))}">· ${L('保留原附件', 'Keep attachments')}</span>`
@@ -6171,7 +6219,90 @@
     syncRecentSection(bindings, state, activeId, hasFocus);
   }
 
+  function findSidebarWheelScroller(startEl) {
+    if (!startEl || !startEl.closest) return null;
+    const sbRoot = startEl.closest('.bg-sidebar');
+    if (!sbRoot) return null;
+    const unifiedOn = Boolean(
+      FEAT.hideSidebarProjects &&
+      sbRoot.querySelector('#ag-claude-recent-section[data-mode="unified"], [data-ag-sb-unified]')
+    );
+    let fallbackCandidate = null;
+    for (let cur = startEl; cur && cur !== document.body; cur = cur.parentElement) {
+      if (cur.nodeType !== 1) continue;
+      if (unifiedOn) {
+        if (
+          cur.hasAttribute('data-ag-sb-unified') ||
+          cur.getAttribute('data-testid') === 'conversation-list-sidebar' ||
+          cur.id === 'ag-claude-recent-section' ||
+          Boolean(cur.closest && cur.closest('[data-ag-sb-unified], #ag-claude-recent-section'))
+        ) {
+          if (cur === sbRoot) break;
+          continue;
+        }
+      }
+      const sh = cur.scrollHeight || 0;
+      const ch = cur.clientHeight || 0;
+      if (sh > ch + 1) {
+        try {
+          const ovY = window.getComputedStyle(cur).overflowY;
+          if (ovY === 'auto' || ovY === 'scroll' || ovY === 'overlay') {
+            return { el: cur, unifiedOn, isHiddenOverflow: false };
+          }
+          if (ovY === 'hidden' && !fallbackCandidate) {
+            fallbackCandidate = { el: cur, unifiedOn, isHiddenOverflow: true };
+          }
+        } catch {}
+      }
+      if (cur === sbRoot) break;
+    }
+    return fallbackCandidate;
+  }
+
+  function onSidebarWheel(ev) {
+    if (disposed || !ev || ev.defaultPrevented || ev.ctrlKey || ev.metaKey) return;
+    const rawTarget = ev.target;
+    const t =
+      rawTarget && rawTarget.nodeType === 1
+        ? rawTarget
+        : rawTarget && rawTarget.parentElement;
+    if (!t || !t.closest) return;
+    if (!t.closest('.bg-sidebar')) return;
+    if (t.closest('input, textarea, [contenteditable="true"], [role="menu"], [role="dialog"]')) return;
+    const rawDy = Number(ev.deltaY) || 0;
+    const rawDx = Number(ev.deltaX) || 0;
+    if (rawDy === 0 || Math.abs(rawDx) > Math.abs(rawDy) * 1.5) return;
+
+    const match = findSidebarWheelScroller(t);
+    if (!match || !match.el) return;
+    // In native non-unified mode with standard overflow-y: auto/scroll, let Chromium's native compositor handle wheel
+    if (!match.unifiedOn && !match.isHiddenOverflow) return;
+
+    const scroller = match.el;
+    const maxScroll = Math.max(0, (scroller.scrollHeight || 0) - (scroller.clientHeight || 0));
+    if (maxScroll <= 0) return;
+
+    const dy =
+      ev.deltaMode === 1
+        ? rawDy * 32
+        : ev.deltaMode === 2
+          ? rawDy * Math.max(120, (scroller.clientHeight || 300) * 0.85)
+          : rawDy;
+
+    const prevTop = scroller.scrollTop || 0;
+    const nextTop = Math.max(0, Math.min(maxScroll, prevTop + dy));
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (Math.abs(nextTop - prevTop) >= 0.5) {
+      scroller.scrollTop = nextTop;
+      try {
+        scroller.dispatchEvent(new Event('scroll'));
+      } catch {}
+    }
+  }
+
   const onWindowSidebarEvent = () => scheduleSidebarSync();
+  document.addEventListener('wheel', onSidebarWheel, { capture: true, passive: false });
   window.addEventListener('focus', onWindowSidebarEvent);
   window.addEventListener('blur', onWindowSidebarEvent);
   window.addEventListener('popstate', onWindowSidebarEvent);
@@ -6313,16 +6444,19 @@
   function uxI18nLookup(trimmed, contextEl) {
     const dict = getUxI18nDict();
     if (!dict || !trimmed) return null;
-    if (typeof dict[trimmed] === 'string') return dict[trimmed];
+    if (typeof dict[trimmed] === 'string') return adaptPlatformUiText(dict[trimmed]);
     if (uxI18nDictCi && typeof uxI18nDictCi[trimmed.toLowerCase()] === 'string') {
-      return uxI18nDictCi[trimmed.toLowerCase()];
+      return adaptPlatformUiText(uxI18nDictCi[trimmed.toLowerCase()]);
     }
     if (trimmed.endsWith('.')) {
       const base = trimmed.slice(0, -1);
       const hit =
         (typeof dict[base] === 'string' && dict[base]) ||
         (uxI18nDictCi && typeof uxI18nDictCi[base.toLowerCase()] === 'string' && uxI18nDictCi[base.toLowerCase()]);
-      if (hit) return hit.endsWith('。') ? hit : `${hit}。`;
+      if (hit) {
+        const adapted = adaptPlatformUiText(hit);
+        return adapted.endsWith('。') ? adapted : `${adapted}。`;
+      }
     }
     /* High-frequency dynamic Antigravity UI strings when runtime.js i18n is disabled */
     if (!/[A-Za-z]/.test(trimmed) || trimmed.length > 340) return null;
@@ -6783,10 +6917,10 @@
         [
           'claudeUxModelMenu',
           'modelMenu',
-          '分层模型选择器 (⌘/)',
-          'Layered Model Picker (⌘/)',
-          '精简主列表为 5 款主力模型，独立拆分思考强度与更多模型二级菜单',
-          'Compact 5-model primary list with dedicated Thinking effort & More models flyouts'
+          `分层模型选择器 (${MOD_SLASH_LABEL})`,
+          `Layered Model Picker (${MOD_SLASH_LABEL})`,
+          `精简主列表为 5 款主力模型，独立拆分思考强度与更多模型二级菜单（${ALT_CLICK_ZH}打开官方菜单）`,
+          `Compact 5-model primary list with dedicated Thinking effort & More models flyouts (${ALT_CLICK_EN} for native menu)`
         ],
         [
           'claudeUxContextRing',
@@ -6937,8 +7071,12 @@
                     <div class="ag-cux-settings-title">${escapeHtml(L('中文字体字高校准', 'CJK Optical Font Scale'))}</div>
                     <div class="ag-cux-settings-desc">${escapeHtml(
                       L(
-                        '调整苹方汉字与西文的视觉字高比例：94.5%（Apple 官网排印）、95%（均衡默认）、100%（系统原生字高）',
-                        'Calibrate CJK glyph height relative to Latin text: 94.5% (Apple typography), 95% (balanced default), or 100% (native)'
+                        IS_MAC
+                          ? '调整苹方汉字与西文的视觉字高比例：94.5%（Apple 官网排印）、95%（均衡默认）、100%（系统原生字高）'
+                          : '调整中文字体（微软雅黑 / 苹方）与西文的视觉字高比例：94.5%（紧凑排印）、95%（均衡默认）、100%（系统原生字高）',
+                        IS_MAC
+                          ? 'Calibrate CJK glyph height relative to Latin text: 94.5% (Apple typography), 95% (balanced default), or 100% (native)'
+                          : 'Calibrate CJK glyph height relative to Latin text: 94.5% (compact), 95% (balanced default), or 100% (native)'
                       )
                     )}</div>
                   </div>
@@ -9141,9 +9279,11 @@
     const canUpdate = Boolean(!proj.isBuiltin && pm && typeof pm.updateProject === 'function');
     const canDelete = Boolean(!proj.isBuiltin && pm && typeof pm.deleteProject === 'function');
     const canReveal = Boolean(proj.dirPath && typeof window.__agProjectCall === 'function');
-    const revealLabel = /Win/i.test((navigator && navigator.platform) || '')
+    const revealLabel = IS_WIN
       ? L('在资源管理器中显示', 'Show in Explorer')
-      : L('在访达中显示', 'Reveal in Finder');
+      : IS_MAC
+        ? L('在访达中显示', 'Reveal in Finder')
+        : L('在文件管理器中显示', 'Show in File Manager');
     const delLabel = st.confirmDelete
       ? L('确认删除？（保留本地文件）', 'Confirm delete? (keeps files)')
       : L('删除项目', 'Delete project');
@@ -11103,7 +11243,7 @@
         <div class="ag-pm-footer${st.hasAgentsMd ? ' ag-pm-footer-split' : ''}">
           ${
             st.hasAgentsMd
-              ? `<button type="button" class="ag-pm-reveal-link" data-ag-pm-reveal-agents="true">${L('在 Finder 中定位 AGENTS.md', 'Reveal AGENTS.md in Finder')}</button>`
+              ? `<button type="button" class="ag-pm-reveal-link" data-ag-pm-reveal-agents="true">${escapeHtml(L(`在${OS_FILE_MGR_SHORT_ZH}中定位 AGENTS.md`, `Show AGENTS.md in ${OS_FILE_MGR_SHORT_EN}`))}</button>`
               : ''
           }
           <div class="ag-pm-footer-actions">
@@ -12371,7 +12511,7 @@
     const okHtml = st.successMsg
       ? `<div class="ag-cust-ok-banner"><span>${escapeHtml(st.successMsg)}</span>${
           st.createdPath
-            ? `<button type="button" class="ag-cust-ok-open" data-ag-agent-reveal="${escapeHtml(st.createdPath)}">${L('在 Finder 查看', 'Reveal')}</button>`
+            ? `<button type="button" class="ag-cust-ok-open" data-ag-agent-reveal="${escapeHtml(st.createdPath)}">${escapeHtml(L(`在${OS_FILE_MGR_SHORT_ZH}查看`, `Show in ${OS_FILE_MGR_SHORT_EN}`))}</button>`
             : ''
         }</div>`
       : '';
@@ -13376,7 +13516,7 @@
           </button>
           ${
             ws.dirPath
-              ? `<button type="button" class="ag-ov-hdr-action" data-ag-ov-action="finder">Finder ↗</button>`
+              ? `<button type="button" class="ag-ov-hdr-action" data-ag-ov-action="finder">${escapeHtml(L(`${OS_FILE_MGR_SHORT_ZH} ↗`, `${OS_FILE_MGR_SHORT_EN} ↗`))}</button>`
               : ''
           }
         </div>
@@ -14204,6 +14344,7 @@
     window.removeEventListener('pointercancel', onPinnedRowPointerCancel, true);
     clearPinnedComposerDropHighlights();
     window.removeEventListener('resize', onWindowResizePopover);
+    document.removeEventListener('wheel', onSidebarWheel, true);
     window.removeEventListener('focus', onWindowSidebarEvent);
     window.removeEventListener('blur', onWindowSidebarEvent);
     window.removeEventListener('popstate', onWindowSidebarEvent);

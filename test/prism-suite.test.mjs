@@ -54,7 +54,27 @@ import {
   buildWinDetachedDispatchScript,
   resolveLocalAntigravityTarget
 } from '../plugin/server/relaunch-client.mjs';
-import { createHandoffMemoryStore, redactMemoryText } from '../plugin/server/handoff-memory.mjs';
+import {
+  createHandoffMemoryStore,
+  redactMemoryText,
+  detectNonNativeSqliteMount,
+  segmentForFts,
+  buildSafeFtsMatchQuery
+} from '../plugin/server/handoff-memory.mjs';
+import {
+  createPrismProfileManager,
+  validateEnvVarName,
+  validateHttpEndpointUrl,
+  PROVIDER_PRESETS,
+  TIER_DEFINITIONS
+} from '../plugin/server/prism-profile.mjs';
+import {
+  createModelHub,
+  parseSseEvents,
+  isPublicRoutableIp,
+  searchPublicWebSafe,
+  redactOutboundText
+} from '../plugin/server/model-hub.mjs';
 import { resolveHostRevealTarget } from '../vendor/anti-claude/core/daemon.mjs';
 import {
   UPSTREAM_SCHEMA_VERSION,
@@ -259,18 +279,41 @@ test('prism-files MCP App server enforces protocol, credential guards, SHA-256 s
 
     const srv = createPrismFilesServer({ dataDir, defaultRoot: workDir, accountStateDir: path.join(tmp, 'prism-state') });
 
-    // Protocol handshake & tool visibility (strictly 6 model-visible tools; all accounts_* & upstream tools are app-only)
+    // Protocol handshake & tool visibility (strictly <= 8 model-visible tools; all accounts_*, model_hub_*, & upstream tools are app-only)
     const init = await srv.handleRpc({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
     assert.equal(init.result.capabilities.resources !== undefined, true);
     const listRes = await srv.handleRpc({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
     const isAppOnly = (t) => t._meta?.ui?.visibility?.length === 1 && t._meta.ui.visibility[0] === 'app';
     const modelTools = listRes.result.tools.filter((t) => !isAppOnly(t));
+    assert.ok(modelTools.length <= 8, `Model-visible tools must stay <= 8, got ${modelTools.length}`);
     assert.deepEqual(
       modelTools.map((t) => t.name).sort(),
-      ['open_prism_files', 'prism_memory_list', 'prism_memory_search', 'prism_memory_store', 'prism_quota_sync', 'show_files_inline']
+      [
+        'open_prism_files',
+        'prism_ask_model',
+        'prism_list_models',
+        'prism_memory_list',
+        'prism_memory_search',
+        'prism_memory_store',
+        'prism_quota_sync',
+        'show_files_inline'
+      ]
     );
     const appOnlyNames = new Set(listRes.result.tools.filter(isAppOnly).map((t) => t.name));
-    for (const priv of ['accounts_status', 'accounts_capture', 'accounts_switch', 'accounts_delete', 'check_upstreams', 'sync_upstream_baseline']) {
+    for (const priv of [
+      'accounts_status',
+      'accounts_capture',
+      'accounts_switch',
+      'accounts_delete',
+      'check_upstreams',
+      'sync_upstream_baseline',
+      'handoff_catalog_upsert',
+      'handoff_remote_sync',
+      'model_hub_get_profile',
+      'model_hub_upsert_provider',
+      'model_hub_upsert_model',
+      'model_hub_probe_speed'
+    ]) {
       assert.equal(appOnlyNames.has(priv), true, `${priv} must remain visibility:['app']`);
     }
 
@@ -514,6 +557,7 @@ test('v0.5.0 isolated account relay enforces email verification, ownership prese
 
   // 3. Full mock OS credential store via injected runCmd (never touches real OS vault or ~/.gemini)
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-prism-acct-test-'));
+  let mem = null;
   try {
     const stateDir = path.join(tmp, 'prism-suite');
     const brainDir = path.join(tmp, 'brain');
@@ -558,7 +602,7 @@ test('v0.5.0 isolated account relay enforces email verification, ownership prese
     };
 
     const vault = createAccountVault({ platform: 'win32', isWsl: false, homeDir: tmp, runCmd: mockRunCmd });
-    const mem = createHandoffMemoryStore({ stateDir });
+    mem = createHandoffMemoryStore({ stateDir });
     const mgr = createAccountManager({ homeDir: tmp, stateDir, brainDir, vault, handoffMemory: mem });
 
     // Default OFF rejects capture/switch
@@ -700,6 +744,7 @@ test('v0.5.0 isolated account relay enforces email verification, ownership prese
     assert.equal(statusCli.data.accounts.length, 2);
     assert.doesNotMatch(JSON.stringify(statusCli.data), /tok_main_1|tok_bak_2/);
   } finally {
+    try { mem?.close(); } catch {}
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
@@ -709,8 +754,9 @@ test('v0.5.0 zero-dep handoff memory redacts secrets and enforces strict chronol
   assert.doesNotMatch(redacted, /sk-1234567890|eyJhbGciOi|mysecret/);
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-prism-mem-test-'));
+  let store = null;
   try {
-    const store = createHandoffMemoryStore({ stateDir: path.join(tmp, 'state'), maxEntries: 5 });
+    store = createHandoffMemoryStore({ stateDir: path.join(tmp, 'state'), maxEntries: 5 });
     const oldEntry = store.store({
       project: 'demo-app',
       slot: 'main-dev',
@@ -740,6 +786,7 @@ test('v0.5.0 zero-dep handoff memory redacts secrets and enforces strict chronol
     assert.match(store.formatExternalMemoryStorePrompt(newEntry), /memory_store/);
     assert.match(store.formatResumePrompt(newEntry), /已对齐 \[handoff:demo-app:main-dev\]/);
   } finally {
+    try { store?.close(); } catch {}
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
@@ -799,6 +846,21 @@ test('v0.5.0 selective Upstream Radar keeps root/plugin upstream.json identical 
       }
       if (url.includes('anglee0323/agy-switch/commits')) {
         return { ok: true, json: async () => [{ sha: parsed.upstreams.agySwitch.baselineCommit + '0000', commit: { message: 'sync', committer: { date: '2026-11-18T00:00:00Z' } } }] };
+      }
+      if (url.includes('CursorTouch/Windows-MCP/releases/latest')) {
+        return { ok: true, json: async () => ({ tag_name: parsed.upstreams.windowsMcp.baselineTag }) };
+      }
+      if (url.includes('CursorTouch/Windows-MCP/commits')) {
+        return { ok: true, json: async () => [{ sha: parsed.upstreams.windowsMcp.baselineCommit + '0000', commit: { message: 'sync', committer: { date: '2026-11-26T00:00:00Z' } } }] };
+      }
+      if (url.includes('microsoft/playwright-mcp/releases/latest')) {
+        return { ok: true, json: async () => ({ tag_name: parsed.upstreams.playwrightMcp.baselineTag }) };
+      }
+      if (url.includes('microsoft/playwright-mcp/commits')) {
+        return { ok: true, json: async () => [{ sha: parsed.upstreams.playwrightMcp.baselineCommit + '0000', commit: { message: 'sync', committer: { date: '2026-11-18T00:00:00Z' } } }] };
+      }
+      if (url.includes('Cassius-stack/antigravity-codex-computer-control/commits')) {
+        return { ok: true, json: async () => [{ sha: parsed.upstreams.macCodexCua.baselineCommit + '0000', commit: { message: 'sync', committer: { date: '2026-11-15T00:00:00Z' } } }] };
       }
       return { ok: false, status: 404, headers: { get: () => null } };
     };
@@ -1134,7 +1196,7 @@ test('v0.5.0 client relauncher, metadata cache TTL/mtime invalidation, and stric
     });
     const listRpc = await srv.handleRpc({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
     const visibleToModel = listRpc.result.tools.filter((t) => !(t._meta?.ui?.visibility || []).includes('app'));
-    assert.equal(visibleToModel.length, 6, 'Model-visible tool count must remain strictly 6');
+    assert.equal(visibleToModel.length, 8, 'Model-visible tool count must remain strictly 8 (<= 8 cap)');
     const relaunchTool = listRpc.result.tools.find((t) => t.name === 'accounts_relaunch_client');
     assert.ok(relaunchTool && relaunchTool._meta?.ui?.visibility?.includes('app'), 'accounts_relaunch_client must be app-only');
 
@@ -1464,11 +1526,11 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.6.1');
-    assert.equal(pluginJson.version, '0.6.1');
+    assert.equal(pkgJson.version, '0.7.0');
+    assert.equal(pluginJson.version, '0.7.0');
     assert.ok(Array.isArray(pluginJson.suggested_prompts) && pluginJson.suggested_prompts.length <= 3);
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.6\.1'/);
+    assert.match(jsSrc, /SUITE_VERSION = '0\.7\.0'/);
     assert.match(jsSrc, /COOKIE_PREFS_KEY = 'ag_prism_prefs_v1'/);
     assert.match(jsSrc, /getActiveInputBox/);
     assert.match(jsSrc, /getInputBoxEl: getActiveInputBox/);
@@ -1496,7 +1558,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(wfSrc, /composerFileDrop/);
     assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
     assert.match(jsSrc, /readAntiClaudeQuotaCache/);
-    assert.match(inlineHtml, /version: '0\.6\.1'/);
+    assert.match(inlineHtml, /version: '0\.7\.0'/);
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1528,7 +1590,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(csSrc, /EnsureDebugPortOnUserShortcuts/);
     assert.match(csSrc, /InstallKernel/);
     assert.match(csSrc, /prism-suite-00-prefs\.js/);
-    assert.match(csSrc, /v0\.6\.1/);
+    assert.match(csSrc, /v0\.7\.0/);
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
   } finally {
@@ -1967,4 +2029,753 @@ test('v0.6.1 WSL Show in File Explorer host path resolution, security guards, an
   const wfSrc = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite-workflow.js'), 'utf8');
   assert.match(wfSrc, /revealInOsFileManager/);
   assert.match(wfSrc, /onRevealMenuClickCapture/);
+});
+
+test('v0.7.0 Phase 1: 7-upstream CUA radar, 3 bundled progressive skills, SQLite FTS5 + 9P/taint/remote memory, and zero-dep SSE Model Hub', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-v070-phase1-'));
+  try {
+    // 1. Upstream Radar: 7 sources + CUA/Apache-2.0 boundaries + 3 bundled plugin skills + --no-warnings MCP config
+    const upstreamRaw = fs.readFileSync(path.join(REPO, 'upstream.json'), 'utf8');
+    const upstreamCfg = JSON.parse(upstreamRaw);
+    assert.deepEqual(
+      Object.keys(upstreamCfg.upstreams).sort(),
+      ['agyPowertools', 'agySwitch', 'antiClaude', 'macCodexCua', 'obsidianPrism', 'playwrightMcp', 'windowsMcp']
+    );
+    assert.equal(upstreamCfg.upstreams.windowsMcp.role, 'cua-reference');
+    assert.equal(upstreamCfg.upstreams.playwrightMcp.role, 'browser-cua-reference');
+    assert.equal(upstreamCfg.upstreams.playwrightMcp.license, 'Apache-2.0');
+
+    const mcpCfg = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'mcp_config.json'), 'utf8'));
+    assert.equal(mcpCfg.mcpServers.files.args.includes('--no-warnings'), true);
+
+    const expectedSkills = ['prism-cross-model-council', 'prism-slot-relay', 'prism-upstream-absorb'];
+    const pluginsDir = path.join(tmp, 'plugins');
+    installPlugin({ pluginsDir });
+    for (const sk of expectedSkills) {
+      const skPath = path.join(pluginsDir, 'prism-files', 'skills', sk, 'SKILL.md');
+      assert.equal(fs.existsSync(skPath), true, `Bundled skill ${sk} must be deployed by installPlugin`);
+      const skText = fs.readFileSync(skPath, 'utf8');
+      assert.match(skText, new RegExp(`^---\\s*\\nname:\\s*${sk}\\b`));
+    }
+
+    const cuaEval = evaluateRepoUpdate('windowsMcp', upstreamCfg.upstreams.windowsMcp, {
+      latestTag: 'v0.9.1',
+      latestCommit: 'deadbeef123',
+      aheadBy: 2,
+      commits: [
+        { sha: '1111111', message: 'refactor: internal python helper typing' },
+        { sha: '2222222', message: 'security: tighten control_consent prompt injection check' }
+      ]
+    });
+    assert.equal(cuaEval.compatFixes.length, 1, 'Only security/consent breaking changes become mandatory compatFixes on cua-reference');
+    assert.equal(cuaEval.featureCandidates.length, 1);
+
+    const pwEval = evaluateRepoUpdate('playwrightMcp', upstreamCfg.upstreams.playwrightMcp, {
+      latestTag: 'v0.0.87',
+      latestCommit: 'cafebabe999',
+      aheadBy: 1,
+      commits: [{ sha: '3333333', message: 'feat: compress accessibility tree in extension bridge' }]
+    });
+    const cuaMd = renderMarkdownReport({
+      checkedAt: '2026-11-26T00:00:00Z',
+      summary: { high: 1, medium: 1, low: 0, upToDate: 0 },
+      results: [cuaEval, pwEval]
+    });
+    assert.match(cuaMd, /Apache-2\.0/);
+    assert.match(cuaMd, /THIRD_PARTY_NOTICES\.md/);
+    assert.match(cuaMd, /预编译二进制/);
+
+    // 2. Dual-Mode Memory: 9P mount detection & redirect, legacy JSONL migration, CJK FTS5, taint guard, catalog:master, remote HTTP bridge
+    const wslMountCheck = detectNonNativeSqliteMount('/mnt/c/Users/Alice/.gemini/state', {
+      platform: 'linux',
+      mountsText: 'C:\\134 /mnt/c 9p rw,aname=drvfs;path=C:\\ 0 0\n/dev/sdb / ext4 rw 0 0\n',
+      realpathFn: (p) => p
+    });
+    assert.equal(wslMountCheck.unsafe, true);
+    assert.equal(
+      detectNonNativeSqliteMount('\\\\wsl.localhost\\Ubuntu\\home\\alice\\state', { platform: 'win32', realpathFn: (p) => p }).unsafe,
+      true
+    );
+
+    const legacyDir = path.join(tmp, 'legacy-mem');
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(legacyDir, 'handoff-memories.jsonl'),
+      '\uFEFF' + JSON.stringify({
+        id: 'mem-legacy-001',
+        createdAt: '2026-11-20T08:00:00.000Z',
+        createdAtMs: 1795161600000,
+        project: 'prism-suite',
+        slot: 'main',
+        tags: ['project:prism-suite', 'handoff:prism-suite:main'],
+        summary: '已完成双池切号与像素桌宠优化',
+        verified: '16/16 pass',
+        nextAction: '启动 Phase 1 架构蓝图落地'
+      }) + '\r\n{corrupted-line\n',
+      'utf8'
+    );
+
+    const remotePushed = [];
+    const mockRemoteFetch = async (_url, init) => {
+      const rpc = JSON.parse(init.body);
+      if (rpc.params?.name === 'memory_store') {
+        remotePushed.push(rpc.params.arguments);
+        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ jsonrpc: '2.0', id: rpc.id, result: { ok: true } }) };
+      }
+      if (rpc.params?.name === 'memory_list') {
+        return {
+          ok: true,
+          headers: { get: () => 'application/json' },
+          json: async () => ({
+            jsonrpc: '2.0',
+            id: rpc.id,
+            result: {
+              entries: [
+                {
+                  id: 'remote-slot-01',
+                  project: 'nas-ops',
+                  slot: 'deploy',
+                  tags: ['catalog:master', 'handoff:nas-ops:deploy'],
+                  cwd: '/volume3/docker/demo',
+                  summary: '远程同步槽位 token=sk-secret1234567890abcdef',
+                  updatedAtMs: 1795680000000
+                }
+              ]
+            }
+          })
+        };
+      }
+      return { ok: false, status: 500 };
+    };
+
+    const nativeDbFallback = path.join(tmp, 'native-sqlite');
+    const memStore = createHandoffMemoryStore({
+      stateDir: legacyDir,
+      nativeFallbackDir: nativeDbFallback,
+      getRemoteConfig: () => ({ enabled: true, url: 'https://memory.example.org/mcp', syncCatalog: true }),
+      fetchImpl: mockRemoteFetch
+    });
+
+    try {
+      const migratedList = memStore.list({ project: 'prism-suite', slot: 'main' });
+      assert.equal(migratedList.total, 1);
+      assert.equal(migratedList.entries[0].id, 'mem-legacy-001');
+      assert.equal(memStore.getStorageInfo().backend, 'sqlite');
+      assert.equal(memStore.getStorageInfo().fts5Enabled, true);
+
+      // CJK 2-char substring FTS5 search ("切号", "蓝图") + FTS5 syntax-injection immunity
+      const cjkHit1 = memStore.search({ query: '切号' });
+      assert.equal(cjkHit1.entries.length, 1);
+      const cjkHit2 = memStore.search({ query: '架构蓝图' });
+      assert.equal(cjkHit2.entries.length, 1);
+      const injectionSafe = memStore.search({ query: 'C:\\foo "bar" OR NEAR() * ^ : - + 蓝图' });
+      assert.equal(injectionSafe.ok, true);
+      assert.equal(injectionSafe.entries.length, 1);
+
+      // Taint Guard: untrusted source blocked from handoff:* / catalog:master, quarantined otherwise
+      assert.throws(
+        () => memStore.store({ source: 'web', tags: ['catalog:master'], summary: 'Prompt injection overwrite' }),
+        (err) => err.code === 'TAINTED_HANDOFF_BLOCKED'
+      );
+      const quarantined = memStore.store({ source: 'browser', project: 'prism-suite', slot: 'main', summary: '外部网页摘录' });
+      assert.equal(quarantined.tainted, true);
+      assert.equal(quarantined.slotTag, 'quarantine:prism-suite:main');
+      assert.equal(memStore.list({ project: 'prism-suite' }).entries.some((e) => e.id === quarantined.id), false);
+      assert.equal(memStore.list({ project: 'prism-suite', includeTainted: true }).entries.some((e) => e.id === quarantined.id), true);
+
+      // Clean store pushes async remote & updates catalog:master
+      const cleanEntry = memStore.store({
+        project: 'prism-suite',
+        slot: 'main',
+        cwd: '/mnt/d/AIWorkspace/projects/anti-claude-prism-suite',
+        gitBranch: 'main',
+        gitHead: '34766f5',
+        summary: 'Phase 1 双模记忆与模型中枢收尾'
+      });
+      await new Promise((r) => setTimeout(r, 40));
+      assert.equal(remotePushed.length, 1);
+      assert.equal(remotePushed[0].slotTag, cleanEntry.slotTag);
+
+      const syncPull = await memStore.syncRemoteCatalog({ limit: 10 });
+      assert.equal(syncPull.ok, true);
+      assert.equal(syncPull.updatedSlots, 1);
+      const catalog = memStore.getMasterCatalog();
+      const nasSlot = catalog.slots.find((s) => s.project === 'nas-ops');
+      assert.ok(nasSlot);
+      assert.doesNotMatch(nasSlot.summary, /sk-secret1234567890/, 'Pulled remote entries must be redacted');
+    } finally {
+      memStore.close();
+    }
+
+    // 3. Universal Model Hub + prism-profile.json isolation + Anti-AV static guard + Anti-SSRF DNS pinning
+    assert.equal(isSensitivePath('/home/alice/.gemini/antigravity/anti-claude/prism-profile.json'), true);
+    assert.equal(isSensitivePath('C:\\Users\\Alice\\.gemini\\antigravity\\prism-suite\\handoff-memory.sqlite-wal'), true);
+
+    // Static Anti-EDR guard: neither prism-profile.mjs nor model-hub.mjs may reference third-party CLI credential dirs
+    for (const srvFile of ['prism-profile.mjs', 'model-hub.mjs']) {
+      const src = fs.readFileSync(path.join(REPO, 'plugin', 'server', srvFile), 'utf8');
+      assert.doesNotMatch(src, /\.cc-switch|cc-switch\.db|\.codex|\.claude/i, `${srvFile} must have zero references to external tool credential dirs`);
+    }
+
+    // Verify installAll + uninstallAll preserve user's prism-profile.json across upgrades and uninstall
+    const sbState = path.join(tmp, 'ac-state');
+    const sbUser = path.join(sbState, 'user');
+    const sbPlugins = path.join(tmp, 'ac-plugins');
+    const sbProfilePath = path.join(sbState, 'prism-profile.json');
+    const secretMap = new Map();
+    const profMgr = createPrismProfileManager({
+      profilePath: sbProfilePath,
+      env: { TEST_OPENAI_KEY: 'sk-test-env-secret-value-99999999', TEST_ANTH_KEY: 'sk-ant-test-env-secret-88888888' },
+      secretStore: {
+        getSecret: (id) => secretMap.get(id) || '',
+        setSecret: (id, val) => { secretMap.set(id, val); },
+        deleteSecret: (id) => secretMap.delete(id)
+      }
+    });
+
+    assert.throws(() => validateEnvVarName('PATH'), (err) => err.code === 'BLOCKED_ENV_VAR_NAME');
+    assert.throws(() => validateEnvVarName('ANTIGRAVITY_CSRF_TOKEN'), (err) => err.code === 'BLOCKED_ENV_VAR_NAME');
+    assert.throws(() => validateHttpEndpointUrl('https://user:pass@api.example.com/v1'), (err) => err.code === 'INVALID_ENDPOINT_URL');
+
+    profMgr.upsertProvider({
+      id: 'openai-gw',
+      preset: 'openai',
+      baseUrl: 'https://api.example.org/v1',
+      apiKeyEnv: 'TEST_OPENAI_KEY'
+    });
+    profMgr.upsertProvider({
+      id: 'claude-gw',
+      preset: 'anthropic',
+      baseUrl: 'https://anthropic.example.org/v1',
+      apiKey: 'sk-ant-vault-only-secret-1234567890'
+    });
+    assert.doesNotMatch(fs.readFileSync(sbProfilePath, 'utf8'), /sk-ant-vault-only|sk-test-env/, 'Plaintext keys must NEVER touch prism-profile.json');
+
+    profMgr.upsertModel({
+      id: 'primary-astra',
+      alias: 'GPT-6.2 Astra',
+      providerId: 'openai-gw',
+      upstreamModel: 'gpt-6.2-astra',
+      tier: 'T1',
+      vendor: 'openai',
+      fallbackModelId: 'backup-opus',
+      favorite: true
+    });
+    profMgr.upsertModel({
+      id: 'backup-opus',
+      alias: 'Claude Opus 5.5',
+      providerId: 'claude-gw',
+      upstreamModel: 'claude-opus-5-5-high',
+      tier: 'T1',
+      vendor: 'anthropic',
+      favorite: true
+    });
+    profMgr.reorderFavorites(['backup-opus', 'primary-astra']);
+
+    installAll({ userDir: sbUser, pluginsDir: sbPlugins, activateKernelDaemon: false });
+    assert.equal(fs.existsSync(sbProfilePath), true, 'installAll must preserve prism-profile.json');
+    uninstallAll({ userDir: sbUser, pluginsDir: sbPlugins, withKernel: true, deactivateKernelDaemon: false });
+    assert.equal(fs.existsSync(sbProfilePath), true, 'uninstallAll must preserve user prism-profile.json');
+
+    // End-to-end MCP server test: prism_list_models + prism_ask_model (mid-stream SSE error -> 1-hop Anthropic SSE fallback + webSearch)
+    let primaryAttempted = false;
+    const mockModelFetch = async (url, init) => {
+      if (url.includes('api.example.org')) {
+        primaryAttempted = true;
+        // Simulate 200 OK SSE stream that emits a mid-stream rate_limit error frame!
+        const errSse = 'event: error\r\ndata: {"error":{"type":"rate_limit_error","message":"429 quota exceeded"}}\r\n\r\n';
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => 'text/event-stream' },
+          body: [Buffer.from(errSse.slice(0, 19), 'utf8'), Buffer.from(errSse.slice(19), 'utf8')]
+        };
+      }
+      if (url.includes('anthropic.example.org')) {
+        const bodyObj = JSON.parse(init.body);
+        assert.doesNotMatch(JSON.stringify(bodyObj), /ghp_leaktoken1234567890abcdef/, 'Outbound prompt must scrub accidental PATs');
+        assert.equal(init.headers['x-api-key'], 'sk-ant-vault-only-secret-1234567890');
+        // Multi-byte UTF-8 Chinese split right through the middle of a 3-byte Chinese character!
+        const fullFrame =
+          'event: content_block_delta\n' +
+          'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"跨厂商二审结论：VERDICT PASS"}}\n\n' +
+          'event: message_stop\n' +
+          'data: {"type":"message_stop"}\n\n';
+        const rawBuf = Buffer.from(fullFrame, 'utf8');
+        const chunks = [];
+        for (let i = 0; i < rawBuf.length; i += 5) {
+          chunks.push(rawBuf.subarray(i, Math.min(rawBuf.length, i + 5)));
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => 'text/event-stream' },
+          body: chunks
+        };
+      }
+      throw new Error(`Unexpected model URL: ${url}`);
+    };
+
+    let searchCallCount = 0;
+    const hub = createModelHub({
+      profileManager: profMgr,
+      fetchFn: mockModelFetch,
+      searchFn: async () => {
+        searchCallCount += 1;
+        return {
+          ok: true,
+          results: [{ title: 'Node 22 SQLite Docs', url: 'https://nodejs.org/api/sqlite.html', snippet: 'Built-in SQLite module' }]
+        };
+      }
+    });
+
+    const srv = createPrismFilesServer({
+      dataDir: path.join(tmp, 'mcp-data'),
+      defaultRoot: tmp,
+      accountStateDir: path.join(tmp, 'mcp-state'),
+      prismProfile: profMgr,
+      modelHub: hub
+    });
+
+    const listModelsRes = await srv.handleToolCall('prism_list_models', { excludeVendor: 'google' });
+    assert.equal(listModelsRes.structuredContent.favorites[0].id, 'backup-opus');
+    assert.doesNotMatch(
+      JSON.stringify(listModelsRes),
+      /api\.example\.org|anthropic\.example\.org|TEST_OPENAI_KEY|sk-ant-vault/,
+      'prism_list_models must never leak baseUrl, apiKeyEnv, or secrets to the model'
+    );
+
+    // Policy gate: with default settings.webSearch=false, model passing webSearch:true MUST NOT trigger external search
+    const askBlockedSearch = await srv.handleToolCall('prism_ask_model', {
+      model: 'backup-opus',
+      prompt: '测试关闭开关时不外连搜索',
+      webSearch: true
+    });
+    assert.equal(searchCallCount, 0, 'Disabled settings.webSearch must block model-requested webSearch:true');
+    assert.doesNotMatch(askBlockedSearch.content[0].text, /\[searched sources\]/);
+
+    // Enable settings.webSearch=true: omitted webSearch still MUST NOT search, explicit webSearch:true DOES search
+    profMgr.updateSettings({ webSearch: true });
+    await srv.handleToolCall('prism_ask_model', {
+      model: 'backup-opus',
+      prompt: '审查私有代码时未传 webSearch 绝不外发搜索引擎'
+    });
+    assert.equal(searchCallCount, 0, 'Omitted webSearch must never send prompts to search engine');
+
+    // Cleartext http:// public gateway with API key must be blocked before network fetch
+    profMgr.upsertProvider({
+      id: 'cleartext-pub',
+      preset: 'openai',
+      baseUrl: 'http://api.example.org/v1',
+      apiKeyEnv: 'TEST_OPENAI_KEY'
+    });
+    profMgr.upsertModel({
+      id: 'insecure-mod',
+      providerId: 'cleartext-pub',
+      upstreamModel: 'gpt-test',
+      tier: 'T4',
+      vendor: 'openai'
+    });
+    await assert.rejects(
+      () => srv.handleToolCall('prism_ask_model', { model: 'insecure-mod', prompt: 'hello' }),
+      (err) => err.code === 'CLEARTEXT_HTTP_CREDENTIAL_BLOCKED'
+    );
+
+    const askRes = await srv.handleToolCall('prism_ask_model', {
+      model: 'primary-astra',
+      prompt: '请复核此改动，注意测试 token ghp_leaktoken1234567890abcdef123456 是否已脱敏',
+      webSearch: true
+    });
+    assert.equal(searchCallCount, 1);
+    assert.equal(primaryAttempted, true);
+    assert.equal(askRes.structuredContent.usedFallback, true);
+    assert.equal(askRes.structuredContent.actualModelId, 'backup-opus');
+    assert.equal(askRes.structuredContent.redactedPrompt, true);
+    assert.match(askRes.content[0].text, /跨厂商二审结论：VERDICT PASS/);
+    assert.match(askRes.content[0].text, /\[searched sources\]/);
+    assert.match(askRes.content[0].text, /nodejs\.org\/api\/sqlite\.html/);
+
+    const speedRes = await srv.handleToolCall('model_hub_probe_speed', { modelId: 'backup-opus' });
+    assert.equal(speedRes.structuredContent.ok, true);
+    assert.equal(typeof speedRes.structuredContent.ttftMs, 'number');
+
+    // Anti-SSRF & DNS-rebinding guards on searchPublicWebSafe
+    assert.equal(isPublicRoutableIp('127.0.0.1'), false);
+    assert.equal(isPublicRoutableIp('192.168.1.10'), false);
+    assert.equal(isPublicRoutableIp('100.64.5.9'), false);
+    assert.equal(isPublicRoutableIp('::ffff:10.0.0.5'), false);
+    assert.equal(isPublicRoutableIp('93.184.216.34'), true);
+
+    await assert.rejects(
+      () => searchPublicWebSafe('test query', {
+        endpointUrl: 'https://rebind.example.com/search',
+        lookupFn: async () => [
+          { address: '93.184.216.34', family: 4 },
+          { address: '192.168.1.1', family: 4 }
+        ]
+      }),
+      (err) => err.code === 'SSRF_BLOCKED_IP'
+    );
+    await assert.rejects(
+      () => searchPublicWebSafe('test query', { endpointUrl: 'http://example.com/search' }),
+      (err) => err.code === 'UNSAFE_SEARCH_PROTOCOL'
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('v0.7.0 daemon windowsHide & unborn git guard, live subagent mascot exit, outline rail overflow, and sidebar wheel bridge', async () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const daemonSrc = fs.readFileSync(path.join(repoRoot, 'vendor', 'anti-claude', 'core', 'daemon.mjs'), 'utf8');
+  const kernelInstallSrc = fs.readFileSync(path.join(repoRoot, 'vendor', 'anti-claude', 'install.mjs'), 'utf8');
+  const customJsSrc = fs.readFileSync(path.join(repoRoot, 'vendor', 'anti-claude', 'user', 'custom.js'), 'utf8');
+  const customCssSrc = fs.readFileSync(path.join(repoRoot, 'vendor', 'anti-claude', 'user', 'custom.css'), 'utf8');
+  const suiteJsSrc = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite.js'), 'utf8');
+  const suiteCssSrc = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite.css'), 'utf8');
+  const fxCssSrc = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite-fx.css'), 'utf8');
+  const fxJsSrc = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite-fx.js'), 'utf8');
+
+  // 1. Every Windows child_process invocation in daemon.mjs & install.mjs carries windowsHide: true
+  const execGitSlice = daemonSrc.slice(
+    daemonSrc.indexOf('function execGitAsync('),
+    daemonSrc.indexOf('function parseNumstatOutput(')
+  );
+  assert.match(execGitSlice, /windowsHide:\s*true/, 'execGitAsync must set windowsHide: true');
+
+  const readProcSlice = daemonSrc.slice(
+    daemonSrc.indexOf('function readProcessCommandLine('),
+    daemonSrc.indexOf('export function isOwnDaemonProcess(')
+  );
+  assert.match(readProcSlice, /windowsHide:\s*true/, 'readProcessCommandLine on win32 must set windowsHide: true');
+
+  const pickFilesSlice = daemonSrc.slice(
+    daemonSrc.indexOf('function pickLocalFilesNative('),
+    daemonSrc.indexOf('const WIN_RESERVED_BASENAME_RE')
+  );
+  const psCallsInPickers = pickFilesSlice.match(/execFile\(\s*'powershell'[\s\S]*?\}\s*,/g) || [];
+  assert.equal(psCallsInPickers.length, 2, 'Both native file/folder pickers use powershell on win32');
+  for (const callBlock of psCallsInPickers) {
+    assert.match(callBlock, /windowsHide:\s*true/, 'File/folder picker powershell must set windowsHide: true');
+  }
+  assert.match(kernelInstallSrc, /Get-CimInstance[\s\S]{0,160}windowsHide:\s*true/);
+
+  // 2. Live integration test of readOverviewGitStatusAsync on an unborn repo & a committed repo
+  const tmpGit = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-git-unborn-'));
+  try {
+    execFileSync('git', ['init', '-b', 'main'], { cwd: tmpGit, stdio: 'ignore', windowsHide: true });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: tmpGit, stdio: 'ignore', windowsHide: true });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: tmpGit, stdio: 'ignore', windowsHide: true });
+    fs.writeFileSync(path.join(tmpGit, 'untracked.txt'), 'line1\nline2\n', 'utf8');
+
+    const { readOverviewGitStatusAsync } = await import('../vendor/anti-claude/core/daemon.mjs');
+    const unbornUntracked = await readOverviewGitStatusAsync(tmpGit);
+    assert.ok(unbornUntracked, 'Unborn git repo with untracked file should resolve status');
+    assert.equal(unbornUntracked.branch, 'main');
+    assert.equal(unbornUntracked.changedFiles, 1);
+    assert.equal(unbornUntracked.added, 0);
+    assert.equal(unbornUntracked.deleted, 0);
+
+    // Stage file on unborn branch and test fresh path (bypassing 8s cache via subrepo)
+    const tmpGitStaged = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-git-staged-'));
+    try {
+      execFileSync('git', ['init', '-b', 'main'], { cwd: tmpGitStaged, stdio: 'ignore', windowsHide: true });
+      fs.writeFileSync(path.join(tmpGitStaged, 'hello.txt'), 'a\nb\nc\n', 'utf8');
+      execFileSync('git', ['add', 'hello.txt'], { cwd: tmpGitStaged, stdio: 'ignore', windowsHide: true });
+      const unbornStaged = await readOverviewGitStatusAsync(tmpGitStaged);
+      assert.equal(unbornStaged.branch, 'main');
+      assert.equal(unbornStaged.changedFiles, 1);
+      assert.equal(unbornStaged.added, 3);
+      assert.equal(unbornStaged.deleted, 0);
+    } finally {
+      fs.rmSync(tmpGitStaged, { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(tmpGit, { recursive: true, force: true });
+  }
+
+  // 3. Mascots strictly filter to running subagents & animate farewell exit without leaving residue
+  const liveSubSlice = suiteJsSrc.slice(
+    suiteJsSrc.indexOf('function getLiveSubagents()'),
+    suiteJsSrc.indexOf('function buildMascotRoster(')
+  );
+  assert.match(liveSubSlice, /Boolean\(c\.running\)/, 'getLiveSubagents must filter to actively running subagents');
+  assert.match(suiteJsSrc, /retireMascotActorWithExit/);
+  assert.match(suiteJsSrc, /data-exiting/);
+  assert.match(suiteCssSrc, /@keyframes agPsSubExit/);
+  assert.match(suiteCssSrc, /@keyframes agPsSubEnter/);
+
+  // 4. Outline rail prevents horizontal scrollWidth overflow & overlay scrollbar circle artifact
+  const railCssSlice = fxCssSrc.slice(
+    fxCssSrc.indexOf('#ag-ps-outline-rail {'),
+    fxCssSrc.indexOf('#ag-ps-rail-tip {')
+  );
+  assert.doesNotMatch(railCssSlice, /overflow-x:\s*visible/, 'Outline rail must not set overflow-x: visible');
+  assert.match(railCssSlice, /overflow:\s*hidden/);
+  assert.match(railCssSlice, /inset:\s*-2px\s+-3px/);
+  assert.match(fxJsSrc, /data-scrollable/);
+
+  // 5. Left sidebar wheel-scroll bridge & no-drag guard
+  assert.match(customJsSrc, /function findSidebarWheelScroller\(/);
+  assert.match(customJsSrc, /function onSidebarWheel\(/);
+  assert.match(customJsSrc, /addEventListener\('wheel',\s*onSidebarWheel/);
+  assert.match(customJsSrc, /removeEventListener\('wheel',\s*onSidebarWheel,\s*true\)/);
+  assert.match(customCssSrc, /:has\(> #ag-claude-recent-section\[data-mode="unified"\]\)[\s\S]{0,160}-webkit-app-region:\s*no-drag\s*!important/);
+});
+
+test('v0.7.0 holistic UI clarity, spatial collision choreography, 12-mascot easter eggs, multi-viewport workbench, and 0fps/0ms performance gates', async () => {
+  const vm = await import('node:vm');
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const suiteJs = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite.js'), 'utf8');
+  const suiteCss = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite.css'), 'utf8');
+  const fxJs = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite-fx.js'), 'utf8');
+  const fxCss = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite-fx.css'), 'utf8');
+  const wfJs = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite-workflow.js'), 'utf8');
+  const wfCss = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite-workflow.css'), 'utf8');
+  const appHtml = fs.readFileSync(path.join(repoRoot, 'plugin', 'ui', 'app.html'), 'utf8');
+  const inlineHtml = fs.readFileSync(path.join(repoRoot, 'plugin', 'ui', 'inline.html'), 'utf8');
+
+  // 1. VM syntax verification of embedded <script> in app.html & inline.html
+  for (const [name, html] of [['app.html', appHtml], ['inline.html', inlineHtml]]) {
+    const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)];
+    assert.ok(scripts.length >= 1, `${name} must contain embedded script`);
+    for (const m of scripts) {
+      assert.doesNotThrow(() => new vm.Script(m[1], { filename: name }), `${name} inline script must parse cleanly`);
+    }
+  }
+
+  // 2. Windows HiDPI / ClearType crispness: zero odd-width translateX(-50%) on centered text bars & crisp pixel SVGs
+  const jumpToastCss = suiteCss.slice(suiteCss.indexOf('#ag-ps-jump-toast {'), suiteCss.indexOf('/* ---- 4. Usage Book Yardstick'));
+  assert.doesNotMatch(jumpToastCss, /translateX\(-50%\)/, '#ag-ps-jump-toast must avoid fractional translateX(-50%) blur');
+  assert.match(jumpToastCss, /margin-inline:\s*auto/);
+
+  const returnBarCss = fxCss.slice(fxCss.indexOf('#ag-ps-return-bar {'), fxCss.indexOf('.ag-ps-return-dot'));
+  assert.doesNotMatch(returnBarCss, /translateX\(-50%\)/, '#ag-ps-return-bar must avoid fractional translateX(-50%) blur');
+  assert.match(returnBarCss, /margin-inline:\s*auto/);
+  assert.match(fxJs, /Math\.min\(3,\s*Math\.max\(1,\s*window\.devicePixelRatio\s*\|\|\s*1\)\)/, 'ThinkingOrb supports 3x HiDPI supersampling');
+
+  // 3. Spatial collision avoidance & smooth enter/exit transitions
+  assert.match(suiteJs, /function measureOrbDockZone\(/, 'Mascots must measure #ag-ps-orb-dock + stage pill obstacle zone');
+  assert.match(fxJs, /#ag-ps-outline\[data-open="1"\]/, 'Outline rail collision check must include open outline drawer');
+  assert.match(fxJs, /#ag-ps-img-menu/, 'Outline rail collision check must include context menu');
+  assert.match(fxJs, /function positionQuotaNudge\(/, 'Quota nudge must dynamically avoid composer, overview, and jump toast');
+  assert.match(fxCss, /#ag-ps-quota-nudge\[data-leaving="1"\]/);
+  assert.match(fxCss, /#ag-ps-return-bar\[data-leaving="1"\]/);
+  assert.match(suiteCss, /#ag-ps-popover\[data-closing="1"\]/);
+  assert.match(suiteCss, /#ag-ps-outline\[data-closing="1"\]/);
+  assert.match(wfJs, /ArrowDown[\s\S]{0,400}ArrowUp/, 'Image context menu supports keyboard arrow navigation');
+
+  // 4. 12-Mascot pixel character catalog, GPU keyframes, 5 easter eggs & cross-port mascotStyle sync
+  const expectedSprites = ['crab', 'cat', 'slime', 'frog', 'chick', 'bunny', 'fox', 'shiba', 'penguin', 'owlet', 'axolotl', 'robot'];
+  for (const sid of expectedSprites) {
+    assert.match(suiteJs, new RegExp(`id:\\s*'${sid}'`), `SPRITE_CATALOG must include ${sid}`);
+  }
+  const svgMatches = suiteJs.match(/<svg class="ag-ps-sprite"[^>]*>/g) || [];
+  assert.equal(svgMatches.length, 12, 'All 12 pixel sprites must be defined');
+  for (const tag of svgMatches) {
+    assert.match(tag, /viewBox="0 0 12 11"/);
+    assert.match(tag, /shape-rendering="crispEdges"/);
+  }
+  assert.match(suiteCss, /@keyframes agPsSpinJump/);
+  assert.match(suiteCss, /@keyframes agPsJelly/);
+  assert.match(suiteCss, /@keyframes agPsDance/);
+  assert.match(suiteJs, /actorSkinOverrides/);
+  assert.match(suiteJs, /isLateNightHour/);
+  assert.equal(sanitizePrismUiPrefs({ mascotStyle: 'zoo' }).mascotStyle, 'zoo');
+  assert.equal(sanitizePrismUiPrefs({ mascotStyle: 'cyber' }).mascotStyle, 'cyber');
+  assert.equal(sanitizePrismUiPrefs({ mascotStyle: 'penguin' }).mascotStyle, 'penguin');
+  assert.equal(sanitizePrismUiPrefs({ mascotStyle: 'fox' }).mascotStyle, 'fox');
+
+  // 5. Multi-page & multi-viewport adaptation in app.html + inline.html
+  assert.match(appHtml, /is-split-wide/, 'app.html supports >=820px side-by-side split layout');
+  assert.match(appHtml, /function isFileTab\(/, 'app.html scopes preview drawer to file tabs so other pages get 100% viewport');
+  assert.match(appHtml, /data-overflow-left/);
+  assert.match(appHtml, /data-overflow-right/);
+  assert.match(appHtml, /data-img-mode="1:1"/, 'Image preview supports 1:1 native pixel mode');
+  assert.match(appHtml, /data-img-action="pixel"/, 'Image preview supports pixelated crisp toggle');
+  assert.match(appHtml, /models-filter-bar/, 'Model Hub includes zero-latency filter bar');
+  assert.match(appHtml, /data-mhub-action="copy-id"/, 'Model Hub supports 1-click model ID copy');
+  assert.match(appHtml, /list-group-head/, 'Artifacts tab groups items by relative date');
+  assert.match(inlineHtml, /data-action="copy-path"/, 'inline.html file card includes copy-path quick action');
+  assert.match(inlineHtml, /flashButtonFeedback/);
+
+  // 6. Strict 0fps idle & 0ms typing performance certification gates
+  for (const [label, css] of [
+    ['prism-suite.css', suiteCss],
+    ['prism-suite-fx.css', fxCss],
+    ['prism-suite-workflow.css', wfCss],
+    ['app.html', appHtml],
+    ['inline.html', inlineHtml]
+  ]) {
+    assert.doesNotMatch(css, /transition\s*:\s*all\b/i, `${label} must never use transition: all`);
+    assert.match(css, /prefers-reduced-motion:\s*reduce/, `${label} must honor prefers-reduced-motion`);
+  }
+  for (const [label, src] of [
+    ['prism-suite-fx.js', fxJs],
+    ['prism-suite-workflow.js', wfJs],
+    ['app.html', appHtml],
+    ['inline.html', inlineHtml]
+  ]) {
+    assert.doesNotMatch(src, /new\s+MutationObserver\b/, `${label} must maintain zero MutationObservers`);
+  }
+  assert.doesNotMatch(suiteJs, /\.observe\(\s*document\.(?:body|documentElement)\b/, 'prism-suite.js must never observe document.body or documentElement');
+});
+
+test('v0.7.0 Windows shortcut/label adaptation, outline rail persistence, workbench toggle-close, dual-track Model Hub discovery, dismissible guides, and wide desktop dashboard', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-v070-ux-'));
+  try {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const daemonSrc = fs.readFileSync(path.join(repoRoot, 'vendor', 'anti-claude', 'core', 'daemon.mjs'), 'utf8');
+    const customJsSrc = fs.readFileSync(path.join(repoRoot, 'vendor', 'anti-claude', 'user', 'custom.js'), 'utf8');
+    const customCssSrc = fs.readFileSync(path.join(repoRoot, 'vendor', 'anti-claude', 'user', 'custom.css'), 'utf8');
+    const i18nSrc = fs.readFileSync(path.join(repoRoot, 'vendor', 'anti-claude', 'core', 'i18n.json'), 'utf8');
+    const suiteJsSrc = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite.js'), 'utf8');
+    const fxJsSrc = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite-fx.js'), 'utf8');
+    const accMgrSrc = fs.readFileSync(path.join(repoRoot, 'plugin', 'server', 'account-manager.mjs'), 'utf8');
+    const relaunchSrc = fs.readFileSync(path.join(repoRoot, 'plugin', 'server', 'relaunch-client.mjs'), 'utf8');
+    const indexSrc = fs.readFileSync(path.join(repoRoot, 'plugin', 'server', 'index.mjs'), 'utf8');
+    const appHtml = fs.readFileSync(path.join(repoRoot, 'plugin', 'ui', 'app.html'), 'utf8');
+
+    // 1. Windows child_process windowsHide coverage across plugin server modules
+    assert.match(accMgrSrc, /execFileSync\('git'[\s\S]{0,220}windowsHide:\s*true/);
+    assert.match(relaunchSrc, /spawn\(bin,\s*args,\s*\{[\s\S]{0,220}windowsHide:\s*true/);
+    const spawnDetachedSlice = indexSrc.slice(
+      indexSrc.indexOf('function spawnDetachedSafe('),
+      indexSrc.indexOf('/* ---------------- Cross-Session Transcript Search')
+    );
+    assert.match(spawnDetachedSlice, /windowsHide:\s*true/);
+    const revealExplorerSlice = indexSrc.slice(
+      indexSrc.indexOf('async function revealInExplorer('),
+      indexSrc.indexOf('async function openWithTarget(') > 0 ? indexSrc.indexOf('async function openWithTarget(') : indexSrc.indexOf('async function revealInExplorer(') + 3200
+    );
+    assert.match(revealExplorerSlice, /execFileAsync\('explorer\.exe'[\s\S]{0,200}windowsHide:\s*true/);
+
+    // 2. Renderer-first HOST_OS detection & Windows shortcuts/labels (Ctrl+/, Alt+点击, 资源管理器 ↗, Microsoft YaHei UI)
+    assert.match(customJsSrc, /navigator\.userAgentData\?\.platform/, 'HOST_OS must prioritize renderer platform over WSL daemon ctx.platform');
+    assert.match(customJsSrc, /MOD_SLASH_LABEL\s*=\s*IS_MAC\s*\?\s*'⌘\/'\s*:\s*'Ctrl\+\/'/);
+    assert.match(customJsSrc, /function adaptPlatformUiText\(/);
+    assert.match(customJsSrc, /OS_FILE_MGR_SHORT_ZH\s*=\s*IS_WIN\s*\?\s*'资源管理器'/);
+    assert.match(customJsSrc, /OS_FILE_MGR_SHORT_ZH\}\s*↗/);
+    assert.match(customJsSrc, /在资源管理器中显示/);
+    assert.match(customJsSrc, /e\.code === 'Slash'/, 'Ctrl+/ shortcut must support non-ASCII IME via e.code === Slash');
+    assert.match(customCssSrc, /local\('Microsoft YaHei UI'\)/, 'Chinese font-size calibration must support Microsoft YaHei UI on Windows');
+    assert.match(i18nSrc, /Cancel \(Ctrl\+D\)/);
+
+    // 3. Outline rail default-on, virtualized scroll fallback, and daemon savePrismUiPrefs whitelist RPC
+    assert.match(fxJsSrc, /alwaysOutlineRail:\s*true/, 'Outline rail should default to visible across account switches');
+    assert.match(fxJsSrc, /轮次圆点目录（右侧常驻）/);
+    assert.match(fxJsSrc, /data-testid="user-input-step"/);
+    assert.match(suiteJsSrc, /__agProjectCall\('savePrismUiPrefs'/);
+    assert.match(daemonSrc, /action === 'savePrismUiPrefs'/);
+    assert.match(daemonSrc, /rawTs > nowMs \+ 60000 \? nowMs : Math\.round\(rawTs\)/);
+    assert.match(daemonSrc, /prevClean\._tsOrigin === 'explicit' && cleanIncoming\._tsOrigin !== 'explicit'/);
+
+    // 4. Sidebar & toolbar Prism Workbench bidirectional toggle-close / return to conversation
+    assert.match(suiteJsSrc, /function isFullPageWorkbenchActive\(/);
+    assert.match(suiteJsSrc, /function toggleOrClosePrismWorkbench\(/);
+    assert.match(suiteJsSrc, /function onSidebarWorkbenchToggleCapture\(/);
+    assert.match(suiteJsSrc, /data\.type === 'close-workbench'/);
+    assert.match(appHtml, /id="btn-close-workbench"/);
+    assert.match(appHtml, /type:\s*'close-workbench'/);
+
+    // 5. Origin credential rebind protection, /v1/models auto-discovery & idempotent batch import
+    const fakeSecretMap = new Map();
+    const profMgr = createPrismProfileManager({
+      profilePath: path.join(tmp, 'prof', 'prism-profile.json'),
+      secretStore: {
+        getSecret: (id) => fakeSecretMap.get(id) || '',
+        setSecret: (id, val) => { fakeSecretMap.set(id, val); },
+        deleteSecret: (id) => fakeSecretMap.delete(id)
+      }
+    });
+    profMgr.upsertProvider({
+      id: 'my-gw',
+      label: 'Trusted GW',
+      protocol: 'openai-chat',
+      baseUrl: 'https://trusted.example.com/v1',
+      apiKey: 'sk-secret-vault-123456'
+    });
+    assert.throws(
+      () => profMgr.upsertProvider({ id: 'my-gw', baseUrl: 'https://other-host.example.com/v1' }),
+      (err) => err.code === 'ORIGIN_REBIND_REQUIRES_KEY',
+      'Changing provider origin while a vault key is stored must require explicit key re-entry or clearVaultKey'
+    );
+    const pubProf = profMgr.getPublicProfile();
+    assert.ok(pubProf.profilePath.endsWith('prism-profile.json'));
+
+    const batchRes = profMgr.batchImportModels({
+      providerId: 'my-gw',
+      items: [
+        { id: 'claude-sonnet-5-5-high', tier: 'T2', vendor: 'anthropic', favorite: true },
+        { id: 'gpt-6.2-astra', tier: 'T1', vendor: 'openai', favorite: true }
+      ]
+    });
+    assert.equal(batchRes.added, 2);
+    assert.equal(batchRes.importedIds.length, 2);
+    const batchDup = profMgr.batchImportModels({
+      providerId: 'my-gw',
+      items: [{ id: 'gpt-6.2-astra', tier: 'T4', vendor: 'other' }]
+    });
+    assert.equal(batchDup.added, 0);
+    assert.equal(batchDup.skipped, 1);
+    assert.equal(profMgr.getPublicProfile().models.find((m) => m.id === 'gpt-6.2-astra').tier, 'T1', 'Idempotent batch import must preserve existing model tier');
+
+    const hub = createModelHub({
+      profileManager: profMgr,
+      fetchImpl: async (url) => {
+        assert.equal(url, 'https://trusted.example.com/v1/models');
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => 'application/json' },
+          text: async () => JSON.stringify({
+            data: [
+              { id: 'gpt-6.2-astra' },
+              { id: 'claude-opus-5-5-high' },
+              { id: 'deepseek-v4.1-flash' },
+              { id: 'text-embedding-3-large' }
+            ]
+          })
+        };
+      }
+    });
+    const disc = await hub.discoverProviderModels('my-gw');
+    assert.equal(disc.ok, true);
+    assert.equal(disc.total, 4);
+    assert.equal(disc.chatCount, 3);
+    const embItem = disc.models.find((x) => x.suggestedId === 'text-embedding-3-large');
+    assert.equal(embItem.isChat, false);
+    const opusItem = disc.models.find((x) => x.suggestedId === 'claude-opus-5-5-high');
+    assert.equal(opusItem.vendor, 'anthropic');
+    assert.equal(opusItem.tier, 'T1');
+    assert.equal(opusItem.alreadyAdded, false);
+    const astraItem = disc.models.find((x) => x.suggestedId === 'gpt-6.2-astra');
+    assert.equal(astraItem.alreadyAdded, true);
+
+    // 6. Server-persisted dismissedGuides & wide desktop dashboard layout markers
+    const srv = createPrismFilesServer({ dataDir: path.join(tmp, 'srv'), defaultRoot: tmp, profileManager: profMgr, modelHub: hub });
+    const updGuides = await srv.handleToolCall('update_state', {
+      dismissedGuides: ['guide:models:v1', 'guide:accounts-steps:v1', 'invalid spaces!!']
+    });
+    assert.deepEqual(updGuides.structuredContent.state.dismissedGuides, ['guide:models:v1', 'guide:accounts-steps:v1']);
+    const openSc = await srv.handleToolCall('open_prism_files', {});
+    assert.deepEqual(openSc.structuredContent.state.dismissedGuides, ['guide:models:v1', 'guide:accounts-steps:v1']);
+
+    const srvDisc = await srv.handleToolCall('model_hub_discover_models', { providerId: 'my-gw' });
+    assert.equal(srvDisc.structuredContent.ok, true);
+    assert.equal(srvDisc.structuredContent.total, 4);
+
+    assert.match(appHtml, /\.accounts-dashboard/);
+    assert.match(appHtml, /\.mhub-tier-cards/);
+    assert.match(appHtml, /\.mhub-discover-list/);
+    assert.match(appHtml, /id="btn-guide-toggle"/);
+    assert.match(appHtml, /id="btn-mhub-discover"/);
+    assert.match(appHtml, /id="btn-mhub-ai-setup"/);
+    assert.match(appHtml, /shouldShowRightInspectorPane/);
+    assert.match(appHtml, /applyServerDismissedGuides/);
+    assert.match(appHtml, /discoverSeq/);
+    assert.match(appHtml, /userClosedInWideByTab/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });

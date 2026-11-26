@@ -20,6 +20,9 @@
       --p-danger: #dc2626;
       --p-danger-soft: rgba(220, 38, 38, 0.1);
       --p-success: #059669;
+      --p-success-soft: rgba(5, 150, 105, 0.11);
+      --p-success-border: rgba(5, 150, 105, 0.32);
+      --p-row-hover-glow: rgba(37, 99, 235, 0.04);
       --p-toast-bg: #0f172a;
       --p-toast-text: #f8fafc;
       --p-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
@@ -44,6 +47,9 @@
         --p-danger: #f87171;
         --p-danger-soft: rgba(248, 113, 113, 0.16);
         --p-success: #34d399;
+        --p-success-soft: rgba(52, 211, 153, 0.15);
+        --p-success-border: rgba(52, 211, 153, 0.36);
+        --p-row-hover-glow: rgba(96, 165, 250, 0.07);
         --p-toast-bg: #e2e8f0;
         --p-toast-text: #0f172a;
         --p-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
@@ -66,6 +72,9 @@
       --p-danger: #f87171;
       --p-danger-soft: rgba(248, 113, 113, 0.16);
       --p-success: #34d399;
+      --p-success-soft: rgba(52, 211, 153, 0.15);
+      --p-success-border: rgba(52, 211, 153, 0.36);
+      --p-row-hover-glow: rgba(96, 165, 250, 0.07);
       --p-toast-bg: #e2e8f0;
       --p-toast-text: #0f172a;
       --p-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
@@ -99,8 +108,10 @@
       flex-direction: column;
       max-height: 776px;
       background: var(--color-background-primary, var(--p-bg));
-      border: 1px solid var(--color-border-primary, var(--p-border));
+      border: 1px solid var(--color-border-primary, var(--p-border-strong));
       border-radius: 10px;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+      font-variant-numeric: tabular-nums;
       overflow: hidden;
     }
 
@@ -180,8 +191,9 @@
 
     .file-row:hover,
     .file-row:focus-visible {
-      background: var(--color-background-secondary, var(--p-bg-hover));
-      border-color: var(--color-border-secondary, var(--p-border));
+      background: linear-gradient(90deg, var(--p-row-hover-glow), transparent 65%),
+                  var(--color-background-secondary, var(--p-bg-hover));
+      border-color: color-mix(in srgb, var(--color-accent, var(--p-accent)) 22%, var(--color-border-secondary, var(--p-border)));
       outline: none;
     }
 
@@ -207,14 +219,32 @@
       display: block;
     }
 
-    .kind-dir { color: #d97706; background: rgba(217, 119, 6, 0.1); }
-    .kind-code { color: #2563eb; background: rgba(37, 99, 235, 0.1); }
-    .kind-markdown { color: #0891b2; background: rgba(8, 145, 178, 0.1); }
-    .kind-image { color: #059669; background: rgba(5, 150, 105, 0.1); }
-    .kind-pdf { color: #e11d48; background: rgba(225, 29, 72, 0.1); }
-    .kind-office { color: #4f46e5; background: rgba(79, 70, 229, 0.1); }
-    .kind-archive { color: #b45309; background: rgba(180, 83, 9, 0.1); }
+    .kind-dir { color: #d97706; background: rgba(217, 119, 6, 0.11); }
+    .kind-code { color: #2563eb; background: rgba(37, 99, 235, 0.11); }
+    .kind-markdown { color: #0891b2; background: rgba(8, 145, 178, 0.11); }
+    .kind-image { color: #059669; background: rgba(5, 150, 105, 0.11); }
+    .kind-pdf { color: #e11d48; background: rgba(225, 29, 72, 0.11); }
+    .kind-office { color: #4f46e5; background: rgba(79, 70, 229, 0.11); }
+    .kind-archive { color: #b45309; background: rgba(180, 83, 9, 0.11); }
     .kind-file { color: var(--color-text-secondary, var(--p-text-muted)); }
+
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) .kind-dir { color: #fbbf24; background: rgba(251, 191, 36, 0.15); }
+      :root:not([data-theme="light"]) .kind-code { color: #60a5fa; background: rgba(96, 165, 250, 0.15); }
+      :root:not([data-theme="light"]) .kind-markdown { color: #22d3ee; background: rgba(34, 211, 238, 0.15); }
+      :root:not([data-theme="light"]) .kind-image { color: #34d399; background: rgba(52, 211, 153, 0.15); }
+      :root:not([data-theme="light"]) .kind-pdf { color: #fb7185; background: rgba(251, 113, 133, 0.15); }
+      :root:not([data-theme="light"]) .kind-office { color: #818cf8; background: rgba(129, 140, 248, 0.16); }
+      :root:not([data-theme="light"]) .kind-archive { color: #f59e0b; background: rgba(245, 158, 11, 0.15); }
+    }
+
+    :root[data-theme="dark"] .kind-dir { color: #fbbf24; background: rgba(251, 191, 36, 0.15); }
+    :root[data-theme="dark"] .kind-code { color: #60a5fa; background: rgba(96, 165, 250, 0.15); }
+    :root[data-theme="dark"] .kind-markdown { color: #22d3ee; background: rgba(34, 211, 238, 0.15); }
+    :root[data-theme="dark"] .kind-image { color: #34d399; background: rgba(52, 211, 153, 0.15); }
+    :root[data-theme="dark"] .kind-pdf { color: #fb7185; background: rgba(251, 113, 133, 0.15); }
+    :root[data-theme="dark"] .kind-office { color: #818cf8; background: rgba(129, 140, 248, 0.16); }
+    :root[data-theme="dark"] .kind-archive { color: #f59e0b; background: rgba(245, 158, 11, 0.15); }
 
     .file-meta {
       flex: 1 1 auto;
@@ -283,20 +313,30 @@
 
     .btn {
       appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 24px;
       border: 1px solid var(--color-border-primary, var(--p-border));
       background: var(--color-background-primary, var(--p-bg));
       color: var(--color-text-secondary, var(--p-text-secondary));
       font-family: inherit;
       font-size: 11.5px;
       font-weight: 500;
+      font-variant-numeric: tabular-nums;
       line-height: 1;
-      padding: 5px 8px;
+      padding: 0 8px;
       border-radius: 6px;
       cursor: pointer;
       white-space: nowrap;
       transition: background-color 150ms cubic-bezier(0.22, 1, 0.36, 1),
                   border-color 150ms cubic-bezier(0.22, 1, 0.36, 1),
-                  color 150ms cubic-bezier(0.22, 1, 0.36, 1);
+                  color 150ms cubic-bezier(0.22, 1, 0.36, 1),
+                  transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .btn .label-short {
+      display: none;
     }
 
     .btn:hover:not(:disabled) {
@@ -305,8 +345,15 @@
       color: var(--color-text-primary, var(--p-text));
     }
 
+    .btn.is-copied,
+    .btn.is-copied:hover:not(:disabled) {
+      color: var(--p-success);
+      background: var(--p-success-soft);
+      border-color: var(--p-success-border);
+    }
+
     .btn:active:not(:disabled) {
-      transform: scale(0.98) translateY(0.5px);
+      transform: scale(0.98);
     }
 
     @keyframes pMenuIn {
@@ -448,6 +495,15 @@
       .file-row {
         gap: 7px;
       }
+      .btn {
+        padding: 0 6px;
+      }
+      .btn .label-full {
+        display: none;
+      }
+      .btn .label-short {
+        display: inline;
+      }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -523,10 +579,14 @@
       let resizeTimer = null;
       let lastSentHeight = 0;
       let resizeObserver = null;
+      const btnFeedbackMap = new WeakMap();
+      const activeFeedbackTimers = new Set();
 
       window.addEventListener('pagehide', () => {
         if (toastTimer) clearTimeout(toastTimer);
         if (resizeTimer) clearTimeout(resizeTimer);
+        for (const t of activeFeedbackTimers) clearTimeout(t);
+        activeFeedbackTimers.clear();
         if (resizeObserver) {
           try { resizeObserver.disconnect(); } catch {}
         }
@@ -660,18 +720,76 @@
         }
       }
 
+      async function copyTextSafe(text) {
+        const str = String(text ?? '');
+        if (!str) return false;
+        try {
+          if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            await navigator.clipboard.writeText(str);
+            return true;
+          }
+        } catch {}
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = str;
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          ta.style.pointerEvents = 'none';
+          document.body.appendChild(ta);
+          ta.select();
+          const ok = document.execCommand('copy');
+          document.body.removeChild(ta);
+          return ok;
+        } catch {
+          return false;
+        }
+      }
+
+      function flashButtonFeedback(btn, doneText = '✓ 已复制', durationMs = 1200) {
+        if (!btn || !btn.isConnected) return;
+        const existing = btnFeedbackMap.get(btn);
+        if (existing) {
+          clearTimeout(existing.timer);
+          activeFeedbackTimers.delete(existing.timer);
+        } else {
+          const rectW = Math.ceil(btn.getBoundingClientRect().width);
+          btn.dataset.origHtml = btn.innerHTML;
+          btn.dataset.origMinWidth = btn.style.minWidth || '';
+          if (rectW > 0) btn.style.minWidth = `${rectW}px`;
+        }
+        btn.textContent = doneText;
+        btn.classList.add('is-copied');
+        const timer = setTimeout(() => {
+          activeFeedbackTimers.delete(timer);
+          btnFeedbackMap.delete(btn);
+          if (!btn.isConnected) return;
+          if (btn.dataset.origHtml !== undefined) {
+            btn.innerHTML = btn.dataset.origHtml;
+            delete btn.dataset.origHtml;
+          }
+          btn.style.minWidth = btn.dataset.origMinWidth || '';
+          delete btn.dataset.origMinWidth;
+          btn.classList.remove('is-copied');
+        }, durationMs);
+        activeFeedbackTimers.add(timer);
+        btnFeedbackMap.set(btn, { timer });
+      }
+
       async function handleReveal(item) {
-        if (!item?.path) return;
+        if (!item?.path) return false;
         try {
           const res = await callServerTool('reveal_in_explorer', { path: item.path });
           if (res && res.ok === false) {
             showToast(res.error || '定位失败', true);
-            return;
+            return false;
           }
           const targetLabel = state.platformLabel || 'Windows 资源管理器';
           showToast(`已在 ${targetLabel} 中定位`);
+          return true;
         } catch (err) {
           showToast(err?.message || '定位失败', true);
+          return false;
         }
       }
 
@@ -831,8 +949,9 @@
           const showOpen = !item.isDir && exists && Boolean(item.uri) && !state.nativeTabUnsupported;
           const showOpenWith = exists && (!state.openTargets.loaded || state.openTargets.items.length > 0);
           const displayPath = item.relPath && item.relPath !== item.name ? item.relPath : item.path;
+          const rowTip = `${item.path || ''}（Enter 定位 · C 复制路径${showOpen ? ' · O 打开' : ''}）`;
           return (
-            `<li class="file-row${exists ? '' : ' is-missing'}" data-index="${idx}" tabindex="0" title="${escapeHtml(item.path)}">` +
+            `<li class="file-row${exists ? '' : ' is-missing'}" data-index="${idx}" tabindex="0" title="${escapeHtml(rowTip)}">` +
               `<span class="kind-icon kind-${escapeHtml(kind)}" aria-hidden="true">${iconSvg}</span>` +
               `<span class="file-meta">` +
                 `<span class="file-name-line">` +
@@ -843,10 +962,11 @@
               `</span>` +
               `<span class="file-size">${escapeHtml(item.sizeText || '')}</span>` +
               `<span class="row-actions">` +
-                `<button type="button" class="btn btn-primary" data-action="open" data-index="${idx}"${showOpen ? '' : ' hidden'}>打开</button>` +
+                `<button type="button" class="btn btn-primary" data-action="open" data-index="${idx}" title="在原生标签页打开 (快捷键 O)"${showOpen ? '' : ' hidden'}>打开</button>` +
                 `<button type="button" class="btn" data-action="open-with" data-index="${idx}" aria-haspopup="menu"${showOpenWith ? '' : ' hidden'}>打开方式 ▾</button>` +
-                `<button type="button" class="btn" data-action="reveal" data-index="${idx}">定位</button>` +
-                `<button type="button" class="btn" data-action="quote" data-index="${idx}"${canQuote ? '' : ' hidden'}>引用</button>` +
+                `<button type="button" class="btn" data-action="copy-path" data-index="${idx}" title="复制完整路径 (快捷键 C)"><span class="label-full">复制路径</span><span class="label-short">复制</span></button>` +
+                `<button type="button" class="btn" data-action="reveal" data-index="${idx}" title="在系统目录中定位 (Enter)">定位</button>` +
+                `<button type="button" class="btn" data-action="quote" data-index="${idx}" title="引用路径到当前对话"${canQuote ? '' : ' hidden'}>引用</button>` +
               `</span>` +
             `</li>`
           );
@@ -928,7 +1048,7 @@
         }
       }, { signal });
 
-      listContainer.addEventListener('click', (event) => {
+      listContainer.addEventListener('click', async (event) => {
         const btn = event.target.closest('button[data-action]');
         if (!btn) return;
         event.stopPropagation();
@@ -938,15 +1058,26 @@
         const action = btn.dataset.action;
         if (action === 'open') {
           closeOpenWithMenu();
-          openInNativeTab(item.uri);
+          await openInNativeTab(item.uri);
         } else if (action === 'open-with') {
           toggleOpenWithMenu(idx, btn);
+        } else if (action === 'copy-path') {
+          closeOpenWithMenu();
+          const ok = await copyTextSafe(item.path || '');
+          if (ok) {
+            flashButtonFeedback(btn, '✓ 已复制', 1200);
+            showToast('已复制完整路径');
+          } else {
+            showToast('复制路径失败', true);
+          }
         } else if (action === 'reveal') {
           closeOpenWithMenu();
-          handleReveal(item);
+          const ok = await handleReveal(item);
+          if (ok) flashButtonFeedback(btn, '✓ 已定位', 1200);
         } else if (action === 'quote') {
           closeOpenWithMenu();
-          attachContext(`@${item.path}`);
+          const ok = await attachContext(`@${item.path}`);
+          if (ok) flashButtonFeedback(btn, '✓ 已引用', 1200);
         }
       });
 
@@ -994,14 +1125,38 @@
         if (item) handleReveal(item);
       });
 
-      listContainer.addEventListener('keydown', (event) => {
+      listContainer.addEventListener('keydown', async (event) => {
+        if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
         const row = event.target.closest('.file-row');
         if (!row) return;
-        if (event.key === 'Enter') {
+        const idx = Number(row.dataset.index);
+        const item = state.items[idx];
+        const keyLower = (event.key || '').toLowerCase();
+        if (event.key === 'Enter' && event.target === row) {
           event.preventDefault();
-          const idx = Number(row.dataset.index);
-          const item = state.items[idx];
-          if (item) handleReveal(item);
+          if (item) {
+            const ok = await handleReveal(item);
+            if (ok) flashButtonFeedback(row.querySelector('button[data-action="reveal"]'), '✓ 已定位', 1200);
+          }
+        } else if (keyLower === 'c') {
+          event.preventDefault();
+          if (item?.path) {
+            const ok = await copyTextSafe(item.path);
+            if (ok) {
+              flashButtonFeedback(row.querySelector('button[data-action="copy-path"]'), '✓ 已复制', 1200);
+              showToast('已复制完整路径');
+            } else {
+              showToast('复制路径失败', true);
+            }
+          }
+        } else if (keyLower === 'o') {
+          event.preventDefault();
+          if (!item) return;
+          if (!item.isDir && item.exists !== false && item.uri && !state.nativeTabUnsupported) {
+            await openInNativeTab(item.uri);
+          } else {
+            showToast(item.isDir ? '文件夹请按 Enter 在系统目录中定位' : '该文件暂不支持原生标签页打开', Boolean(item.exists === false));
+          }
         } else if (event.key === 'ArrowDown') {
           event.preventDefault();
           row.nextElementSibling?.focus();
@@ -1027,7 +1182,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.6.1' },
+            appInfo: { name: 'prism-files', version: '0.7.0' },
             appCapabilities: {}
           }, 12000);
           state.hostCapabilities = initRes?.hostCapabilities || {};

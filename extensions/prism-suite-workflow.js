@@ -1,5 +1,5 @@
 /* ============================================================================
- * Anti-Claude Prism Suite v0.5.0 — Workflow & i18n Module (Clean-Room, MIT)
+ * Anti-Claude Prism Suite v0.7.0 — Workflow & i18n Module (Clean-Room, MIT)
  * Zero external dependencies. Joins Frozen Bus v4 safely regardless of load order.
  *
  * Features:
@@ -967,16 +967,30 @@
     let activeImgTarget = null;
     const objectUrlsToRevoke = new Set();
 
+    function notifyWorkflowOverlayChange() {
+      if (disposed) return;
+      try {
+        window.dispatchEvent(new CustomEvent('ag-prism-overlay-change'));
+      } catch {}
+    }
+
     function closeImageMenu() {
+      const hadMenu = Boolean(activeImgMenu);
       if (activeImgMenu) {
         activeImgMenu.remove();
         activeImgMenu = null;
       }
       activeImgTarget = null;
+      if (hadMenu) notifyWorkflowOverlayChange();
     }
+
+    window.__agPrismCloseImageMenu = closeImageMenu;
 
     addCleanup(() => {
       closeImageMenu();
+      if (window.__agPrismCloseImageMenu === closeImageMenu) {
+        try { delete window.__agPrismCloseImageMenu; } catch { window.__agPrismCloseImageMenu = undefined; }
+      }
       objectUrlsToRevoke.forEach((u) => {
         try { URL.revokeObjectURL(u); } catch {}
       });
@@ -1190,6 +1204,7 @@
 
       const menu = document.createElement('div');
       menu.id = 'ag-ps-img-menu';
+      menu.tabIndex = -1;
       menu.setAttribute('data-ag-i18n-ignore', '1');
       menu.setAttribute('role', 'menu');
       menu.setAttribute('aria-label', '图片快捷菜单');
@@ -1252,6 +1267,11 @@
       menu.style.top = `${top}px`;
       menu.style.visibility = 'visible';
       activeImgMenu = menu;
+      const firstItem = menu.querySelector('.ag-ps-img-menu-item:not([disabled])');
+      if (firstItem && typeof firstItem.focus === 'function') {
+        try { firstItem.focus({ preventScroll: true }); } catch {}
+      }
+      notifyWorkflowOverlayChange();
     }
 
     document.addEventListener('contextmenu', (e) => {
@@ -1279,10 +1299,45 @@
     }, { capture: true, signal });
 
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && activeImgMenu) {
+      if (!activeImgMenu || !activeImgMenu.isConnected) return;
+      if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
         closeImageMenu();
+        return;
+      }
+      if (e.key === 'Tab') {
+        closeImageMenu();
+        return;
+      }
+      const items = Array.from(activeImgMenu.querySelectorAll('.ag-ps-img-menu-item:not([disabled])'));
+      if (!items.length) return;
+      const curIdx = items.indexOf(document.activeElement);
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        e.stopPropagation();
+        const nextIdx = curIdx < 0 ? 0 : (curIdx + 1) % items.length;
+        try { items[nextIdx].focus({ preventScroll: true }); } catch {}
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        e.stopPropagation();
+        const prevIdx = curIdx <= 0 ? items.length - 1 : curIdx - 1;
+        try { items[prevIdx].focus({ preventScroll: true }); } catch {}
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        e.stopPropagation();
+        try { items[0].focus({ preventScroll: true }); } catch {}
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        e.stopPropagation();
+        try { items[items.length - 1].focus({ preventScroll: true }); } catch {}
+      } else if (e.key === 'Enter' || e.key === ' ') {
+        if (curIdx >= 0 && items[curIdx]) {
+          e.preventDefault();
+          e.stopPropagation();
+          items[curIdx].click();
+        }
       }
     }, { capture: true, signal });
 

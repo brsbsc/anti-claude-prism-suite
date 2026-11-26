@@ -880,6 +880,8 @@
   "Telemetry will be enabled for this conversation; click to disable.": "此对话已启用遥测上报，点击可关闭。",
   "Telemetry will be disabled for this conversation; click to enable.": "此对话已关闭遥测上报，点击可开启。",
   "Cancel (Cmd+D)": "取消生成 (Cmd+D)",
+  "Cancel (Ctrl+D)": "取消生成 (Ctrl+D)",
+  "Cancel (Ctrl+C)": "取消生成 (Ctrl+C)",
   "Cancel (⌘D)": "取消生成 (⌘D)",
   "Full Access": "完全访问",
   "Copy Message": "复制消息",

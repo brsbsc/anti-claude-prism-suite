@@ -585,7 +585,7 @@ const PRISM_UI_ENUM_VALIDATORS = Object.freeze({
   lightPalette: new Set(['default', 'crystal', 'alabaster', 'sage']),
   darkPalette: new Set(['default', 'obsidian', 'basalt', 'marine']),
   mascotCountMode: new Set(['fixed', 'agents']),
-  mascotStyle: new Set(['trio', 'crab', 'cat']),
+  mascotStyle: new Set(['trio', 'zoo', 'cyber', 'crab', 'cat', 'penguin', 'fox', 'shiba', 'robot', 'owlet', 'axolotl', 'bunny', 'frog', 'chick', 'slime']),
   mascotVibe: new Set(['calm', 'lively']),
   thoughtMode: new Set(['off', 'bilingual', 'immersive']),
   borderBeamMode: new Set(['always', 'busy']),

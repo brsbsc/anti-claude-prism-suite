@@ -23,6 +23,8 @@
       --p-danger: #dc2626;
       --p-danger-soft: rgba(220, 38, 38, 0.11);
       --p-success: #059669;
+      --p-success-soft: rgba(5, 150, 105, 0.12);
+      --p-success-border: rgba(5, 150, 105, 0.34);
       --p-checker-a: #f1f5f9;
       --p-checker-b: #e2e8f0;
       --p-code-bg: #f8fafc;
@@ -53,6 +55,8 @@
         --p-danger: #f87171;
         --p-danger-soft: rgba(248, 113, 113, 0.16);
         --p-success: #34d399;
+        --p-success-soft: rgba(52, 211, 153, 0.15);
+        --p-success-border: rgba(52, 211, 153, 0.36);
         --p-checker-a: #1b2028;
         --p-checker-b: #242a35;
         --p-code-bg: #161a21;
@@ -81,6 +85,8 @@
       --p-danger: #f87171;
       --p-danger-soft: rgba(248, 113, 113, 0.16);
       --p-success: #34d399;
+      --p-success-soft: rgba(52, 211, 153, 0.15);
+      --p-success-border: rgba(52, 211, 153, 0.36);
       --p-checker-a: #1b2028;
       --p-checker-b: #242a35;
       --p-code-bg: #161a21;
@@ -133,7 +139,8 @@
       border-bottom: 1px solid var(--color-border-primary, var(--p-border));
       flex-shrink: 0;
       min-width: 0;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+      font-variant-numeric: tabular-nums;
     }
 
     .topbar.is-compact-controls {
@@ -188,6 +195,7 @@
     .tab-group {
       display: inline-flex;
       align-items: center;
+      gap: 1px;
       padding: 2px;
       border-radius: 8px;
       background: var(--color-background-tertiary, var(--p-bg-hover));
@@ -196,6 +204,7 @@
       min-width: 0;
       max-width: 100%;
       overflow-x: auto;
+      overscroll-behavior-x: contain;
       scrollbar-width: none;
     }
 
@@ -203,7 +212,23 @@
       display: none;
     }
 
+    .tab-group[data-overflow-left="1"]:not([data-overflow-right="1"]) {
+      -webkit-mask-image: linear-gradient(to right, transparent 0, #000 18px, #000 100%);
+      mask-image: linear-gradient(to right, transparent 0, #000 18px, #000 100%);
+    }
+
+    .tab-group[data-overflow-right="1"]:not([data-overflow-left="1"]) {
+      -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 18px), transparent 100%);
+      mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 18px), transparent 100%);
+    }
+
+    .tab-group[data-overflow-left="1"][data-overflow-right="1"] {
+      -webkit-mask-image: linear-gradient(to right, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+      mask-image: linear-gradient(to right, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+    }
+
     .tab-btn {
+      position: relative;
       appearance: none;
       border: 0;
       background: transparent;
@@ -211,6 +236,7 @@
       font-family: inherit;
       font-size: 12px;
       font-weight: 500;
+      font-variant-numeric: tabular-nums;
       padding: 5px 9px;
       border-radius: 6px;
       cursor: pointer;
@@ -220,14 +246,42 @@
                   color 150ms cubic-bezier(0.22, 1, 0.36, 1);
     }
 
+    .tab-btn::after {
+      content: "";
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: 2px;
+      height: 2px;
+      border-radius: 999px;
+      background: var(--color-accent, var(--p-accent));
+      opacity: 0;
+      transform: scaleX(0.35);
+      transition: transform 170ms cubic-bezier(0.22, 1, 0.36, 1),
+                  opacity 150ms cubic-bezier(0.22, 1, 0.36, 1);
+      pointer-events: none;
+    }
+
     .tab-btn:hover {
       color: var(--color-text-primary, var(--p-text));
+    }
+
+    .tab-btn:focus-visible {
+      outline: 2px solid var(--color-accent, var(--p-accent));
+      outline-offset: -2px;
     }
 
     .tab-btn.is-active {
       background: var(--color-background-primary, var(--p-bg));
       color: var(--color-text-primary, var(--p-text));
-      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+      font-weight: 600;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.1),
+                  0 0 0 1px var(--color-border-secondary, var(--p-border));
+    }
+
+    .tab-btn.is-active::after {
+      opacity: 0.9;
+      transform: scaleX(1);
     }
 
     .topbar-controls {
@@ -323,6 +377,10 @@
       overflow: hidden;
     }
 
+    .workspace.is-split-wide {
+      flex-direction: row;
+    }
+
     .tab-stage {
       display: flex;
       flex-direction: column;
@@ -330,6 +388,12 @@
       min-height: 110px;
       min-width: 0;
       overflow: hidden;
+    }
+
+    .workspace.is-split-wide > .tab-stage {
+      flex: 1 1 52%;
+      min-width: 280px;
+      height: 100%;
     }
 
     @keyframes pPanelIn {
@@ -781,11 +845,15 @@
 
     .mini-btn {
       appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       border: 1px solid var(--color-border-primary, var(--p-border));
       background: var(--color-background-primary, var(--p-bg));
       color: var(--color-text-secondary, var(--p-text-secondary));
       font-family: inherit;
       font-size: 11px;
+      font-variant-numeric: tabular-nums;
       line-height: 1;
       padding: 4px 6px;
       border-radius: 5px;
@@ -808,8 +876,32 @@
       border-color: transparent;
     }
 
+    .mini-btn.is-copied,
+    .mini-btn.is-copied:hover:not(:disabled),
+    .ctrl-btn.is-copied,
+    .ctrl-btn.is-copied:hover:not(:disabled),
+    .mhub-id-copy.is-copied,
+    .mhub-id-copy.is-copied:hover:not(:disabled) {
+      color: var(--p-success);
+      background: var(--p-success-soft);
+      border-color: var(--p-success-border);
+    }
+
     .mini-btn[hidden] {
       display: none;
+    }
+
+    .list-group-head {
+      padding: 8px 8px 3px;
+      font-size: 11px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      user-select: none;
+    }
+
+    .list-group-head:first-child {
+      padding-top: 3px;
     }
 
     .empty-state {
@@ -819,7 +911,7 @@
       font-size: 12.5px;
     }
 
-    /* Resizable Preview Drawer */
+    /* Resizable Preview Drawer (Bottom Drawer < 820px / Side-by-Side Split >= 820px) */
     .preview-drawer {
       display: flex;
       flex-direction: column;
@@ -846,6 +938,47 @@
       height: 36px !important;
     }
 
+    .workspace.is-split-wide > .preview-drawer {
+      position: relative;
+      width: var(--preview-width, 46%);
+      min-width: 260px;
+      max-width: calc(100% - 280px);
+      height: auto !important;
+      max-height: none;
+      border-top: 0;
+      border-left: 1px solid var(--color-border-primary, var(--p-border));
+      padding-left: 6px;
+      transition: width 180ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .workspace.is-split-wide > .preview-drawer.is-resizing {
+      transition: none !important;
+    }
+
+    .workspace.is-split-wide > .preview-drawer.is-collapsed {
+      width: 38px !important;
+      min-width: 38px;
+    }
+
+    .workspace.is-split-wide > .preview-drawer.is-collapsed .preview-header {
+      flex-direction: column;
+      padding: 6px 2px;
+      gap: 6px;
+      height: 100%;
+      justify-content: flex-start;
+      border-bottom: 0;
+    }
+
+    .workspace.is-split-wide > .preview-drawer.is-collapsed .preview-title-group,
+    .workspace.is-split-wide > .preview-drawer.is-collapsed .preview-actions > :not(#btn-preview-collapse):not(#btn-preview-close) {
+      display: none !important;
+    }
+
+    .workspace.is-split-wide > .preview-drawer.is-collapsed .preview-actions {
+      flex-direction: column;
+      gap: 6px;
+    }
+
     .preview-resizer {
       height: 6px;
       flex-shrink: 0;
@@ -858,12 +991,29 @@
       touch-action: none;
     }
 
+    .workspace.is-split-wide > .preview-drawer > .preview-resizer {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 6px;
+      height: auto;
+      cursor: col-resize;
+      border-bottom: 0;
+      border-right: 1px solid var(--color-border-secondary, var(--p-border));
+    }
+
     .preview-resizer::before {
       content: "";
       width: 34px;
       height: 2px;
       border-radius: 999px;
       background: var(--p-border-strong);
+    }
+
+    .workspace.is-split-wide > .preview-drawer > .preview-resizer::before {
+      width: 2px;
+      height: 34px;
     }
 
     .preview-resizer:hover::before {
@@ -1058,15 +1208,13 @@
       tab-size: 2;
     }
 
-    /* Image View */
+    /* Image View (Fit / 1:1 Actual / Pixelated HD Modes) */
     .image-stage {
+      position: absolute;
+      inset: 0;
       display: flex;
       flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      min-height: 100%;
-      padding: 14px;
+      overflow: hidden;
       background-color: var(--p-checker-a);
       background-image:
         linear-gradient(45deg, var(--p-checker-b) 25%, transparent 25%),
@@ -1077,12 +1225,52 @@
       background-position: 0 0, 0 8px, 8px -8px, -8px 0;
     }
 
+    .image-canvas {
+      flex: 1 1 auto;
+      min-height: 0;
+      width: 100%;
+      padding: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .image-canvas.is-actual {
+      overflow: auto;
+      align-items: flex-start;
+      justify-content: flex-start;
+    }
+
     .image-stage img {
       max-width: 100%;
-      max-height: 460px;
+      max-height: 100%;
       object-fit: contain;
       border-radius: 4px;
       box-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
+    }
+
+    .image-canvas.is-actual img {
+      margin: auto;
+      flex-shrink: 0;
+      max-width: none;
+      max-height: none;
+      object-fit: fill;
+    }
+
+    .image-stage img.is-pixelated {
+      image-rendering: pixelated;
+    }
+
+    .image-hud {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 4px 10px 8px;
+      flex-wrap: wrap;
+      z-index: 2;
     }
 
     .image-meta {
@@ -1093,6 +1281,30 @@
       background: var(--color-background-primary, var(--p-bg));
       color: var(--color-text-secondary, var(--p-text-secondary));
       border: 1px solid var(--color-border-primary, var(--p-border));
+      box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+    }
+
+    .image-mode-bar {
+      background: var(--color-background-primary, var(--p-bg));
+      border-color: var(--color-border-primary, var(--p-border));
+      box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+    }
+
+    .image-mode-bar .seg-btn {
+      font-variant-numeric: tabular-nums;
+    }
+
+    .image-mode-bar .seg-btn.is-active {
+      background: var(--p-accent-soft);
+      color: var(--color-accent, var(--p-accent));
+      font-weight: 600;
+    }
+
+    .seg-sep {
+      width: 1px;
+      align-self: stretch;
+      margin: 3px 2px;
+      background: var(--color-border-secondary, var(--p-border));
     }
 
     /* Markdown View */
@@ -1971,6 +2183,433 @@
       cursor: pointer;
     }
 
+    /* Model Hub & Master Catalog Styles (0fps idle) */
+    .mhub-fav-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 4px;
+    }
+
+    .mhub-fav-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-primary, var(--p-bg));
+      font-size: 11.5px;
+      cursor: grab;
+      user-select: none;
+      transition: border-color 140ms ease, background-color 140ms ease, opacity 140ms ease;
+    }
+
+    .mhub-fav-chip:hover {
+      border-color: var(--color-accent, var(--p-accent));
+    }
+
+    .mhub-fav-chip.is-dragging {
+      opacity: 0.45;
+    }
+
+    .mhub-fav-chip.is-drop-target {
+      border-color: var(--color-accent, var(--p-accent));
+      background: var(--p-accent-soft);
+    }
+
+    .mhub-chip-btn {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--color-text-muted, var(--p-text-muted));
+      font-size: 11px;
+      padding: 0 2px;
+      cursor: pointer;
+      line-height: 1;
+    }
+
+    .mhub-chip-btn:hover {
+      color: var(--color-text-primary, var(--p-text));
+    }
+
+    .mhub-tier-box {
+      border-radius: 9px;
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      padding: 9px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .mhub-model-card {
+      border-radius: 7px;
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+      background: var(--color-background-primary, var(--p-bg));
+      padding: 7px 9px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .mhub-id-copy {
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      height: 19px;
+      padding: 0 6px;
+      border-radius: 4px;
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      color: var(--color-text-secondary, var(--p-text-secondary));
+      font-family: var(--font-mono, var(--p-font-mono));
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+                  border-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+                  color 140ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .mhub-id-copy:hover {
+      border-color: var(--p-border-strong);
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+      color: var(--color-text-primary, var(--p-text));
+    }
+
+    .mhub-id-copy .mhub-copy-glyph {
+      font-family: var(--font-sans, var(--p-font-sans));
+      font-size: 10px;
+      opacity: 0.65;
+    }
+
+    .mhub-filter-toolbar {
+      padding: 6px 10px;
+    }
+
+    .mhub-form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 6px;
+      margin-top: 4px;
+    }
+
+    .mhub-field {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      font-size: 11px;
+      color: var(--color-text-secondary, var(--p-text-secondary));
+    }
+
+    .pill-tier-t1 {
+      background: rgba(139, 92, 246, 0.14);
+      color: #7c3aed;
+    }
+
+    :root[data-theme="dark"] .pill-tier-t1 {
+      color: #c4b5fd;
+      background: rgba(139, 92, 246, 0.22);
+    }
+
+    .pill-tier-t2 {
+      background: var(--p-accent-soft);
+      color: var(--color-accent, var(--p-accent));
+    }
+
+    .pill-tier-t3 {
+      background: rgba(16, 185, 129, 0.13);
+      color: var(--p-success);
+    }
+
+    .pill-tier-t4 {
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+      color: var(--color-text-secondary, var(--p-text-secondary));
+    }
+
+    /* Dismissible Contextual Guide Card & Inspector Overview */
+    .guide-banner {
+      border: 1px solid color-mix(in srgb, var(--color-accent, var(--p-accent)) 28%, var(--color-border-primary, var(--p-border)));
+      border-left: 3px solid var(--color-accent, var(--p-accent));
+      border-radius: 9px;
+      background: color-mix(in srgb, var(--color-accent, var(--p-accent)) 4.5%, var(--color-background-primary, var(--p-bg)));
+      padding: 8px 11px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      font-size: 11.5px;
+      line-height: 1.52;
+      color: var(--color-text-secondary, var(--p-text-secondary));
+    }
+
+    .guide-banner-in-tab {
+      margin: 8px 10px 2px;
+      flex-shrink: 0;
+    }
+
+    .guide-banner-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .guide-banner-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--color-text-primary, var(--p-text));
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .guide-banner-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .guide-banner p {
+      margin: 0;
+    }
+
+    .guide-banner code {
+      font-family: var(--font-mono, var(--p-font-mono));
+      font-size: 11px;
+      padding: 1px 4px;
+      border-radius: 4px;
+      background: var(--color-background-tertiary, var(--p-bg-hover));
+      color: var(--color-text-primary, var(--p-text));
+    }
+
+    /* Inspector Overview Card (Wide Master-Detail Empty State) */
+    .inspector-overview {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-width: 640px;
+      margin: 0 auto;
+    }
+
+    .inspector-stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+      gap: 8px;
+    }
+
+    .inspector-stat-box {
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .inspector-stat-val {
+      font-size: 15px;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+      color: var(--color-text-primary, var(--p-text));
+    }
+
+    .inspector-stat-lbl {
+      font-size: 11px;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+    }
+
+    .inspector-kbd-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 6px;
+      font-size: 11.5px;
+      color: var(--color-text-secondary, var(--p-text-secondary));
+    }
+
+    .inspector-kbd-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      border-radius: 6px;
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+    }
+
+    .inspector-kbd-item kbd {
+      font-family: var(--font-mono, var(--p-font-mono));
+      font-size: 10.5px;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: var(--color-background-primary, var(--p-bg));
+      border: 1px solid var(--color-border-primary, var(--p-border-strong));
+      color: var(--color-text-primary, var(--p-text));
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    /* Model Hub Cards & Discovery Checklist */
+    .mhub-tier-cards {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .mhub-form-card {
+      max-width: 960px;
+    }
+
+    .mhub-discover-list {
+      max-height: 270px;
+      overflow-y: auto;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 6px;
+      padding: 2px 1px;
+    }
+
+    .mhub-disc-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 5px 8px;
+      border-radius: 7px;
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+      background: var(--color-background-primary, var(--p-bg));
+      font-size: 11.5px;
+      transition: border-color 130ms ease, background-color 130ms ease;
+    }
+
+    .mhub-disc-item:hover {
+      border-color: var(--p-border-strong);
+    }
+
+    .mhub-disc-item.is-selected {
+      border-color: color-mix(in srgb, var(--color-accent, var(--p-accent)) 48%, transparent);
+      background: color-mix(in srgb, var(--color-accent, var(--p-accent)) 5%, var(--color-background-primary, var(--p-bg)));
+    }
+
+    .mhub-disc-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      flex: 1 1 auto;
+      cursor: pointer;
+    }
+
+    .mhub-disc-id {
+      font-family: var(--font-mono, var(--p-font-mono));
+      font-size: 11px;
+      color: var(--color-text-primary, var(--p-text));
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .mhub-tier-mini-sel {
+      height: 22px;
+      padding: 0 4px;
+      border-radius: 5px;
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      color: var(--color-text-primary, var(--p-text));
+      font-size: 10.5px;
+      font-family: inherit;
+      flex-shrink: 0;
+    }
+
+    /* Accounts Dashboard Responsive Layout */
+    .accounts-dashboard {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .accounts-col-main,
+    .accounts-col-side {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .accounts-standby-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .relay-card.is-standby-compact {
+      cursor: default;
+    }
+
+    @media (min-width: 620px) {
+      .hero-pool-stack {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+        gap: 8px;
+      }
+    }
+
+    @media (min-width: 860px) {
+      .mhub-tier-cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+        gap: 8px;
+      }
+    }
+
+    @media (min-width: 900px) {
+      .topbar {
+        padding-inline: max(12px, calc((100% - 1320px) / 2));
+      }
+
+      .workspace:not(.is-split-wide) .subbar,
+      .workspace:not(.is-split-wide) .toolbar,
+      .workspace:not(.is-split-wide) .notice-bar,
+      .workspace:not(.is-split-wide) .relay-scroll,
+      .workspace:not(.is-split-wide) #panel-search .list-scroll {
+        padding-inline: max(14px, calc((100% - 1320px) / 2));
+      }
+
+      .workspace:not(.is-split-wide) .guide-banner-in-tab {
+        margin-inline: max(14px, calc((100% - 1320px) / 2));
+      }
+
+      .accounts-dashboard {
+        display: grid;
+        grid-template-columns: minmax(0, 1.24fr) minmax(340px, 0.94fr);
+        gap: 14px;
+        align-items: start;
+      }
+
+      .search-results {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        align-items: start;
+      }
+    }
+
+    @media (min-width: 1180px) {
+      .accounts-standby-grid.has-multi {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+    }
+
     /* Toast */
     .toast {
       position: fixed;
@@ -2001,22 +2640,46 @@
       color: #ffffff;
     }
 
-    @media (max-width: 460px) {
+    @media (max-width: 500px) {
       .topbar {
-        padding: 6px 8px;
-        gap: 4px;
+        padding: 5px 8px;
+        gap: 5px;
       }
       .tab-btn {
-        padding: 4px 6.5px;
+        padding: 4px 7px;
         font-size: 11.5px;
+      }
+      .topbar-controls {
+        gap: 4px;
+      }
+      .topbar-controls .ctrl-btn {
+        height: 24px;
+        padding: 0 6px;
+        font-size: 11px;
+      }
+      .topbar-controls .ctrl-icon {
+        min-width: 24px;
+        padding: 0 5px;
       }
       .row-size {
         display: none;
       }
     }
 
+    @media (max-width: 430px) {
+      .topbar.has-browse-controls {
+        flex-wrap: wrap;
+      }
+      .topbar.has-browse-controls .tab-group {
+        width: 100%;
+      }
+      .topbar.has-browse-controls .topbar-controls {
+        margin-left: auto;
+      }
+    }
+
     @media (prefers-reduced-motion: reduce) {
-      .tab-btn, .ctrl-btn, .text-input, .list-row, .row-actions, .mini-btn, .toast, .filter-pill, .search-card, .preview-drawer, .relay-acc-chevron, .top-progress, .path-breadcrumbs, .crumb-btn {
+      .tab-btn, .tab-btn::after, .ctrl-btn, .text-input, .list-row, .row-actions, .mini-btn, .mhub-id-copy, .toast, .filter-pill, .search-card, .preview-drawer, .relay-acc-chevron, .top-progress, .path-breadcrumbs, .crumb-btn {
         transition: none !important;
         animation: none !important;
       }
@@ -2030,11 +2693,12 @@
   <div class="app-shell">
     <header class="topbar">
       <nav class="tab-group" role="tablist" aria-label="工作台视图">
-        <button type="button" class="tab-btn is-active" role="tab" id="tab-btn-browse" data-tab="browse" aria-selected="true">目录浏览</button>
-        <button type="button" class="tab-btn" role="tab" id="tab-btn-artifacts" data-tab="artifacts" aria-selected="false">最近产物</button>
-        <button type="button" class="tab-btn" role="tab" id="tab-btn-pins" data-tab="pins" aria-selected="false">收藏夹</button>
-        <button type="button" class="tab-btn" role="tab" id="tab-btn-search" data-tab="search" aria-selected="false">历史检索</button>
-        <button type="button" class="tab-btn" role="tab" id="tab-btn-accounts" data-tab="accounts" aria-selected="false">账号接力</button>
+        <button type="button" class="tab-btn is-active" role="tab" id="tab-btn-browse" data-tab="browse" aria-selected="true" title="目录浏览 (Alt+1)">目录浏览</button>
+        <button type="button" class="tab-btn" role="tab" id="tab-btn-artifacts" data-tab="artifacts" aria-selected="false" title="最近产物 (Alt+2)">最近产物</button>
+        <button type="button" class="tab-btn" role="tab" id="tab-btn-pins" data-tab="pins" aria-selected="false" title="收藏夹 (Alt+3)">收藏夹</button>
+        <button type="button" class="tab-btn" role="tab" id="tab-btn-search" data-tab="search" aria-selected="false" title="历史检索 (Alt+4)">历史检索</button>
+        <button type="button" class="tab-btn" role="tab" id="tab-btn-models" data-tab="models" aria-selected="false" title="模型中枢 (Alt+5)">模型中枢</button>
+        <button type="button" class="tab-btn" role="tab" id="tab-btn-accounts" data-tab="accounts" aria-selected="false" title="账号接力 (Alt+6)">账号接力</button>
       </nav>
       <div class="topbar-controls">
         <button type="button" id="btn-smb-toggle" class="ctrl-btn" aria-pressed="false" title="允许局域网 NAS/SMB 路径（默认关闭；开启后仅放行私网/Tailscale/本地 UNC，拒绝公网主机以防 NTLM 泄露）">
@@ -2046,7 +2710,9 @@
           <span>隐藏</span>
         </button>
         <button type="button" id="btn-dblclick-toggle" class="ctrl-btn" title="切换双击文件时的默认动作">双击:定位</button>
+        <button type="button" id="btn-guide-toggle" class="ctrl-btn" aria-pressed="false" title="显示或隐藏当前页签的操作说明与配置提示">? 说明</button>
         <button type="button" id="btn-refresh" class="ctrl-btn ctrl-icon" title="刷新当前视图" aria-label="刷新">↻</button>
+        <button type="button" id="btn-close-workbench" class="ctrl-btn" title="关闭全屏工作台并回到之前的对话" hidden>↩ 返回对话</button>
       </div>
       <div id="top-progress" class="top-progress" data-active="0" aria-hidden="true"></div>
     </header>
@@ -2075,6 +2741,7 @@
               <span id="browse-count" class="meta-count">0 项</span>
             </div>
           </div>
+          <div id="browse-guide-slot"></div>
           <div id="browse-notice" class="notice-bar" hidden></div>
           <div id="browse-list-wrap" class="list-scroll">
             <div class="empty-state">正在读取目录…</div>
@@ -2095,6 +2762,7 @@
               </div>
             </div>
           </div>
+          <div id="artifacts-guide-slot"></div>
           <div id="artifacts-list-wrap" class="list-scroll">
             <div class="empty-state">切换至「最近产物」后加载…</div>
           </div>
@@ -2106,6 +2774,7 @@
             <span id="pins-summary" class="subbar-info">已收藏 0 项</span>
             <button type="button" id="btn-pin-current-from-tab" class="ctrl-btn">★ 收藏当前目录</button>
           </div>
+          <div id="pins-guide-slot"></div>
           <div id="pins-list-wrap" class="list-scroll">
             <div class="empty-state">暂无收藏夹项目</div>
           </div>
@@ -2124,18 +2793,54 @@
             <div class="search-filter-bar">
               <div class="filter-pills" role="group" aria-label="内容类型筛选">
                 <button type="button" class="filter-pill is-active" data-search-filter="all" aria-pressed="true">全部</button>
-                <button type="button" class="filter-pill" data-search-filter="prose" aria-pressed="false">正文</button>
-                <button type="button" class="filter-pill" data-search-filter="code_cmd" aria-pressed="false">代码与命令</button>
+                <button type="button" class="filter-pill" data-search-filter="prose" aria-pressed="false" title="再次点击可恢复为全部">正文</button>
+                <button type="button" class="filter-pill" data-search-filter="code_cmd" aria-pressed="false" title="再次点击可恢复为全部">代码与命令</button>
               </div>
               <span id="search-meta" class="meta-count">跨会话脱敏全文检索</span>
             </div>
           </div>
+          <div id="search-guide-slot"></div>
           <div id="search-list-wrap" class="list-scroll">
             <div class="empty-state">输入关键词检索最近 80 个会话的对话正文、代码块与工具命令（自动脱敏敏感凭据）</div>
           </div>
         </section>
 
-        <!-- Tab 5: 账号接力 -->
+        <!-- Tab 5: 模型中枢 (Model Hub) -->
+        <section id="panel-models" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-models" tabindex="-1">
+          <div class="subbar" style="flex-wrap:wrap;">
+            <span id="models-summary-label" class="subbar-info">零依赖流式会诊中枢 · 公私隔离 (0600)</span>
+            <div style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;flex-shrink:0;">
+              <button type="button" id="btn-mhub-add-provider" class="ctrl-btn" title="添加或收起网关配置表单（再次点击关闭）">+ 网关</button>
+              <button type="button" id="btn-mhub-discover" class="ctrl-btn" title="从已配置网关自动拉取 /v1/models 列表并勾选批量导入">🔍 发现模型</button>
+              <button type="button" id="btn-mhub-add-model" class="ctrl-btn is-primary" title="手动编排或收起模型表单（再次点击关闭）">+ 模型</button>
+              <button type="button" id="btn-mhub-ai-setup" class="ctrl-btn" title="复制不含任何密钥的 AI 自动部署口令，粘贴给当前 AI 即可代填网关与模型">🤖 AI 代配</button>
+              <button type="button" id="btn-mhub-reveal-profile" class="ctrl-btn" title="在系统文件管理器中定位本机 prism-profile.json 配置文件">📂 配置文件</button>
+              <button type="button" id="btn-mhub-probe-favs" class="ctrl-btn" title="对常用收藏模型依次执行极简流式 TTFT 测速">⚡ 测速</button>
+            </div>
+          </div>
+          <div id="models-filter-bar" class="toolbar mhub-filter-toolbar" hidden>
+            <div class="search-filter-bar">
+              <div class="input-wrap" style="min-width:140px;flex:1 1 170px;">
+                <input id="models-filter-input" class="text-input filter-input" type="text" spellcheck="false" autocomplete="off" aria-label="筛选模型" placeholder="筛选模型别名、ID、厂商或职责（按 / 聚焦）…" />
+                <button type="button" id="btn-clear-models-filter" class="clear-input-btn" title="清除筛选" aria-label="清除筛选" hidden>×</button>
+              </div>
+              <div class="filter-pills" id="models-filter-pills" role="group" aria-label="模型梯队与就绪状态筛选">
+                <button type="button" class="filter-pill is-active" data-mhub-filter="all" aria-pressed="true">全部</button>
+                <button type="button" class="filter-pill" data-mhub-filter="ready" aria-pressed="false">仅就绪</button>
+                <button type="button" class="filter-pill" data-mhub-filter="T1" aria-pressed="false">T1</button>
+                <button type="button" class="filter-pill" data-mhub-filter="T2" aria-pressed="false">T2</button>
+                <button type="button" class="filter-pill" data-mhub-filter="T3" aria-pressed="false">T3</button>
+                <button type="button" class="filter-pill" data-mhub-filter="T4" aria-pressed="false">T4</button>
+              </div>
+              <span id="models-filter-count" class="meta-count" hidden></span>
+            </div>
+          </div>
+          <div id="models-wrap" class="list-scroll relay-scroll">
+            <div class="empty-state">切换至「模型中枢」后加载 T1–T4 梯队与网关配置…</div>
+          </div>
+        </section>
+
+        <!-- Tab 6: 账号接力 -->
         <section id="panel-accounts" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-accounts" tabindex="-1">
           <div class="subbar">
             <span id="accounts-vault-label" class="subbar-info">主备多账号安全接力（默认关闭）</span>
@@ -2219,7 +2924,21 @@
           lastTab: 'browse',
           showHidden: false,
           doubleClickAction: 'reveal',
-          allowLanSmb: false
+          allowLanSmb: false,
+          dismissedGuides: (() => {
+            try {
+              const raw = JSON.parse(localStorage.getItem('ag_prism_dismissed_guides_v1') || '[]');
+              return Array.isArray(raw) ? raw.filter((x) => typeof x === 'string') : [];
+            } catch {
+              return [];
+            }
+          })()
+        },
+        guidesOpenInTab: {
+          browse: false,
+          artifacts: false,
+          pins: false,
+          search: false
         },
         openTargets: {
           loaded: false,
@@ -2240,6 +2959,36 @@
           error: '',
           seq: 0
         },
+        models: {
+          loaded: false,
+          loading: false,
+          error: '',
+          data: null,
+          seq: 0,
+          query: '',
+          tierFilter: 'all',
+          probingIds: {},
+          batchProbing: false,
+          showProviderForm: false,
+          editingProviderId: '',
+          showModelForm: false,
+          editingModelId: '',
+          showDiscoverPanel: false,
+          discoverProviderId: '',
+          discoverLoading: false,
+          discoverError: '',
+          discoverItems: [],
+          discoverQuery: '',
+          discoverChatOnly: true,
+          discoverSelected: {}, // modelId -> tier ('T1'..'T4')
+          discoverImporting: false,
+          discoverSeq: 0,
+          draggingFavId: '',
+          reorderingFavs: false,
+          openSections: {
+            gateways: false
+          }
+        },
         accounts: {
           loaded: false,
           loading: false,
@@ -2250,9 +2999,16 @@
           countdown: null, // { targetId, email, alias, totalMs, endAtMs, paused, pausedRemainMs, saveSnapshot, autoRelaunch }
           lastSwitchResult: null,
           memories: [],
+          catalogSlots: [],
+          memoryStorage: null,
+          remoteSync: null,
+          syncingRemote: false,
+          showCatalogForm: false,
+          showRemoteConfig: false,
           editingQuotaId: '',
           editingAliasId: '',
           expandedMoreIds: {},
+          guideTouchedByUser: false,
           sortMode: (() => {
             try {
               return localStorage.getItem('ag_prism_acc_sort_mode') === 'primary-first' ? 'primary-first' : 'active-first';
@@ -2269,6 +3025,7 @@
           radarReport: null,
           openSections: {
             guide: false,
+            catalog: true,
             memories: false,
             radar: false
           }
@@ -2307,11 +3064,21 @@
         },
         preview: {
           visible: false,
+          userClosedInWideByTab: {
+            browse: false,
+            artifacts: false,
+            pins: false
+          },
           collapsed: false,
           height: 290,
+          widthRatio: 0.45,
+          needsDeferredRender: false,
           loading: false,
           data: null,
           mdMode: 'preview', // 'preview' | 'source'
+          imgScaleMode: 'fit', // 'fit' | '1:1'
+          imgPixelated: null, // null (auto) | boolean
+          imgLastPath: '',
           editing: false,
           draft: '',
           dirty: false,
@@ -2325,6 +3092,7 @@
 
       const $ = (id) => document.getElementById(id);
       const topbarEl = document.querySelector('.topbar');
+      const tabGroupEl = document.querySelector('.tab-group');
       const workspaceEl = $('workspace');
       const tabBtns = Array.from(document.querySelectorAll('.tab-btn'));
       const tabPanels = {
@@ -2332,13 +3100,16 @@
         artifacts: $('panel-artifacts'),
         pins: $('panel-pins'),
         search: $('panel-search'),
+        models: $('panel-models'),
         accounts: $('panel-accounts')
       };
 
       const btnSmbToggle = $('btn-smb-toggle');
       const btnHiddenToggle = $('btn-hidden-toggle');
       const btnDblClickToggle = $('btn-dblclick-toggle');
+      const btnGuideToggle = $('btn-guide-toggle');
       const btnRefresh = $('btn-refresh');
+      const btnCloseWorkbench = $('btn-close-workbench');
 
       const btnParent = $('btn-parent');
       const btnHome = $('btn-home');
@@ -2350,6 +3121,7 @@
       const filterInput = $('filter-input');
       const btnClearFilter = $('btn-clear-filter');
       const browseCountEl = $('browse-count');
+      const browseGuideSlot = $('browse-guide-slot');
       const browseNoticeEl = $('browse-notice');
       const browseListWrap = $('browse-list-wrap');
 
@@ -2357,10 +3129,12 @@
       const artifactsCountEl = $('artifacts-count');
       const artifactsFilterInput = $('artifacts-filter-input');
       const btnClearArtifactsFilter = $('btn-clear-artifacts-filter');
+      const artifactsGuideSlot = $('artifacts-guide-slot');
       const artifactsListWrap = $('artifacts-list-wrap');
 
       const pinsSummaryEl = $('pins-summary');
       const btnPinCurrentFromTab = $('btn-pin-current-from-tab');
+      const pinsGuideSlot = $('pins-guide-slot');
       const pinsListWrap = $('pins-list-wrap');
 
       const searchInput = $('search-input');
@@ -2368,7 +3142,21 @@
       const btnRunSearch = $('btn-run-search');
       const searchFilterBtns = Array.from(document.querySelectorAll('button[data-search-filter]'));
       const searchMetaEl = $('search-meta');
+      const searchGuideSlot = $('search-guide-slot');
       const searchListWrap = $('search-list-wrap');
+      const modelsSummaryLabel = $('models-summary-label');
+      const modelsFilterBar = $('models-filter-bar');
+      const modelsFilterInput = $('models-filter-input');
+      const btnClearModelsFilter = $('btn-clear-models-filter');
+      const modelsFilterBtns = Array.from(document.querySelectorAll('button[data-mhub-filter]'));
+      const modelsFilterCount = $('models-filter-count');
+      const modelsWrap = $('models-wrap');
+      const btnMhubAddProvider = $('btn-mhub-add-provider');
+      const btnMhubDiscover = $('btn-mhub-discover');
+      const btnMhubAddModel = $('btn-mhub-add-model');
+      const btnMhubAiSetup = $('btn-mhub-ai-setup');
+      const btnMhubRevealProfile = $('btn-mhub-reveal-profile');
+      const btnMhubProbeFavs = $('btn-mhub-probe-favs');
       const accountsVaultLabel = $('accounts-vault-label');
       const accountsActivePill = $('accounts-active-pill');
       const accountsWrap = $('accounts-wrap');
@@ -2418,7 +3206,207 @@
       let focusFlashTimer = 0;
       let quotaWaitRetryTimer = 0;
       let quotaWaitRetryCount = 0;
-      const RESTORABLE_TABS = ['browse', 'artifacts', 'pins', 'search'];
+      const btnFeedbackMap = new WeakMap();
+      const activeFeedbackTimers = new Set();
+      const FILE_TABS = new Set(['browse', 'artifacts', 'pins']);
+      const WIDE_SPLIT_MIN_WIDTH = 820;
+      const RESTORABLE_TABS = ['browse', 'artifacts', 'pins', 'search', 'models'];
+      const DISMISSED_GUIDES_LS_KEY = 'ag_prism_dismissed_guides_v1';
+      let arrowPreviewTimer = 0;
+      let guideSaveInFlight = 0;
+
+      function isGuideDismissed(guideId) {
+        return Array.isArray(appState.prefs.dismissedGuides) && appState.prefs.dismissedGuides.includes(guideId);
+      }
+
+      function syncDismissedGuidesLocal(list) {
+        try {
+          localStorage.setItem(DISMISSED_GUIDES_LS_KEY, JSON.stringify(list));
+        } catch {}
+      }
+
+      function applyServerDismissedGuides(serverList) {
+        if (!Array.isArray(serverList)) {
+          return Array.isArray(appState.prefs.dismissedGuides) ? appState.prefs.dismissedGuides : [];
+        }
+        if (guideSaveInFlight > 0) {
+          return appState.prefs.dismissedGuides;
+        }
+        const clean = Array.from(
+          new Set(serverList.filter((g) => typeof g === 'string' && /^[a-z0-9:_-]{2,48}$/i.test(g.trim())).map((g) => g.trim()))
+        ).slice(0, 32);
+        appState.prefs.dismissedGuides = clean;
+        syncDismissedGuidesLocal(clean);
+        return clean;
+      }
+
+      window.addEventListener('storage', (ev) => {
+        if (ev.key !== DISMISSED_GUIDES_LS_KEY) return;
+        try {
+          const parsed = JSON.parse(ev.newValue || '[]');
+          if (Array.isArray(parsed)) {
+            appState.prefs.dismissedGuides = parsed.filter((x) => typeof x === 'string').slice(0, 32);
+            renderAll();
+          }
+        } catch {}
+      }, { signal });
+
+      async function setGuideDismissed(guideId, dismissed = true, { silent = false } = {}) {
+        if (!guideId) return;
+        const cur = Array.isArray(appState.prefs.dismissedGuides) ? appState.prefs.dismissedGuides : [];
+        const next = dismissed
+          ? Array.from(new Set([...cur, guideId])).slice(0, 32)
+          : cur.filter((x) => x !== guideId);
+        appState.prefs.dismissedGuides = next;
+        syncDismissedGuidesLocal(next);
+        if (dismissed) {
+          if (guideId === 'guide:accounts-steps:v1') {
+            appState.accounts.openSections.guide = false;
+            appState.accounts.guideTouchedByUser = true;
+          }
+          for (const k of Object.keys(appState.guidesOpenInTab)) {
+            if (`guide:${k}:v1` === guideId) appState.guidesOpenInTab[k] = false;
+          }
+        }
+        renderAll();
+        if (!silent) {
+          showToast(dismissed ? '已隐藏该说明（可随时点顶栏「? 说明」恢复）' : '已重新展开说明');
+        }
+        guideSaveInFlight++;
+        try {
+          await callServerTool('update_state', { dismissedGuides: next });
+        } catch {} finally {
+          guideSaveInFlight = Math.max(0, guideSaveInFlight - 1);
+        }
+      }
+
+      async function restoreAllDismissedGuides() {
+        appState.prefs.dismissedGuides = [];
+        syncDismissedGuidesLocal([]);
+        const tab = appState.activeTab;
+        if (tab in appState.guidesOpenInTab) appState.guidesOpenInTab[tab] = true;
+        if (tab === 'accounts') appState.accounts.openSections.guide = true;
+        renderAll();
+        showToast('已恢复全部说明与配置提示');
+        guideSaveInFlight++;
+        try {
+          await callServerTool('update_state', { dismissedGuides: [] });
+        } catch {} finally {
+          guideSaveInFlight = Math.max(0, guideSaveInFlight - 1);
+        }
+      }
+
+      function isTabGuideCurrentlyVisible(tab = appState.activeTab) {
+        if (tab === 'models') return !isGuideDismissed('guide:models:v1');
+        if (tab === 'accounts') {
+          const d = appState.accounts.data;
+          if (!d || !d.enabled) return !isGuideDismissed('guide:accounts-intro:v1');
+          return !isGuideDismissed('guide:accounts-steps:v1');
+        }
+        if (tab === 'search') return !isGuideDismissed('guide:search:v1');
+        return Boolean(appState.guidesOpenInTab[tab]);
+      }
+
+      async function toggleActiveTabGuide() {
+        const tab = appState.activeTab;
+        if (tab === 'models') {
+          const curHidden = isGuideDismissed('guide:models:v1');
+          const nextDismissed = !curHidden;
+          const cur = Array.isArray(appState.prefs.dismissedGuides) ? appState.prefs.dismissedGuides : [];
+          const next = nextDismissed
+            ? Array.from(new Set([...cur, 'guide:models:v1'])).slice(0, 32)
+            : cur.filter((x) => x !== 'guide:models:v1' && x !== 'guide:models-sec:v1');
+          appState.prefs.dismissedGuides = next;
+          syncDismissedGuidesLocal(next);
+          renderAll();
+          guideSaveInFlight++;
+          try { await callServerTool('update_state', { dismissedGuides: next }); } catch {} finally { guideSaveInFlight = Math.max(0, guideSaveInFlight - 1); }
+          return;
+        }
+        if (tab === 'accounts') {
+          const d = appState.accounts.data;
+          if (!d || !d.enabled) {
+            await setGuideDismissed('guide:accounts-intro:v1', !isGuideDismissed('guide:accounts-intro:v1'), { silent: true });
+            return;
+          }
+          const hiddenSteps = isGuideDismissed('guide:accounts-steps:v1');
+          if (hiddenSteps) {
+            const next = (appState.prefs.dismissedGuides || []).filter((x) => !x.startsWith('guide:accounts-'));
+            appState.prefs.dismissedGuides = next;
+            syncDismissedGuidesLocal(next);
+            appState.accounts.openSections.guide = true;
+            appState.accounts.guideTouchedByUser = true;
+            renderAll();
+            showToast('已恢复账号接力说明与提醒卡片');
+            guideSaveInFlight++;
+            try { await callServerTool('update_state', { dismissedGuides: next }); } catch {} finally { guideSaveInFlight = Math.max(0, guideSaveInFlight - 1); }
+          } else {
+            await setGuideDismissed('guide:accounts-steps:v1', true);
+          }
+          return;
+        }
+        if (tab === 'search') {
+          await setGuideDismissed('guide:search:v1', !isGuideDismissed('guide:search:v1'), { silent: true });
+          return;
+        }
+        appState.guidesOpenInTab[tab] = !appState.guidesOpenInTab[tab];
+        renderAll();
+      }
+
+      function isFileTab(tab = appState.activeTab) {
+        return FILE_TABS.has(tab);
+      }
+
+      function shouldShowRightInspectorPane() {
+        const tab = appState.activeTab;
+        if (!isFileTab(tab)) return false;
+        if (appState.preview.visible) return true;
+        return window.innerWidth >= WIDE_SPLIT_MIN_WIDTH && !appState.preview.userClosedInWideByTab?.[tab];
+      }
+
+      function isWideSplitActive() {
+        return window.innerWidth >= WIDE_SPLIT_MIN_WIDTH && shouldShowRightInspectorPane();
+      }
+
+      function updateTabGroupOverflow() {
+        if (!tabGroupEl) return;
+        const maxScroll = tabGroupEl.scrollWidth - tabGroupEl.clientWidth;
+        if (maxScroll <= 2) {
+          tabGroupEl.dataset.overflowLeft = '0';
+          tabGroupEl.dataset.overflowRight = '0';
+          return;
+        }
+        tabGroupEl.dataset.overflowLeft = tabGroupEl.scrollLeft > 2 ? '1' : '0';
+        tabGroupEl.dataset.overflowRight = tabGroupEl.scrollLeft < maxScroll - 2 ? '1' : '0';
+      }
+
+      function syncWorkspaceSplitLayout() {
+        const pv = appState.preview;
+        const showPane = shouldShowRightInspectorPane();
+        const wide = showPane && window.innerWidth >= WIDE_SPLIT_MIN_WIDTH;
+        workspaceEl.classList.toggle('is-split-wide', wide);
+        if (previewResizer) {
+          previewResizer.setAttribute('aria-orientation', wide ? 'vertical' : 'horizontal');
+          previewResizer.setAttribute('aria-label', wide ? '拖拽调整预览面板宽度' : '拖拽调整预览面板高度');
+          previewResizer.title = wide
+            ? '左右拖拽调整宽度（双击折叠或展开）'
+            : '上下拖拽调整高度（双击折叠或展开）';
+        }
+        if (!showPane) return;
+        previewDrawer.classList.toggle('is-collapsed', pv.collapsed);
+        if (wide) {
+          const ratioPct = Math.max(24, Math.min(72, (Number(pv.widthRatio) || 0.45) * 100));
+          workspaceEl.style.setProperty('--preview-width', `${ratioPct.toFixed(1)}%`);
+        } else if (!pv.collapsed) {
+          previewDrawer.style.height = `${pv.height}px`;
+        }
+        if (btnPreviewCollapse) {
+          btnPreviewCollapse.textContent = wide
+            ? (pv.collapsed ? '◂' : '▸')
+            : (pv.collapsed ? '▴' : '▾');
+          btnPreviewCollapse.title = pv.collapsed ? '展开面板' : '收起面板';
+        }
+      }
       let navigationIntent = {
         tab: 'browse',
         source: 'default', // 'default' | 'tool-result' | 'user' | 'external-switch'
@@ -2472,7 +3460,7 @@
       }
 
       function navigateFromExternalBridge(tab, { intentId = '', requestId = '', sessionId = '', focus = true, replyWin = null, replyOrigin = '*' } = {}) {
-        if (!['browse', 'artifacts', 'pins', 'search', 'accounts'].includes(tab)) {
+        if (!['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'].includes(tab)) {
           postBridgeToMain({ type: 'ack', intentId, requestId, sessionId, ok: false, error: 'invalid-tab' }, replyWin, replyOrigin);
           return;
         }
@@ -2590,9 +3578,12 @@
       window.addEventListener('pagehide', () => {
         if (toastTimer) clearTimeout(toastTimer);
         if (filterDebounceTimer) clearTimeout(filterDebounceTimer);
+        if (arrowPreviewTimer) clearTimeout(arrowPreviewTimer);
         if (focusFlashTimer) clearTimeout(focusFlashTimer);
         if (quotaWaitRetryTimer) clearTimeout(quotaWaitRetryTimer);
         if (countdownRaf) cancelAnimationFrame(countdownRaf);
+        for (const t of activeFeedbackTimers) clearTimeout(t);
+        activeFeedbackTimers.clear();
         for (const pending of pendingRequests.values()) {
           clearTimeout(pending.timer);
         }
@@ -2776,6 +3767,36 @@
         } catch {
           return false;
         }
+      }
+
+      function flashButtonFeedback(btn, doneText = '✓ 已复制', durationMs = 1200) {
+        if (!btn || !btn.isConnected) return;
+        const existing = btnFeedbackMap.get(btn);
+        if (existing) {
+          clearTimeout(existing.timer);
+          activeFeedbackTimers.delete(existing.timer);
+        } else {
+          const rectW = Math.ceil(btn.getBoundingClientRect().width);
+          btn.dataset.origHtml = btn.innerHTML;
+          btn.dataset.origMinWidth = btn.style.minWidth || '';
+          if (rectW > 0) btn.style.minWidth = `${rectW}px`;
+        }
+        btn.textContent = doneText;
+        btn.classList.add('is-copied');
+        const timer = setTimeout(() => {
+          activeFeedbackTimers.delete(timer);
+          btnFeedbackMap.delete(btn);
+          if (!btn.isConnected) return;
+          if (btn.dataset.origHtml !== undefined) {
+            btn.innerHTML = btn.dataset.origHtml;
+            delete btn.dataset.origHtml;
+          }
+          btn.style.minWidth = btn.dataset.origMinWidth || '';
+          delete btn.dataset.origMinWidth;
+          btn.classList.remove('is-copied');
+        }, durationMs);
+        activeFeedbackTimers.add(timer);
+        btnFeedbackMap.set(btn, { timer });
       }
 
       async function openConversationUri(uri) {
@@ -3303,7 +4324,8 @@
             lastTab: RESTORABLE_TABS.includes(res.state.lastTab) ? res.state.lastTab : 'browse',
             showHidden: Boolean(res.state.showHidden),
             doubleClickAction: res.state.doubleClickAction === 'open_tab' ? 'open_tab' : 'reveal',
-            allowLanSmb: Boolean(res.state.allowLanSmb)
+            allowLanSmb: Boolean(res.state.allowLanSmb),
+            dismissedGuides: applyServerDismissedGuides(res.state.dismissedGuides)
           };
         }
         if (Array.isArray(res.pinnedItems)) {
@@ -3359,7 +4381,15 @@
         }
 
         const seq = ++appState.preview.seq;
+        if (appState.preview.imgLastPath !== filePath) {
+          appState.preview.imgLastPath = filePath;
+          appState.preview.imgScaleMode = 'fit';
+          appState.preview.imgPixelated = null;
+        }
         appState.preview.visible = true;
+        if (isFileTab(appState.activeTab) && appState.preview.userClosedInWideByTab) {
+          appState.preview.userClosedInWideByTab[appState.activeTab] = false;
+        }
         appState.preview.collapsed = false;
         appState.preview.loading = true;
         appState.preview.editing = false;
@@ -3507,8 +4537,25 @@
         }
       }
 
+      function syncPreviewOnTabChange() {
+        const pv = appState.preview;
+        if (!shouldShowRightInspectorPane()) {
+          previewDrawer.hidden = true;
+          syncWorkspaceSplitLayout();
+          return;
+        }
+        if (pv.needsDeferredRender || !pv.visible) {
+          renderPreviewDrawer({ preserveFocus: true });
+          return;
+        }
+        previewDrawer.hidden = false;
+        syncWorkspaceSplitLayout();
+        renderPreviewHeaderOnly();
+        renderPreviewBanner();
+      }
+
       function switchTab(tab, { persist = false, fromExternal = false } = {}) {
-        if (!['browse', 'artifacts', 'pins', 'search', 'accounts'].includes(tab)) return;
+        if (!['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'].includes(tab)) return;
         closeOpenWithMenu();
         appState.activeTab = tab;
         if (!fromExternal && persist) {
@@ -3520,15 +4567,26 @@
             callServerTool('update_state', { lastTab: tab }).catch(() => {});
           }
         }
+        let activeBtn = null;
         for (const btn of tabBtns) {
           const active = btn.dataset.tab === tab;
           btn.classList.toggle('is-active', active);
           btn.setAttribute('aria-selected', active ? 'true' : 'false');
+          if (active) activeBtn = btn;
+        }
+        if (activeBtn && typeof activeBtn.scrollIntoView === 'function') {
+          const prefersReduced = Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+          try {
+            activeBtn.scrollIntoView({ behavior: prefersReduced ? 'auto' : 'smooth', block: 'nearest', inline: 'nearest' });
+          } catch {
+            activeBtn.scrollIntoView();
+          }
         }
         for (const [k, panel] of Object.entries(tabPanels)) {
           panel.classList.toggle('is-active', k === tab);
         }
         renderTopbar();
+        syncPreviewOnTabChange();
         if (tab !== 'accounts' && quotaWaitRetryTimer) {
           clearTimeout(quotaWaitRetryTimer);
           quotaWaitRetryTimer = 0;
@@ -3540,6 +4598,8 @@
         } else if (tab === 'search') {
           renderSearch();
           searchInput.focus();
+        } else if (tab === 'models' && !appState.models.loaded && !appState.models.loading) {
+          loadModelsTab();
         } else if (tab === 'accounts' && !appState.accounts.loaded && !appState.accounts.loading) {
           loadAccountsTab({ forceRefresh: false });
         }
@@ -3550,7 +4610,10 @@
         const tab = appState.activeTab;
         const showFileSwitches = tab === 'browse';
         const showDblClick = tab === 'browse' || tab === 'pins';
-        if (topbarEl) topbarEl.classList.toggle('is-compact-controls', !showFileSwitches && !showDblClick);
+        if (topbarEl) {
+          topbarEl.classList.toggle('is-compact-controls', !showFileSwitches && !showDblClick);
+          topbarEl.classList.toggle('has-browse-controls', showFileSwitches);
+        }
         btnSmbToggle.hidden = !showFileSwitches;
         btnHiddenToggle.hidden = !showFileSwitches;
         btnDblClickToggle.hidden = !showDblClick;
@@ -3575,6 +4638,94 @@
         btnDblClickToggle.title = isOpenTab
           ? '双击文件将在 Antigravity 原生标签页打开（点击切换为定位）'
           : `双击文件将在 ${appState.platformLabel || '系统目录'} 中定位（点击切换为原生打开）`;
+
+        if (btnGuideToggle) {
+          const guideVisible = isTabGuideCurrentlyVisible(tab);
+          const hiddenCount = Array.isArray(appState.prefs.dismissedGuides) ? appState.prefs.dismissedGuides.length : 0;
+          btnGuideToggle.classList.toggle('is-active', guideVisible);
+          btnGuideToggle.setAttribute('aria-pressed', guideVisible ? 'true' : 'false');
+          btnGuideToggle.title = guideVisible
+            ? '当前页说明已展开（再次点击可收起隐藏）'
+            : (hiddenCount > 0 ? `点击展开当前页说明（共已隐藏 ${hiddenCount} 处提示）` : '点击查看当前页功能说明与快捷操作');
+        }
+        if (btnCloseWorkbench) {
+          const inHostFrame = Boolean(window.parent && window.parent !== window);
+          btnCloseWorkbench.hidden = !(inHostFrame && window.innerWidth >= 760);
+        }
+
+        requestAnimationFrame(updateTabGroupOverflow);
+      }
+
+      function renderTabGuideBanner(tab) {
+        const hasHiddenAny = (appState.prefs.dismissedGuides || []).length > 0;
+        const restoreBtn = hasHiddenAny
+          ? `<button type="button" class="mini-btn" data-guide-action="restore-all" title="恢复所有页面中被隐藏的说明提示">恢复全部说明</button>`
+          : '';
+        if (tab === 'browse') {
+          if (!browseGuideSlot) return;
+          if (!appState.guidesOpenInTab.browse) {
+            browseGuideSlot.innerHTML = '';
+            return;
+          }
+          browseGuideSlot.innerHTML =
+            `<div class="guide-banner guide-banner-in-tab">` +
+              `<div class="guide-banner-head">` +
+                `<span class="guide-banner-title">💡 目录浏览与宽屏分栏操作指南（零配置开箱即用）</span>` +
+                `<div class="guide-banner-actions">${restoreBtn}<button type="button" class="mini-btn" data-guide-close-tab="browse">× 收起</button></div>` +
+              `</div>` +
+              `<p>单击或按 <code>↑/↓</code> 选择文件即可在右侧分栏实时预览与行号划选（点击行号或 Shift+点击生成 <code>@file#L10-L25</code>）；直接按住任意文件行拖拽到对话输入框可一键附加引用；按 <code>Ctrl+L</code> 编辑路径，<code>/</code> 极速筛选当前目录。</p>` +
+            `</div>`;
+          return;
+        }
+        if (tab === 'artifacts') {
+          if (!artifactsGuideSlot) return;
+          if (!appState.guidesOpenInTab.artifacts) {
+            artifactsGuideSlot.innerHTML = '';
+            return;
+          }
+          artifactsGuideSlot.innerHTML =
+            `<div class="guide-banner guide-banner-in-tab">` +
+              `<div class="guide-banner-head">` +
+                `<span class="guide-banner-title">💡 最近会话产物说明（零配置自动聚合）</span>` +
+                `<div class="guide-banner-actions">${restoreBtn}<button type="button" class="mini-btn" data-guide-close-tab="artifacts">× 收起</button></div>` +
+              `</div>` +
+              `<p>自动扫描本机 <code>brain</code> 目录下最新生成的计划书、截图与 Markdown 报告，支持高清图片 <code>1:1 / 像素锐化</code> 预览、一键定位至 ${escapeHtml(appState.platformLabel || '系统文件管理器')} 或拖拽回对话框继续引用。</p>` +
+            `</div>`;
+          return;
+        }
+        if (tab === 'pins') {
+          if (!pinsGuideSlot) return;
+          if (!appState.guidesOpenInTab.pins) {
+            pinsGuideSlot.innerHTML = '';
+            return;
+          }
+          pinsGuideSlot.innerHTML =
+            `<div class="guide-banner guide-banner-in-tab">` +
+              `<div class="guide-banner-head">` +
+                `<span class="guide-banner-title">💡 收藏夹快捷提示</span>` +
+                `<div class="guide-banner-actions">${restoreBtn}<button type="button" class="mini-btn" data-guide-close-tab="pins">× 收起</button></div>` +
+              `</div>` +
+              `<p>可将高频访问的代码仓、NAS 共享目录或核心配置文件固定在此处，跨重启与切号持久保留。</p>` +
+            `</div>`;
+          return;
+        }
+        if (tab === 'search') {
+          if (!searchGuideSlot) return;
+          if (isGuideDismissed('guide:search:v1')) {
+            searchGuideSlot.innerHTML = '';
+            return;
+          }
+          const memBackend = appState.accounts.memoryStorage?.backend || appState.models.data?.memoryStorage?.backend || 'sqlite';
+          const memPill = memBackend === 'sqlite' ? '<span class="pill pill-ok">SQLite+FTS5 双模记忆免配就绪</span>' : '<span class="pill">本地双模记忆就绪</span>';
+          searchGuideSlot.innerHTML =
+            `<div class="guide-banner guide-banner-in-tab">` +
+              `<div class="guide-banner-head">` +
+                `<span class="guide-banner-title">🔍 跨会话脱敏全文检索 & 双模记忆说明 ${memPill}</span>` +
+                `<div class="guide-banner-actions">${restoreBtn}<button type="button" class="mini-btn" data-guide-dismiss="guide:search:v1">× 不再显示</button></div>` +
+              `</div>` +
+              `<p>本页检索与内置 <code>prism_memory_store / search / list</code> 工具均<strong>零配置开箱即用</strong>（自动脱敏 Token/私钥）；若需连接多端共享的远程 Streamable-HTTP Memory 网关，可前往「账号接力 → 主目录槽位看板 → ⚙️ 远程 Memory 桥」按需配置。</p>` +
+            `</div>`;
+        }
       }
 
       function buildBreadcrumbSegments(rawDir) {
@@ -3661,6 +4812,7 @@
       }
 
       function renderBrowse() {
+        renderTabGuideBanner('browse');
         const b = appState.browse;
         btnParent.disabled = !b.parent;
         if (document.activeElement !== pathInput) {
@@ -3735,9 +4887,13 @@
         }).join('');
 
         browseListWrap.innerHTML = `<ul class="item-list" role="list">${rowsHtml}</ul>`;
+        if (!appState.preview.visible && appState.activeTab === 'browse' && shouldShowRightInspectorPane()) {
+          renderPreviewDrawer({ preserveFocus: true });
+        }
       }
 
       function renderArtifacts() {
+        renderTabGuideBanner('artifacts');
         const a = appState.artifacts;
         artifactsDirLabel.textContent = appState.brainDir || '~/.gemini/antigravity/brain';
         artifactsDirLabel.title = appState.brainDir || '';
@@ -3763,13 +4919,32 @@
         }
 
         const canQuote = Boolean(appState.hostCapabilities?.updateModelContext);
-        const rowsHtml = filtered.map((item) => {
+        const nowDt = new Date();
+        const todayStart = new Date(nowDt.getFullYear(), nowDt.getMonth(), nowDt.getDate()).getTime();
+        const yesterdayStart = new Date(nowDt.getFullYear(), nowDt.getMonth(), nowDt.getDate() - 1).getTime();
+        const weekStart = new Date(nowDt.getFullYear(), nowDt.getMonth(), nowDt.getDate() - 6).getTime();
+        const resolveGroup = (mtimeMs) => {
+          const ts = Number(mtimeMs) || 0;
+          if (!ts) return '更早';
+          if (ts >= todayStart) return '今天';
+          if (ts >= yesterdayStart) return '昨天';
+          if (ts >= weekStart) return '近 7 天';
+          return '更早';
+        };
+        const outRows = [];
+        let lastGroup = '';
+        for (const item of filtered) {
+          const grp = resolveGroup(item.mtimeMs);
+          if (grp !== lastGroup) {
+            lastGroup = grp;
+            outRows.push(`<li class="list-group-head" role="presentation">${escapeHtml(grp)}</li>`);
+          }
           const realIdx = a.items.indexOf(item);
           const kind = KIND_ICONS[item.kind] ? item.kind : 'file';
           const selected = a.selectedPath === item.path;
           const showOpen = Boolean(item.uri) && !appState.nativeTabUnsupported;
           const ago = formatTimeAgo(item.mtimeMs);
-          return (
+          outRows.push(
             `<li class="list-row${selected ? ' is-selected' : ''}" draggable="true" data-list="artifacts" data-index="${realIdx}" title="${escapeHtml(item.path)}">` +
               `<span class="kind-icon kind-${escapeHtml(kind)}" aria-hidden="true">${KIND_ICONS[kind]}</span>` +
               `<span class="row-main">` +
@@ -3787,12 +4962,16 @@
               `</span>` +
             `</li>`
           );
-        }).join('');
+        }
 
-        artifactsListWrap.innerHTML = `<ul class="item-list" role="list">${rowsHtml}</ul>`;
+        artifactsListWrap.innerHTML = `<ul class="item-list" role="list">${outRows.join('')}</ul>`;
+        if (!appState.preview.visible && appState.activeTab === 'artifacts' && shouldShowRightInspectorPane()) {
+          renderPreviewDrawer({ preserveFocus: true });
+        }
       }
 
       function renderPins() {
+        renderTabGuideBanner('pins');
         const p = appState.pins;
         const curDir = appState.browse.dir;
         const curPinned = Boolean(curDir) && appState.prefs.pinnedPaths.includes(curDir);
@@ -3837,9 +5016,13 @@
         }).join('');
 
         pinsListWrap.innerHTML = `<ul class="item-list" role="list">${rowsHtml}</ul>`;
+        if (!appState.preview.visible && appState.activeTab === 'pins' && shouldShowRightInspectorPane()) {
+          renderPreviewDrawer({ preserveFocus: true });
+        }
       }
 
       function renderSearch() {
+        renderTabGuideBanner('search');
         const s = appState.search;
         btnClearSearch.hidden = !searchInput.value;
         for (const btn of searchFilterBtns) {
@@ -3934,7 +5117,33 @@
       function renderPreviewHeaderOnly() {
         const pv = appState.preview;
         const data = pv.data;
-        if (!pv.visible) return;
+        if (!shouldShowRightInspectorPane()) return;
+
+        if (!pv.visible) {
+          previewIcon.className = 'kind-icon kind-dir';
+          previewIcon.innerHTML = KIND_ICONS.dir;
+          const tabTitles = { browse: '当前目录速览与快捷操作', artifacts: '会话产物预览区', pins: '收藏夹速览面板' };
+          previewFilename.textContent = tabTitles[appState.activeTab] || '工作区速览';
+          previewFilename.title = appState.browse.dir || '';
+          previewSize.textContent = appState.activeTab === 'browse' ? `${appState.browse.entries.length} 项` : '';
+          previewBadgeRo.hidden = true;
+          previewBadgeTrunc.hidden = true;
+          previewBadgeDirty.hidden = true;
+          mdModeGroup.hidden = true;
+          btnPreviewPin.hidden = true;
+          btnPreviewOpen.hidden = true;
+          btnPreviewOpenWith.hidden = true;
+          btnPreviewReveal.hidden = !(appState.activeTab === 'browse' && appState.browse.dir);
+          btnPreviewCopy.hidden = true;
+          btnPreviewQuote.hidden = true;
+          btnPreviewEdit.hidden = true;
+          btnPreviewSave.hidden = true;
+          btnPreviewCancel.hidden = true;
+          const wide = isWideSplitActive();
+          btnPreviewCollapse.textContent = wide ? (pv.collapsed ? '◂' : '▸') : (pv.collapsed ? '▴' : '▾');
+          btnPreviewCollapse.title = pv.collapsed ? '展开面板' : '收起面板';
+          return;
+        }
 
         const kind = data?.kind && KIND_ICONS[data.kind] ? data.kind : 'file';
         previewIcon.className = `kind-icon kind-${kind}`;
@@ -3979,22 +5188,119 @@
         btnPreviewSave.hidden = !pv.editing;
         btnPreviewCancel.hidden = !pv.editing;
 
-        btnPreviewCollapse.textContent = pv.collapsed ? '▴' : '▾';
+        const wide = isWideSplitActive();
+        btnPreviewCollapse.textContent = wide
+          ? (pv.collapsed ? '◂' : '▸')
+          : (pv.collapsed ? '▴' : '▾');
         btnPreviewCollapse.title = pv.collapsed ? '展开预览' : '收起预览';
       }
 
-      function renderPreviewDrawer() {
+      function applyActiveImagePreviewMode() {
         const pv = appState.preview;
-        previewDrawer.hidden = !pv.visible;
-        if (!pv.visible) return;
+        const stage = previewBody.querySelector('.image-stage');
+        if (!stage) return;
+        const canvas = stage.querySelector('.image-canvas');
+        const img = stage.querySelector('img');
+        if (!canvas || !img) return;
 
-        previewDrawer.classList.toggle('is-collapsed', pv.collapsed);
-        if (!pv.collapsed) {
-          previewDrawer.style.height = `${pv.height}px`;
+        const isActual = pv.imgScaleMode === '1:1';
+        const isPix = Boolean(pv.imgPixelated);
+        canvas.classList.toggle('is-actual', isActual);
+        img.classList.toggle('is-pixelated', isPix);
+
+        if (isActual && img.naturalWidth > 0 && img.naturalHeight > 0) {
+          const dpr = window.devicePixelRatio || 1;
+          img.style.width = `${Math.max(1, Math.round(img.naturalWidth / dpr))}px`;
+          img.style.height = `${Math.max(1, Math.round(img.naturalHeight / dpr))}px`;
+        } else {
+          img.style.width = '';
+          img.style.height = '';
         }
+
+        const fitBtn = stage.querySelector('button[data-img-mode="fit"]');
+        const actBtn = stage.querySelector('button[data-img-mode="1:1"]');
+        const pixBtn = stage.querySelector('button[data-img-action="pixel"]');
+        if (fitBtn) fitBtn.classList.toggle('is-active', !isActual);
+        if (actBtn) actBtn.classList.toggle('is-active', isActual);
+        if (pixBtn) {
+          pixBtn.classList.toggle('is-active', isPix);
+          pixBtn.setAttribute('aria-pressed', isPix ? 'true' : 'false');
+        }
+      }
+
+      function renderInspectorOverviewBody() {
+        const tab = appState.activeTab;
+        const plat = appState.platformLabel || '系统文件管理器';
+        if (tab === 'browse') {
+          const entries = appState.browse.entries || [];
+          const dirCnt = entries.filter((x) => x.isDir).length;
+          const fileCnt = entries.length - dirCnt;
+          const codeCnt = entries.filter((x) => !x.isDir && (x.kind === 'code' || x.kind === 'markdown')).length;
+          const imgCnt = entries.filter((x) => !x.isDir && x.kind === 'image').length;
+          const curDir = appState.browse.dir || appState.homeDir || '';
+          const pinned = Boolean(curDir) && appState.prefs.pinnedPaths.includes(curDir);
+          previewBody.innerHTML =
+            `<div class="inspector-overview">` +
+              `<div class="relay-card">` +
+                `<div class="relay-card-head">` +
+                  `<span class="relay-title">📂 当前工作目录</span>` +
+                  `<div class="search-card-actions">` +
+                    (curDir ? `<button type="button" class="mini-btn" data-inspector-action="copy-dir">复制路径</button>` : '') +
+                    (curDir ? `<button type="button" class="mini-btn" data-inspector-action="pin-dir">${pinned ? '★ 已收藏' : '☆ 收藏目录'}</button>` : '') +
+                    (curDir ? `<button type="button" class="mini-btn is-primary" data-inspector-action="reveal-dir">在 ${escapeHtml(plat)} 打开</button>` : '') +
+                  `</div>` +
+                `</div>` +
+                `<div class="relay-sub"><code style="word-break:break-all;">${escapeHtml(curDir || '正在读取路径…')}</code></div>` +
+                `<div class="inspector-stat-grid" style="margin-top:4px;">` +
+                  `<div class="inspector-stat-box"><span class="inspector-stat-val">${dirCnt}</span><span class="inspector-stat-lbl">子文件夹</span></div>` +
+                  `<div class="inspector-stat-box"><span class="inspector-stat-val">${fileCnt}</span><span class="inspector-stat-lbl">文件数</span></div>` +
+                  `<div class="inspector-stat-box"><span class="inspector-stat-val">${codeCnt}</span><span class="inspector-stat-lbl">代码 / 文档</span></div>` +
+                  `<div class="inspector-stat-box"><span class="inspector-stat-val">${imgCnt}</span><span class="inspector-stat-lbl">图片素材</span></div>` +
+                `</div>` +
+              `</div>` +
+              `<div class="relay-card">` +
+                `<span class="relay-title">⌨️ 桌面宽屏高效交互</span>` +
+                `<div class="inspector-kbd-list">` +
+                  `<div class="inspector-kbd-item"><kbd>单击 / ↑↓</kbd><span>右侧实时预览文件与图片</span></div>` +
+                  `<div class="inspector-kbd-item"><kbd>点击行号</kbd><span>Shift 选区间生成 <code>@file#L1-L9</code></span></div>` +
+                  `<div class="inspector-kbd-item"><kbd>拖拽文件行</kbd><span>直接拖入对话框附加路径引用</span></div>` +
+                  `<div class="inspector-kbd-item"><kbd>Ctrl + L</kbd><span>编辑或粘贴任意本地 / NAS 路径</span></div>` +
+                  `<div class="inspector-kbd-item"><kbd>/</kbd><span>0ms 聚焦过滤当前列表</span></div>` +
+                  `<div class="inspector-kbd-item"><kbd>Alt + 1..6</kbd><span>键盘一键切换六大工作台页签</span></div>` +
+                `</div>` +
+              `</div>` +
+            `</div>`;
+          return;
+        }
+        const count = tab === 'artifacts' ? appState.artifacts.items.length : appState.pins.items.length;
+        const label = tab === 'artifacts' ? '近期会话产物' : '收藏夹条目';
+        previewBody.innerHTML =
+          `<div class="inspector-overview">` +
+            `<div class="relay-card">` +
+              `<span class="relay-title">👈 在左侧点击任意${label}即可在此处高清预览</span>` +
+              `<p class="relay-sub">当前共加载 <strong>${count}</strong> 项；支持 Markdown 排版渲染、源码行号区间引用、小图标像素级锐化与 <code>1:1</code> 原寸检视。若希望单列铺满全宽，可点击右上角 <code>×</code> 收起本预览栏。</p>` +
+            `</div>` +
+          `</div>`;
+      }
+
+      function renderPreviewDrawer({ preserveFocus = false } = {}) {
+        const pv = appState.preview;
+        const showPane = shouldShowRightInspectorPane();
+        previewDrawer.hidden = !showPane;
+        syncWorkspaceSplitLayout();
+        if (!showPane) {
+          pv.needsDeferredRender = Boolean(pv.visible);
+          return;
+        }
+        pv.needsDeferredRender = false;
 
         renderPreviewHeaderOnly();
         renderPreviewBanner();
+
+        if (!pv.visible) {
+          renderInspectorOverviewBody();
+          return;
+        }
 
         if (pv.loading) {
           previewBody.innerHTML = '<div class="preview-placeholder">正在读取文件内容…</div>';
@@ -4027,7 +5333,7 @@
             }
           });
           previewBody.appendChild(ta);
-          ta.focus();
+          if (!preserveFocus) ta.focus();
           return;
         }
 
@@ -4040,21 +5346,45 @@
           previewBody.innerHTML = '';
           const stage = document.createElement('div');
           stage.className = 'image-stage';
+          const canvas = document.createElement('div');
+          canvas.className = 'image-canvas';
           const img = document.createElement('img');
           img.alt = data.name || '图片预览';
+
+          const hud = document.createElement('div');
+          hud.className = 'image-hud';
           const meta = document.createElement('div');
           meta.className = 'image-meta';
           meta.textContent = `${data.mime || 'image'} · ${data.sizeText || ''}`;
+
+          const modeBar = document.createElement('div');
+          modeBar.className = 'seg-toggle image-mode-bar';
+          modeBar.setAttribute('role', 'group');
+          modeBar.setAttribute('aria-label', '图片预览缩放与清晰度模式');
+          modeBar.innerHTML =
+            '<button type="button" class="seg-btn" data-img-mode="fit" title="完整适应预览视口">适应</button>' +
+            '<button type="button" class="seg-btn" data-img-mode="1:1" title="按设备物理像素 1:1 原寸还原（可自由滚动查看高清细节）">1:1</button>' +
+            '<span class="seg-sep" aria-hidden="true"></span>' +
+            '<button type="button" class="seg-btn" data-img-action="pixel" aria-pressed="false" title="切换像素锐化渲染（小尺寸图标/像素画自动开启）">像素</button>';
+
           img.addEventListener('load', () => {
+            if (pv.imgPixelated === null) {
+              pv.imgPixelated = img.naturalWidth > 0 && img.naturalHeight > 0 && img.naturalWidth <= 128 && img.naturalHeight <= 128;
+            }
             meta.textContent = `${img.naturalWidth} × ${img.naturalHeight} px · ${data.mime || 'image'} · ${data.sizeText || ''}`;
+            applyActiveImagePreviewMode();
           });
           img.addEventListener('error', () => {
             meta.textContent = '图片解码失败';
           });
           img.src = data.dataUrl;
-          stage.appendChild(img);
-          stage.appendChild(meta);
+          canvas.appendChild(img);
+          hud.appendChild(meta);
+          hud.appendChild(modeBar);
+          stage.appendChild(canvas);
+          stage.appendChild(hud);
           previewBody.appendChild(stage);
+          applyActiveImagePreviewMode();
           return;
         }
 
@@ -4112,8 +5442,540 @@
         renderArtifacts();
         renderPins();
         renderSearch();
+        renderModels();
         renderAccounts();
         renderPreviewDrawer();
+      }
+
+      async function loadModelsTab({ silent = false } = {}) {
+        const seq = ++appState.models.seq;
+        if (!silent) {
+          appState.models.loading = true;
+          appState.models.error = '';
+          setTopProgress(true);
+          if (!appState.models.data) renderModels();
+        }
+        try {
+          const prof = await callServerTool('model_hub_get_profile', {});
+          if (seq !== appState.models.seq) return;
+          appState.models.data = prof || null;
+          appState.models.loaded = true;
+          appState.models.loading = false;
+          if (prof?.remoteSync) appState.accounts.remoteSync = prof.remoteSync;
+          if (prof?.memoryStorage) appState.accounts.memoryStorage = prof.memoryStorage;
+          if (!silent) setTopProgress(false);
+        } catch (err) {
+          if (seq !== appState.models.seq) return;
+          appState.models.loading = false;
+          if (!silent) {
+            setTopProgress(false);
+            appState.models.error = err?.message || '读取模型中枢配置失败';
+          }
+        }
+        renderModels();
+      }
+
+      function buildZeroSecretAiSetupPrompt(profilePath) {
+        const targetPath = profilePath || '~/.gemini/antigravity/prism-files/prism-profile.json';
+        return [
+          '请帮我配置 Prism Suite 模型会诊中枢（零明文密钥安全模式）：',
+          `1. 读取并更新本机配置文件 \`${targetPath}\`（保持文件权限 0600，绝不写入任何明文 API Key，仅绑定环境变量名 \`apiKeyEnv\` 或免密本地端点 \`allowKeyless: true\`）；`,
+          '2. 按我的实际网关环境配置 providers 与 T1–T4 四级梯队 models（若尚不清楚我想接入哪个网关 URL 或环境变量名，请先向我确认）；',
+          '3. 配置保存后，调用 `prism_list_models` 校验模型就绪状态并向我汇报。'
+        ].join('\n');
+      }
+
+      function renderModels() {
+        if (!modelsWrap) return;
+        renderTopbar();
+        const st = appState.models;
+        const d = st.data;
+        const providers = Array.isArray(d?.providers) ? d.providers : [];
+        const models = Array.isArray(d?.models) ? d.models : [];
+        const favIds = Array.isArray(d?.favorites) ? d.favorites : [];
+        const readyCount = models.filter((m) => m.ready).length;
+
+        if (modelsSummaryLabel) {
+          modelsSummaryLabel.textContent = d
+            ? `已配 ${providers.length} 网关 · ${models.length} 模型（${readyCount} 就绪） · 0600 公私隔离`
+            : '零依赖流式会诊中枢 · 公私隔离 (0600)';
+        }
+        if (btnMhubAddProvider) {
+          const addProvActive = Boolean(st.showProviderForm && !st.editingProviderId);
+          btnMhubAddProvider.classList.toggle('is-active', addProvActive);
+          btnMhubAddProvider.setAttribute('aria-pressed', addProvActive ? 'true' : 'false');
+        }
+        if (btnMhubDiscover) {
+          btnMhubDiscover.classList.toggle('is-active', Boolean(st.showDiscoverPanel));
+          btnMhubDiscover.setAttribute('aria-pressed', st.showDiscoverPanel ? 'true' : 'false');
+        }
+        if (btnMhubAddModel) {
+          const addModActive = Boolean(st.showModelForm && !st.editingModelId);
+          btnMhubAddModel.classList.toggle('is-active', addModActive);
+          btnMhubAddModel.setAttribute('aria-pressed', addModActive ? 'true' : 'false');
+        }
+        if (btnMhubProbeFavs) {
+          btnMhubProbeFavs.disabled = st.batchProbing || models.length === 0;
+          btnMhubProbeFavs.textContent = st.batchProbing ? '测速中…' : '⚡ 测速';
+        }
+
+        const qRaw = String(st.query || '');
+        const qLower = qRaw.trim().toLowerCase();
+        const tf = st.tierFilter || 'all';
+        const isFilteringModels = Boolean(qLower) || tf !== 'all';
+        const filteredModels = isFilteringModels
+          ? models.filter((m) => {
+              if (tf === 'ready' && !m.ready) return false;
+              if ((tf === 'T1' || tf === 'T2' || tf === 'T3' || tf === 'T4') && m.tier !== tf) return false;
+              if (!qLower) return true;
+              return [m.alias, m.id, m.vendor, m.roleHint, m.upstreamModel, m.providerId]
+                .some((v) => String(v || '').toLowerCase().includes(qLower));
+            })
+          : models;
+
+        if (modelsFilterBar) {
+          modelsFilterBar.hidden = models.length === 0;
+          if (modelsFilterInput && document.activeElement !== modelsFilterInput && modelsFilterInput.value !== qRaw) {
+            modelsFilterInput.value = qRaw;
+          }
+          if (btnClearModelsFilter) {
+            btnClearModelsFilter.hidden = !qRaw;
+          }
+          for (const fBtn of modelsFilterBtns) {
+            const fActive = (fBtn.dataset.mhubFilter || 'all') === tf;
+            fBtn.classList.toggle('is-active', fActive);
+            fBtn.setAttribute('aria-pressed', fActive ? 'true' : 'false');
+          }
+          if (modelsFilterCount) {
+            modelsFilterCount.hidden = !isFilteringModels;
+            if (isFilteringModels) {
+              modelsFilterCount.textContent = `${filteredModels.length} / ${models.length}`;
+            }
+          }
+        }
+
+        if (st.loading && !d) {
+          modelsWrap.innerHTML = '<div class="empty-state">正在加载模型中枢配置…</div>';
+          return;
+        }
+        if (st.error && !d) {
+          modelsWrap.innerHTML =
+            `<article class="relay-card is-warn">` +
+              `<div class="relay-card-head"><span class="relay-title">加载模型中枢失败</span><button type="button" class="mini-btn is-primary" data-mhub-action="reload">重试</button></div>` +
+              `<p class="relay-sub">${escapeHtml(st.error)}</p>` +
+            `</article>`;
+          return;
+        }
+
+        const parts = [];
+        const profilePath = d?.profilePath || '~/.gemini/antigravity/prism-files/prism-profile.json';
+        if (!isGuideDismissed('guide:models:v1')) {
+          const hasHiddenAny = (appState.prefs.dismissedGuides || []).length > 0;
+          parts.push(
+            `<div class="guide-banner">` +
+              `<div class="guide-banner-head">` +
+                `<span class="guide-banner-title">🧭 MCP 工具免配范围与「可视化 + AI 代配」双轨部署说明</span>` +
+                `<div class="guide-banner-actions">` +
+                  (hasHiddenAny ? `<button type="button" class="mini-btn" data-guide-action="restore-all">恢复全部说明</button>` : '') +
+                  `<button type="button" class="mini-btn" data-guide-dismiss="guide:models:v1">× 不再显示</button>` +
+                `</div>` +
+              `</div>` +
+              `<p>1. <strong>开箱免配置能力</strong>：文件卡片 <code>show_files_inline</code>、双模记忆 <code>prism_memory_*</code>（SQLite+FTS5）、额度同步 <code>prism_quota_sync</code> 与 3 项内置 Skill <strong>无需任何配置即刻可用</strong>。<br>` +
+              `2. <strong>跨厂商会诊配置（任选其一）</strong>：① 点上方 <strong>「+ 网关」→「🔍 发现模型」</strong> 可视化拉取 <code>/v1/models</code> 勾选导入；② 点 <strong>「🤖 AI 代配」</strong> 复制零密钥口令让当前 AI 自动写入 <code>${escapeHtml(profilePath)}</code>（仅填环境变量名或存入系统凭据库，严禁在聊天中粘贴明文私钥）。</p>` +
+            `</div>`
+          );
+        }
+
+        const presets = d?.presets || {
+          openai: { label: 'OpenAI 官方 / 兼容网关', protocol: 'openai-chat', defaultBaseUrl: 'https://api.openai.com/v1', suggestedEnv: 'OPENAI_API_KEY' },
+          'openai-responses': { label: 'OpenAI Responses 网关', protocol: 'openai-responses', defaultBaseUrl: 'https://api.openai.com/v1', suggestedEnv: 'OPENAI_API_KEY' },
+          anthropic: { label: 'Anthropic 官方 / 兼容网关', protocol: 'anthropic-messages', defaultBaseUrl: 'https://api.anthropic.com/v1', suggestedEnv: 'ANTHROPIC_API_KEY' },
+          'gemini-openai': { label: 'Google Gemini (OpenAI 兼容)', protocol: 'openai-chat', defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', suggestedEnv: 'GEMINI_API_KEY' },
+          'ollama-local': { label: '本机 Ollama (免 Key)', protocol: 'openai-chat', defaultBaseUrl: 'http://127.0.0.1:11434/v1', suggestedEnv: '' }
+        };
+
+        // Provider Add/Edit Form
+        if (st.showProviderForm) {
+          const editingP = st.editingProviderId ? providers.find((p) => p.id === st.editingProviderId) : null;
+          const presetOptions = Object.entries(presets)
+            .map(([k, v]) => `<option value="${escapeHtml(k)}" ${editingP?.preset === k ? 'selected' : ''}>${escapeHtml(v.label)}</option>`)
+            .join('');
+          const secNoteHtml = isGuideDismissed('guide:models-sec:v1')
+            ? ''
+            : `<div class="relay-sub" style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">` +
+                `<span>🛡️ <strong>反报毒与公私隔离保护</strong>：配置存于 <code>prism-profile.json</code> (0600)，推荐填写环境变量名，或录入系统凭据库（修改网关域名时需重新验证密钥防误发）。</span>` +
+                `<button type="button" class="mini-btn" style="flex-shrink:0;" data-guide-dismiss="guide:models-sec:v1">× 隐藏提示</button>` +
+              `</div>`;
+          parts.push(
+            `<article class="relay-card is-accent mhub-form-card">` +
+              `<div class="relay-card-head">` +
+                `<span class="relay-title">${editingP ? `编辑网关 · ${escapeHtml(editingP.id)}` : '➕ 添加跨厂商兼容网关'}</span>` +
+                `<button type="button" class="mini-btn" data-mhub-action="cancel-provider">收起</button>` +
+              `</div>` +
+              secNoteHtml +
+              `<div class="mhub-form-grid">` +
+                `<label class="mhub-field">快速预设模板` +
+                  `<select id="mh-prov-preset" class="relay-select">` +
+                    `<option value="">-- 自定义网关 --</option>${presetOptions}` +
+                  `</select>` +
+                `</label>` +
+                `<label class="mhub-field">网关 ID（唯一标识）` +
+                  `<input id="mh-prov-id" class="text-input" type="text" placeholder="如 cpa-hub / openai-main" value="${escapeHtml(editingP?.id || '')}" ${editingP ? 'readonly' : ''} />` +
+                `</label>` +
+                `<label class="mhub-field">显示名称` +
+                  `<input id="mh-prov-label" class="text-input" type="text" placeholder="如 NAS 统一网关 / OpenAI" value="${escapeHtml(editingP?.label || '')}" />` +
+                `</label>` +
+                `<label class="mhub-field">流式协议` +
+                  `<select id="mh-prov-proto" class="relay-select">` +
+                    `<option value="openai-chat" ${(!editingP || editingP.protocol === 'openai-chat') ? 'selected' : ''}>OpenAI Chat (/chat/completions)</option>` +
+                    `<option value="openai-responses" ${editingP?.protocol === 'openai-responses' ? 'selected' : ''}>OpenAI Responses (/responses)</option>` +
+                    `<option value="anthropic-messages" ${editingP?.protocol === 'anthropic-messages' ? 'selected' : ''}>Anthropic Messages (/messages)</option>` +
+                  `</select>` +
+                `</label>` +
+                `<label class="mhub-field" style="grid-column: 1 / -1;">网关 Base URL` +
+                  `<input id="mh-prov-url" class="text-input" type="text" placeholder="如 https://api.openai.com/v1 或 http://127.0.0.1:11434/v1" value="${escapeHtml(editingP?.baseUrl || '')}" />` +
+                `</label>` +
+                `<label class="mhub-field">绑定环境变量名（推荐 · 零落盘）` +
+                  `<input id="mh-prov-env" class="text-input" type="text" placeholder="如 OPENAI_API_KEY（免密网关留空）" value="${escapeHtml(editingP?.apiKeyEnv || '')}" />` +
+                `</label>` +
+                `<label class="mhub-field">或存入系统凭据库（可选 · 写后不回显）` +
+                  `<input id="mh-prov-key" class="text-input" type="password" autocomplete="new-password" placeholder="${editingP?.hasVaultKey ? '已存系统凭据库（改域名须重填）' : '可选：直接录入存入 OS 凭据库'}" />` +
+                `</label>` +
+              `</div>` +
+              `<div class="relay-form-row" style="margin-top:6px;">` +
+                `<label style="font-size:11.5px;display:inline-flex;align-items:center;gap:4px;"><input type="checkbox" id="mh-prov-keyless" ${editingP?.allowKeyless ? 'checked' : ''}>本地免密网关（如 Ollama）</label>` +
+                (editingP?.hasVaultKey ? `<button type="button" class="mini-btn is-danger-subtle" data-mhub-action="clear-prov-vault" data-id="${escapeHtml(editingP.id)}">清除已存凭据库密钥</button>` : '') +
+                `<button type="button" class="ctrl-btn is-primary" data-mhub-action="save-provider">保存网关</button>` +
+              `</div>` +
+            `</article>`
+          );
+        }
+
+        // Auto-Discover & Batch Import Panel (/v1/models)
+        if (st.showDiscoverPanel) {
+          const curDiscProv = st.discoverProviderId && providers.some((p) => p.id === st.discoverProviderId)
+            ? st.discoverProviderId
+            : (providers[0]?.id || '');
+          st.discoverProviderId = curDiscProv;
+          const provOpts = providers.map((p) => `<option value="${escapeHtml(p.id)}" ${p.id === curDiscProv ? 'selected' : ''}>${escapeHtml(p.label)} (${escapeHtml(p.id)})</option>`).join('');
+          const existingUpstreamSet = new Set(
+            models.filter((m) => m.providerId === curDiscProv).map((m) => String(m.upstreamModel || m.id))
+          );
+          const dq = String(st.discoverQuery || '').trim().toLowerCase();
+          const discFiltered = (st.discoverItems || []).filter((it) => {
+            if (st.discoverChatOnly && it.isChat === false) return false;
+            if (!dq) return true;
+            const labelId = String(it.upstreamModel || it.suggestedId || '').toLowerCase();
+            return labelId.includes(dq) || String(it.vendor || '').toLowerCase().includes(dq);
+          });
+          const isItemAlreadyImported = (it) => {
+            const up = String(it.upstreamModel || it.suggestedId || '');
+            const sg = String(it.suggestedId || up);
+            return Boolean(it.alreadyAdded || existingUpstreamSet.has(up) || models.some((m) => m.id === sg || m.id === up));
+          };
+          const selectedEntries = Object.entries(st.discoverSelected || {}).filter(([, v]) => Boolean(v));
+          const listHtml = st.discoverLoading
+            ? '<div class="empty-state" style="padding:14px;">正在请求网关 /models 列表…</div>'
+            : st.discoverError
+              ? `<p class="relay-sub" style="color:var(--p-danger);">${escapeHtml(st.discoverError)}</p>`
+              : discFiltered.length
+                ? `<div class="mhub-discover-list">` +
+                  discFiltered.map((it) => {
+                    const keyId = String(it.upstreamModel || it.suggestedId || '');
+                    const dispId = String(it.suggestedId || keyId);
+                    const already = isItemAlreadyImported(it);
+                    const pickedTier = st.discoverSelected?.[keyId] || '';
+                    const defTier = it.tier || 'T2';
+                    const curTier = pickedTier || defTier;
+                    return (
+                      `<div class="mhub-disc-item${pickedTier ? ' is-selected' : ''}">` +
+                        `<label class="mhub-disc-left" title="${escapeHtml(keyId)}">` +
+                          `<input type="checkbox" class="mhub-disc-cb" data-model-id="${escapeHtml(keyId)}" data-def-tier="${escapeHtml(defTier)}" ${pickedTier ? 'checked' : ''} ${already ? 'disabled' : ''} />` +
+                          `<span class="mhub-disc-id">${escapeHtml(dispId)}</span>` +
+                        `</label>` +
+                        `<span class="pill">${escapeHtml(it.vendor || 'other')}</span>` +
+                        (already
+                          ? '<span class="pill pill-ok">已导入</span>'
+                          : `<select class="mhub-tier-mini-sel" data-disc-tier-for="${escapeHtml(keyId)}" aria-label="导入梯队">` +
+                              ['T1', 'T2', 'T3', 'T4'].map((t) => `<option value="${t}" ${curTier === t ? 'selected' : ''}>${t}</option>`).join('') +
+                            `</select>`) +
+                      `</div>`
+                    );
+                  }).join('') +
+                  `</div>`
+                : (st.discoverItems?.length
+                  ? '<div class="empty-state" style="padding:12px;">没有匹配当前过滤条件的模型</div>'
+                  : '<p class="relay-sub">选择网关后点「拉取模型列表」，即可一键勾选导入上游支持的模型并自动推断 T1–T4 梯队（若网关不支持 <code>/models</code>，仍可使用「+ 模型」手动添加）。</p>');
+
+          parts.push(
+            `<article class="relay-card is-accent mhub-form-card">` +
+              `<div class="relay-card-head">` +
+                `<span class="relay-title">🔍 从网关自动发现并批量导入模型</span>` +
+                `<button type="button" class="mini-btn" data-mhub-action="close-discover">收起</button>` +
+              `</div>` +
+              (!providers.length
+                ? `<p class="relay-sub">尚未配置网关，请先点击「+ 网关」添加兼容端点后再拉取模型列表。</p>`
+                : `<div class="relay-form-row">` +
+                    `<select id="mh-disc-prov" class="relay-select">${provOpts}</select>` +
+                    `<button type="button" class="ctrl-btn is-primary" data-mhub-action="run-discover" ${st.discoverLoading ? 'disabled' : ''}>${st.discoverLoading ? '拉取中…' : '拉取 /models 列表'}</button>` +
+                    `<input id="mh-disc-filter" class="text-input" style="max-width:180px;" type="text" placeholder="过滤模型 ID / 厂商…" value="${escapeHtml(st.discoverQuery || '')}" />` +
+                    `<label style="font-size:11.5px;display:inline-flex;align-items:center;gap:4px;"><input type="checkbox" id="mh-disc-chatonly" ${st.discoverChatOnly ? 'checked' : ''}>仅显示对话模型</label>` +
+                  `</div>` +
+                  listHtml +
+                  (st.discoverItems?.length
+                    ? `<div class="relay-form-row" style="justify-content:space-between;margin-top:4px;">` +
+                        `<div class="relay-form-row">` +
+                          `<button type="button" class="mini-btn" data-mhub-action="disc-select-all">全选当前未导入 (${discFiltered.filter((x) => !isItemAlreadyImported(x)).length})</button>` +
+                          `<button type="button" class="mini-btn" data-mhub-action="disc-select-none">清空勾选</button>` +
+                        `</div>` +
+                        `<button type="button" class="ctrl-btn is-primary" data-mhub-action="disc-import" ${(!selectedEntries.length || st.discoverImporting) ? 'disabled' : ''}>${st.discoverImporting ? '导入中…' : `一键导入已勾模型 (${selectedEntries.length})`}</button>` +
+                      `</div>`
+                    : '')
+              ) +
+            `</article>`
+          );
+        }
+
+        // Model Add/Edit Form
+        if (st.showModelForm) {
+          const editingM = st.editingModelId ? models.find((m) => m.id === st.editingModelId) : null;
+          const provOpts = providers.map((p) => `<option value="${escapeHtml(p.id)}" ${editingM?.providerId === p.id ? 'selected' : ''}>${escapeHtml(p.label)} (${escapeHtml(p.id)})</option>`).join('');
+          const fbOpts = models
+            .filter((m) => !editingM || m.id !== editingM.id)
+            .map((m) => `<option value="${escapeHtml(m.id)}" ${editingM?.fallbackModelId === m.id ? 'selected' : ''}>${escapeHtml(m.alias || m.id)} (${escapeHtml(m.tier)})</option>`)
+            .join('');
+          parts.push(
+            `<article class="relay-card is-accent mhub-form-card">` +
+              `<div class="relay-card-head">` +
+                `<span class="relay-title">${editingM ? `编辑模型 · ${escapeHtml(editingM.id)}` : '➕ 编排会诊模型（T1–T4 梯队）'}</span>` +
+                `<button type="button" class="mini-btn" data-mhub-action="cancel-model">收起</button>` +
+              `</div>` +
+              (!providers.length
+                ? `<p class="relay-sub">请先点击上方「+ 网关」添加一个兼容网关后再编排模型。</p>`
+                : `<div class="mhub-form-grid">` +
+                    `<label class="mhub-field">归属网关` +
+                      `<select id="mh-mod-prov" class="relay-select">${provOpts}</select>` +
+                    `</label>` +
+                    `<label class="mhub-field">模型调用 ID（供 AI 调用）` +
+                      `<input id="mh-mod-id" class="text-input" type="text" placeholder="如 gpt-6.2-astra / claude-opus" value="${escapeHtml(editingM?.id || '')}" ${editingM ? 'readonly' : ''} />` +
+                    `</label>` +
+                    `<label class="mhub-field">上游真实模型名 (upstreamModel)` +
+                      `<input id="mh-mod-upstream" class="text-input" type="text" placeholder="留空默认同调用 ID" value="${escapeHtml(editingM?.upstreamModel || '')}" />` +
+                    `</label>` +
+                    `<label class="mhub-field">友好别名` +
+                      `<input id="mh-mod-alias" class="text-input" type="text" placeholder="如 GPT-6.2 Astra 架构主审" value="${escapeHtml(editingM?.alias || '')}" />` +
+                    `</label>` +
+                    `<label class="mhub-field">能力梯队` +
+                      `<select id="mh-mod-tier" class="relay-select">` +
+                        `<option value="T1" ${editingM?.tier === 'T1' ? 'selected' : ''}>T1 顶配旗舰（重决策/对抗辩论）</option>` +
+                        `<option value="T2" ${(!editingM || editingM.tier === 'T2') ? 'selected' : ''}>T2 常规主力（日常 Diff 二审）</option>` +
+                        `<option value="T3" ${editingM?.tier === 'T3' ? 'selected' : ''}>T3 进阶性价比（高频分析/中文）</option>` +
+                        `<option value="T4" ${editingM?.tier === 'T4' ? 'selected' : ''}>T4 轻量高速（长文摘要/初筛）</option>` +
+                      `</select>` +
+                    `</label>` +
+                    `<label class="mhub-field">所属厂商家族（跨厂商避让自审）` +
+                      `<select id="mh-mod-vendor" class="relay-select">` +
+                        `<option value="openai" ${editingM?.vendor === 'openai' ? 'selected' : ''}>OpenAI</option>` +
+                        `<option value="anthropic" ${editingM?.vendor === 'anthropic' ? 'selected' : ''}>Anthropic (Claude)</option>` +
+                        `<option value="google" ${editingM?.vendor === 'google' ? 'selected' : ''}>Google (Gemini)</option>` +
+                        `<option value="deepseek" ${editingM?.vendor === 'deepseek' ? 'selected' : ''}>DeepSeek</option>` +
+                        `<option value="glm" ${editingM?.vendor === 'glm' ? 'selected' : ''}>GLM</option>` +
+                        `<option value="other" ${(!editingM || editingM.vendor === 'other') ? 'selected' : ''}>Other</option>` +
+                      `</select>` +
+                    `</label>` +
+                    `<label class="mhub-field">限流/超时备用降级模型 (1 跳防环)` +
+                      `<select id="mh-mod-fb" class="relay-select">` +
+                        `<option value="">-- 无备用降级 --</option>${fbOpts}` +
+                      `</select>` +
+                    `</label>` +
+                    `<label class="mhub-field">职责备注 (可选)` +
+                      `<input id="mh-mod-hint" class="text-input" type="text" placeholder="如 专职 PR 代码安全审查" value="${escapeHtml(editingM?.roleHint || '')}" />` +
+                    `</label>` +
+                  `</div>` +
+                  `<div class="relay-form-row" style="margin-top:6px;">` +
+                    `<label style="font-size:11.5px;display:inline-flex;align-items:center;gap:4px;"><input type="checkbox" id="mh-mod-fav" ${(!editingM || editingM.isFavorite) ? 'checked' : ''}>加入常用收藏 (Favorites)</label>` +
+                    `<button type="button" class="ctrl-btn is-primary" data-mhub-action="save-model">保存模型</button>` +
+                  `</div>`
+              ) +
+            `</article>`
+          );
+        }
+
+        if (!providers.length && !st.showProviderForm && !st.showDiscoverPanel) {
+          parts.push(
+            `<article class="relay-card mhub-form-card">` +
+              `<div class="relay-card-head"><span class="relay-title">🌐 尚未接入外部会诊网关</span><span class="pill pill-ok">0 外部依赖</span></div>` +
+              `<p class="relay-sub">可点击下方按钮手动添加兼容网关（支持一键探测 <code>/v1/models</code>），或复制零密钥部署口令交给当前对话 AI 自动完成配置。</p>` +
+              `<div class="relay-form-row">` +
+                `<button type="button" class="ctrl-btn is-primary" data-mhub-action="open-add-provider">+ 手动添加首个网关</button>` +
+                `<button type="button" class="ctrl-btn" data-mhub-action="copy-ai-setup">🤖 复制 AI 自动配置口令</button>` +
+                `<button type="button" class="ctrl-btn" data-mhub-action="reveal-profile">📂 打开配置文件目录</button>` +
+              `</div>` +
+            `</article>`
+          );
+        }
+
+        // Favorites Drag-and-Drop Strip
+        if (favIds.length > 0) {
+          const modelById = new Map(models.map((m) => [m.id, m]));
+          const chips = favIds
+            .filter((id) => modelById.has(id))
+            .map((id, idx, arr) => {
+              const m = modelById.get(id);
+              const tierCls = `pill-tier-${String(m.tier || 'T2').toLowerCase()}`;
+              return (
+                `<div class="mhub-fav-chip" draggable="true" data-fav-id="${escapeHtml(id)}" title="拖拽可调整常用模型优先序">` +
+                  `<span class="pill ${tierCls}" style="font-size:10px;padding:1px 5px;">${escapeHtml(m.tier)}</span>` +
+                  `<strong>${escapeHtml(m.alias || m.id)}</strong>` +
+                  (idx > 0 ? `<button type="button" class="mhub-chip-btn" data-mhub-action="fav-move" data-id="${escapeHtml(id)}" data-dir="-1" title="前移">‹</button>` : '') +
+                  (idx < arr.length - 1 ? `<button type="button" class="mhub-chip-btn" data-mhub-action="fav-move" data-id="${escapeHtml(id)}" data-dir="1" title="后移">›</button>` : '') +
+                  `<button type="button" class="mhub-chip-btn" data-mhub-action="fav-remove" data-id="${escapeHtml(id)}" title="移出常用">×</button>` +
+                `</div>`
+              );
+            })
+            .join('');
+          if (chips) {
+            parts.push(
+              `<article class="relay-card" style="padding:8px 10px;">` +
+                `<div class="relay-card-head">` +
+                  `<span class="relay-title" style="font-size:12px;">⭐ 常用优先序（拖拽胶囊或点 ‹ › 调整顺序）</span>` +
+                  `<span class="pill">${favIds.length} 项</span>` +
+                `</div>` +
+                `<div class="mhub-fav-strip" id="mhub-fav-strip">${chips}</div>` +
+              `</article>`
+            );
+          }
+        }
+
+        // T1 - T4 Capability Matrix
+        if (models.length > 0) {
+          if (filteredModels.length === 0) {
+            parts.push(
+              `<div class="empty-state" style="padding:18px 12px;">` +
+                `<div>未找到匹配筛选条件的模型</div>` +
+                `<div style="margin-top:8px;"><button type="button" class="mini-btn" data-mhub-action="reset-filter">清除筛选条件</button></div>` +
+              `</div>`
+            );
+          }
+          const tierMeta = d?.tiers || {
+            T1: { title: 'T1 顶配旗舰（重决策 / 深度审计）', description: '高风险架构拍板、重大重构取舍与两轮对抗辩论' },
+            T2: { title: 'T2 常规主力（日常审计 / 常规二审）', description: '常规功能 Diff 交叉复核与第二意见' },
+            T3: { title: 'T3 进阶性价比（高频分析 / 中文推理）', description: '中文长文梳理、高频分析与限流备选' },
+            T4: { title: 'T4 轻量高速（摘要 / 整理 / 批量低难）', description: '长日志摘要、格式整理与快速初筛' }
+          };
+          for (const tk of ['T1', 'T2', 'T3', 'T4']) {
+            const tierModels = filteredModels.filter((m) => m.tier === tk);
+            if (!tierModels.length) continue;
+            const tm = tierMeta[tk] || { title: tk, description: '' };
+            const tierCls = `pill-tier-${tk.toLowerCase()}`;
+            const cardsHtml = tierModels.map((m) => {
+              const isProbing = Boolean(st.probingIds[m.id]);
+              const readyBadge = m.ready
+                ? '<span class="pill pill-ok">就绪</span>'
+                : '<span class="pill pill-warn">待配凭据</span>';
+              const spd = m.lastSpeed;
+              const speedHtml = spd
+                ? (spd.ok
+                  ? `<span class="pill" title="测速于 ${escapeHtml(spd.checkedAt || '')}">TTFT ${spd.ttftMs ?? '-'}ms${spd.tokPerSec ? ` · ${spd.tokPerSec} tok/s` : ''}</span>`
+                  : `<span class="pill pill-danger" title="${escapeHtml(spd.error || '')}">测速异常</span>`)
+                : '';
+              const fbText = m.fallbackModelId ? ` · 降级 → <code>${escapeHtml(m.fallbackModelId)}</code>` : '';
+              const hasDistinctAlias = Boolean(m.alias && m.alias !== m.id);
+              const idCopyBtnHtml = hasDistinctAlias
+                ? `<button type="button" class="mhub-id-copy" data-mhub-action="copy-id" data-id="${escapeHtml(m.id)}" title="点击复制模型 ID：${escapeHtml(m.id)}"><span>${escapeHtml(m.id)}</span><span class="mhub-copy-glyph" aria-hidden="true">⎘</span></button>`
+                : `<button type="button" class="mhub-id-copy" data-mhub-action="copy-id" data-id="${escapeHtml(m.id)}" title="点击复制模型 ID：${escapeHtml(m.id)}"><span>复制 ID</span><span class="mhub-copy-glyph" aria-hidden="true">⎘</span></button>`;
+              return (
+                `<div class="mhub-model-card">` +
+                  `<div class="relay-card-head">` +
+                    `<div class="search-card-meta">` +
+                      `<span class="pill ${tierCls}">${tk}</span>` +
+                      `<strong>${escapeHtml(m.alias || m.id)}</strong>` +
+                      idCopyBtnHtml +
+                      `<span class="pill">${escapeHtml(m.vendor)}</span>` +
+                      readyBadge + speedHtml +
+                    `</div>` +
+                    `<div class="search-card-actions">` +
+                      `<button type="button" class="mini-btn" data-mhub-action="toggle-fav" data-id="${escapeHtml(m.id)}" title="${m.isFavorite ? '移出常用' : '设为常用'}">${m.isFavorite ? '★' : '☆'}</button>` +
+                      `<button type="button" class="mini-btn is-primary" data-mhub-action="probe-one" data-id="${escapeHtml(m.id)}" ${isProbing ? 'disabled' : ''}>${isProbing ? '测速中…' : '⚡ 测速'}</button>` +
+                      `<button type="button" class="mini-btn" data-mhub-action="copy-ask" data-id="${escapeHtml(m.id)}" title="复制调用该模型交叉审查的对话口令">复制会诊口令</button>` +
+                      `<button type="button" class="mini-btn" data-mhub-action="edit-model" data-id="${escapeHtml(m.id)}">编辑</button>` +
+                      `<button type="button" class="mini-btn is-danger-subtle" data-mhub-action="del-model" data-id="${escapeHtml(m.id)}">删</button>` +
+                    `</div>` +
+                  `</div>` +
+                  `<div class="relay-sub">网关 <code>${escapeHtml(m.providerId)}</code> · 上游 <code>${escapeHtml(m.upstreamModel)}</code>${fbText}${m.roleHint ? ` · ${escapeHtml(m.roleHint)}` : ''}</div>` +
+                `</div>`
+              );
+            }).join('');
+
+            parts.push(
+              `<div class="mhub-tier-box">` +
+                `<div class="relay-card-head">` +
+                  `<span class="relay-title" style="font-size:12px;">${escapeHtml(tm.title)}</span>` +
+                  `<span class="pill">${tierModels.length} 个</span>` +
+                `</div>` +
+                (tm.description ? `<div class="relay-sub" style="margin-top:-3px;">${escapeHtml(tm.description)}</div>` : '') +
+                `<div class="mhub-tier-cards">${cardsHtml}</div>` +
+              `</div>`
+            );
+          }
+        }
+
+        // Gateways & Anti-SSRF Web Search Settings Accordion
+        const wsEnabled = typeof d?.settings?.webSearch === 'object'
+          ? Boolean(d.settings.webSearch?.enabled)
+          : Boolean(d?.settings?.webSearch);
+        const redactOut = d?.settings?.redactOutboundSecrets !== false;
+        const provRowsHtml = providers.length
+          ? providers.map((p) => {
+              const authTag = p.hasVaultKey
+                ? '<span class="pill pill-ok">系统凭据库已保护</span>'
+                : p.apiKeyEnv
+                  ? (p.envConfigured
+                    ? `<span class="pill pill-ok">环境变量 ${escapeHtml(p.apiKeyEnv)} 已就绪</span>`
+                    : `<span class="pill pill-warn">待设环境变量 ${escapeHtml(p.apiKeyEnv)}</span>`)
+                  : (p.allowKeyless ? '<span class="pill pill-ok">免密网关</span>' : '<span class="pill pill-warn">未绑凭据</span>');
+              return (
+                `<div class="radar-item">` +
+                  `<div class="relay-card-head">` +
+                    `<div class="search-card-meta"><strong>${escapeHtml(p.label)}</strong><code>${escapeHtml(p.id)}</code><span class="pill">${escapeHtml(p.protocol)}</span>${authTag}</div>` +
+                    `<div class="search-card-actions">` +
+                      `<button type="button" class="mini-btn is-primary" data-mhub-action="discover-provider" data-id="${escapeHtml(p.id)}">🔍 探测模型</button>` +
+                      `<button type="button" class="mini-btn" data-mhub-action="edit-provider" data-id="${escapeHtml(p.id)}">编辑</button>` +
+                      `<button type="button" class="mini-btn is-danger-subtle" data-mhub-action="del-provider" data-id="${escapeHtml(p.id)}">删除</button>` +
+                    `</div>` +
+                  `</div>` +
+                  `<div class="relay-sub">端点：<code>${escapeHtml(p.baseUrl)}</code></div>` +
+                `</div>`
+              );
+            }).join('')
+          : '<p class="relay-sub">尚未配置网关端点。</p>';
+
+        const gwOpen = Boolean(st.openSections?.gateways || (providers.length > 0 && models.length === 0));
+        parts.push(
+          `<details class="relay-accordion" data-mhub-sec="gateways" ${gwOpen ? 'open' : ''}>` +
+            `<summary>` +
+              `<span>🔌 网关管理与防 SSRF 公网代搜安全护栏</span>` +
+              `<span class="relay-acc-summary-right"><span class="pill">${providers.length} 网关</span><span class="relay-acc-chevron" aria-hidden="true">▸</span></span>` +
+            `</summary>` +
+            `<div class="relay-acc-body">` +
+              `<div class="relay-form-row" style="justify-content:space-between;">` +
+                `<label style="font-size:11.5px;display:inline-flex;align-items:center;gap:5px;cursor:pointer;">` +
+                  `<input type="checkbox" id="mh-set-websearch" ${wsEnabled ? 'checked' : ''}>` +
+                  `<span>允许无 Key 公网 HTTPS 代搜（强制 DNS 解析锁定公网 IP 防 SSRF/重绑定）</span>` +
+                `</label>` +
+              `</div>` +
+              `<div class="relay-form-row" style="justify-content:space-between;">` +
+                `<label style="font-size:11.5px;display:inline-flex;align-items:center;gap:5px;cursor:pointer;">` +
+                  `<input type="checkbox" id="mh-set-redact" ${redactOut ? 'checked' : ''}>` +
+                  `<span>出站提示词自动脱敏私钥 / GitHub PAT / API Key</span>` +
+                `</label>` +
+              `</div>` +
+              provRowsHtml +
+            `</div>` +
+          `</details>`
+        );
+
+        modelsWrap.innerHTML = parts.join('');
       }
 
       function clearQuotaWaitRetry() {
@@ -4154,15 +6016,23 @@
           const [st, mem] = await Promise.all([
             callServerTool('accounts_status', { forceRefresh: Boolean(forceRefresh) }),
             silent && appState.accounts.memories.length
-              ? Promise.resolve({ entries: appState.accounts.memories })
-              : callServerTool('handoff_memory_list', { limit: 8 }).catch(() => ({ entries: [] }))
+              ? Promise.resolve({
+                  entries: appState.accounts.memories,
+                  catalogSlots: appState.accounts.catalogSlots,
+                  storageInfo: appState.accounts.memoryStorage,
+                  remoteSync: appState.accounts.remoteSync
+                })
+              : callServerTool('handoff_memory_list', { limit: 8 }).catch(() => ({ entries: [], catalogSlots: [] }))
           ]);
           if (seq !== appState.accounts.seq) return;
           appState.accounts.data = st || null;
           appState.accounts.memories = Array.isArray(mem?.entries) ? mem.entries : [];
+          appState.accounts.catalogSlots = Array.isArray(mem?.catalogSlots) ? mem.catalogSlots : [];
+          if (mem?.storageInfo) appState.accounts.memoryStorage = mem.storageInfo;
+          if (mem?.remoteSync) appState.accounts.remoteSync = mem.remoteSync;
           appState.accounts.loaded = true;
           appState.accounts.loading = false;
-          if ((st?.accounts?.length || 0) < 2) {
+          if ((st?.accounts?.length || 0) < 2 && !appState.accounts.guideTouchedByUser && !isGuideDismissed('guide:accounts-steps:v1')) {
             appState.accounts.openSections.guide = true;
           }
           broadcastAccountSummary(st);
@@ -4302,6 +6172,7 @@
       }
 
       function renderAccounts() {
+        renderTopbar();
         const st = appState.accounts;
         const d = st.data;
         const sortBtnEl = document.getElementById('btn-accounts-sort');
@@ -4338,7 +6209,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.6.1，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.7.0，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -4349,23 +6220,42 @@
           return;
         }
 
-        const parts = [];
+        const mainParts = [];
+        const sideParts = [];
         if (!d || !d.enabled) {
-          parts.push(
-            '<article class="relay-card">' +
-              '<div class="relay-card-head">' +
-                '<span class="relay-title">🔒 主备多账号接力（默认关闭）</span>' +
-                '<span class="pill">物理隔离</span>' +
-              '</div>' +
-              '<p class="relay-sub">1. <strong>绝不触碰本地会话</strong>：仅替换 OS 原生凭据库中的受验 OAuth 凭据，保留全部本地对话、SQLite、brain 产物与 workspace。<br>' +
-              '2. <strong>零明文落盘</strong>：备份存入 Windows 凭据管理器 / macOS Keychain / Linux Secret Service 独立命名空间，元数据文件仅存邮箱与指纹前缀。<br>' +
-              '3. <strong>防串号与原子回滚</strong>：切换前强核验 <code>id_token_email</code>，异常自动回滚原凭据。</p>' +
-              '<div class="relay-form-row">' +
-                '<button type="button" class="ctrl-btn is-primary" data-acc-action="enable">我已了解安全边界，开启账号接力</button>' +
-                '<button type="button" class="ctrl-btn" data-acc-action="verify">仅只读校验本机隔离状态</button>' +
-              '</div>' +
-            '</article>'
-          );
+          if (isGuideDismissed('guide:accounts-intro:v1')) {
+            mainParts.push(
+              '<article class="relay-card">' +
+                '<div class="relay-card-head">' +
+                  '<span class="relay-title">🔒 主备多账号安全接力（当前未启用）</span>' +
+                  '<div class="relay-form-row">' +
+                    '<button type="button" class="mini-btn is-primary" data-acc-action="enable">开启账号接力</button>' +
+                    '<button type="button" class="mini-btn" data-acc-action="verify">只读校验</button>' +
+                    '<button type="button" class="mini-btn" data-guide-restore="guide:accounts-intro:v1">查看说明</button>' +
+                  '</div>' +
+                '</div>' +
+              '</article>'
+            );
+          } else {
+            mainParts.push(
+              '<article class="relay-card">' +
+                '<div class="relay-card-head">' +
+                  '<span class="relay-title">🔒 主备多账号接力（默认关闭）</span>' +
+                  '<div class="search-card-actions">' +
+                    '<span class="pill">物理隔离</span>' +
+                    '<button type="button" class="mini-btn" data-guide-dismiss="guide:accounts-intro:v1" title="收起详细安全说明">× 收起说明</button>' +
+                  '</div>' +
+                '</div>' +
+                '<p class="relay-sub">1. <strong>绝不触碰本地会话</strong>：仅替换 OS 原生凭据库中的受验 OAuth 凭据，保留全部本地对话、SQLite、brain 产物与 workspace。<br>' +
+                '2. <strong>零明文落盘</strong>：备份存入 Windows 凭据管理器 / macOS Keychain / Linux Secret Service 独立命名空间，元数据文件仅存邮箱与指纹前缀。<br>' +
+                '3. <strong>防串号与原子回滚</strong>：切换前强核验 <code>id_token_email</code>，异常自动回滚原凭据。</p>' +
+                '<div class="relay-form-row">' +
+                  '<button type="button" class="ctrl-btn is-primary" data-acc-action="enable">我已了解安全边界，开启账号接力</button>' +
+                  '<button type="button" class="ctrl-btn" data-acc-action="verify">仅只读校验本机隔离状态</button>' +
+                '</div>' +
+              '</article>'
+            );
+          }
         } else {
           const rec = d.recommendation || {};
           const accs = Array.isArray(d.accounts) ? d.accounts : [];
@@ -4408,7 +6298,7 @@
           };
 
           if (d.activeCredential?.unregistered && d.activeCredential?.email) {
-            parts.push(
+            mainParts.push(
               `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🛡️ 检测到未捕获的新登录账号</span>` +
                 `<button type="button" class="mini-btn is-primary" data-acc-action="capture-quick">立即备份该新号</button></div>` +
@@ -4417,18 +6307,26 @@
             );
           }
           const priRecAcc = rec.primaryRecovery?.accountId ? accs.find((x) => x.id === rec.primaryRecovery.accountId) : null;
-          if (rec.primaryRecovery && (!priRecAcc || !evalAccountPoolHealthClient(priRecAcc).anyExhausted)) {
-            parts.push(
+          if (rec.primaryRecovery && (!priRecAcc || !evalAccountPoolHealthClient(priRecAcc).anyExhausted) && !isGuideDismissed('guide:accounts-primary-rec:v1')) {
+            mainParts.push(
               `<article class="relay-card is-accent">` +
                 `<div class="relay-card-head"><span class="relay-title">💡 主号恢复提醒</span>` +
-                `<button type="button" class="mini-btn is-primary" data-acc-action="countdown" data-id="${escapeHtml(rec.primaryRecovery.accountId)}">5s 倒计时切回主号</button></div>` +
+                `<div class="search-card-actions">` +
+                  `<button type="button" class="mini-btn is-primary" data-acc-action="countdown" data-id="${escapeHtml(rec.primaryRecovery.accountId)}">5s 倒计时切回主号</button>` +
+                  `<button type="button" class="mini-btn" data-guide-dismiss="guide:accounts-primary-rec:v1" title="隐藏主号恢复提醒">×</button>` +
+                `</div></div>` +
                 `<p class="relay-sub">${escapeHtml(rec.primaryRecovery.reason)}</p>` +
               `</article>`
             );
           }
-          if (rec.crossFamilyHint) {
-            parts.push(
-              `<article class="relay-card is-warn"><p class="relay-sub">${escapeHtml(rec.crossFamilyHint)}</p></article>`
+          if (rec.crossFamilyHint && !isGuideDismissed('guide:accounts-cross-fam:v1')) {
+            mainParts.push(
+              `<article class="relay-card is-warn">` +
+                `<div class="relay-card-head">` +
+                  `<span class="relay-sub">${escapeHtml(rec.crossFamilyHint)}</span>` +
+                  `<button type="button" class="mini-btn" data-guide-dismiss="guide:accounts-cross-fam:v1" title="不再显示跨家族额度提示">× 隐藏</button>` +
+                `</div>` +
+              `</article>`
             );
           }
 
@@ -4440,7 +6338,7 @@
             const remainSec = Math.ceil(remainMs / 1000);
             const pct = Math.max(0, Math.min(100, (remainMs / Math.max(1, cd.totalMs)) * 100));
             const cdActionLabel = cd.autoRelaunch ? '立即切换并重启' : '立即切换';
-            parts.push(
+            mainParts.push(
               `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head">` +
                   `<span id="acc-cd-title" class="relay-title">${st.switching ? '⏳ 正在执行原子切换…' : (cd.autoRelaunch ? `⏱ 即将切换并重启至 ${escapeHtml(cd.alias)} (${remainSec}s)` : `⏱ 即将切换至 ${escapeHtml(cd.alias)} (${remainSec}s)`)}</span>` +
@@ -4463,7 +6361,7 @@
           if (st.lastSwitchResult) {
             const sw = st.lastSwitchResult;
             const autoStarted = Boolean(sw.relaunch?.ok && sw.relaunch?.scheduled);
-            parts.push(
+            mainParts.push(
               `<article class="relay-card is-accent">` +
                 `<div class="relay-card-head">` +
                   `<span class="relay-title">${autoStarted ? '🚀 凭据切换完成 · 正在自动重启 Antigravity…' : '🔄 凭据切换完成（需重启 Antigravity 生效）'}</span>` +
@@ -4480,7 +6378,7 @@
               `</article>`
             );
           } else if (d?.pendingSwitch?.phase === 'active-swapped') {
-            parts.push(
+            mainParts.push(
               `<article class="relay-card is-accent">` +
                 `<div class="relay-card-head">` +
                   `<span class="relay-title">🔄 已切换至 ${escapeHtml(d.pendingSwitch.targetEmail || '目标账号')}（待重启生效）</span>` +
@@ -4492,7 +6390,7 @@
           }
 
           if (!accs.length) {
-            parts.push('<div class="empty-state">尚未捕获账号，请先在下方点击「捕获当前活跃账号」把当前主号存入 OS 隔离凭据库</div>');
+            mainParts.push('<div class="empty-state">尚未捕获账号，请先在下方点击「捕获当前活跃账号」把当前主号存入 OS 隔离凭据库</div>');
           } else {
             const standbyCandidates = accs.filter((x) => !x.isCurrentActive && x.vaultHasBackup !== false);
             const healthyStandby = standbyCandidates.filter((x) => !evalAccountPoolHealthClient(x).anyExhausted);
@@ -4795,7 +6693,7 @@
                 : `<p class="relay-sub" style="font-size:11px;">切过去登录一次即自动记录额度（点 ⋯ 可手动补充）</p>`;
 
               return (
-                `<article class="relay-card is-account-slot is-standby-compact">` +
+                `<article class="relay-card is-account-slot is-standby-compact" data-standby-id="${escapeHtml(a.id)}" data-standby-name="${escapeHtml(ident.title)}" title="双击卡片空白处可快速启动 5 秒切号倒计时">` +
                   `<div class="relay-card-head">` +
                     `<div class="search-card-meta">` +
                       standbyRoleBadge +
@@ -4820,31 +6718,30 @@
                 return (Number(a.priority) || 50) - (Number(b.priority) || 50);
               });
               for (const a of ordered) {
-                parts.push(renderAccountCard(a));
+                mainParts.push(renderAccountCard(a));
               }
             } else {
               const activeList = accs.filter((a) => a.isCurrentActive);
               const standbyList = accs.filter((a) => !a.isCurrentActive).sort((a, b) => computeStandbyScore(b) - computeStandbyScore(a));
               for (const a of activeList) {
-                parts.push(renderAccountCard(a));
+                mainParts.push(renderAccountCard(a));
               }
               if (standbyList.length) {
                 if (activeList.length) {
-                  parts.push(
+                  mainParts.push(
                     `<div class="relay-section-head">` +
                       `<span class="relay-section-head-left">待切换账号 (${standbyList.length})</span>` +
-                      `<span style="font-weight:400;font-size:10.5px;">悬停胶囊看重置时间 · 点 ⋯ 管理</span>` +
+                      `<span style="font-weight:400;font-size:10.5px;">双击卡片快速切 · 悬停胶囊看重置时间 · 点 ⋯ 管理</span>` +
                     `</div>`
                   );
                 }
-                for (const a of standbyList) {
-                  parts.push(renderAccountCard(a));
-                }
+                const standbyCardsHtml = standbyList.map((a) => renderAccountCard(a)).join('');
+                mainParts.push(`<div class="accounts-standby-grid${standbyList.length >= 2 ? ' has-multi' : ''}">${standbyCardsHtml}</div>`);
               }
             }
           }
 
-          parts.push(
+          mainParts.push(
             '<article class="relay-card">' +
               '<div class="relay-card-head">' +
                 '<span class="relay-title">捕获新账号与快捷操作</span>' +
@@ -4865,19 +6762,106 @@
             '</article>'
           );
 
-          const guideOpen = st.openSections?.guide || accs.length < 2;
-          parts.push(
-            `<details class="relay-accordion" data-sec="guide" ${guideOpen ? 'open' : ''}>` +
+          if (!isGuideDismissed('guide:accounts-steps:v1')) {
+            const guideOpen = Boolean(st.openSections?.guide || (!st.guideTouchedByUser && accs.length < 2));
+            sideParts.push(
+              `<details class="relay-accordion" data-sec="guide" ${guideOpen ? 'open' : ''}>` +
+                `<summary>` +
+                  `<span>📖 如何添加主号与备用号（零输密码 · 3 步录入）</span>` +
+                  `<span class="relay-acc-summary-right"><span class="pill">${accs.length} 槽</span><span class="relay-acc-chevron" aria-hidden="true">▸</span></span>` +
+                `</summary>` +
+                `<div class="relay-acc-body">` +
+                  `<ol>` +
+                    `<li><strong>捕获主号</strong>：保持当前主力账号登录状态 → 上方填别名（如 <code>主号</code>）、选「主号」→ 点 <strong>「捕获当前活跃账号」</strong>；</li>` +
+                    `<li><strong>捕获备用号</strong>：去 Antigravity 设置切登录备用账号（全量会话与记录会自动保留），回来填别名选「备用」→ 再点一次 <strong>「捕获当前活跃账号」</strong>；</li>` +
+                    `<li><strong>免登录一键切</strong>：录好主备号后，以后随时点卡片右上角 <strong>「⚡ 切换」</strong>（或双击卡片）即可安全切号并自动重启生效。</li>` +
+                  `</ol>` +
+                  `<div class="relay-form-row" style="justify-content:flex-end;">` +
+                    `<button type="button" class="mini-btn" data-guide-dismiss="guide:accounts-steps:v1" title="隐藏本指南（可随时点顶栏 ? 说明恢复）">× 不再显示此说明</button>` +
+                  `</div>` +
+                `</div>` +
+              `</details>`
+            );
+          }
+
+          const catSlots = st.catalogSlots || [];
+          const memStorage = st.memoryStorage;
+          const remSync = st.remoteSync;
+          const storageBadgeHtml = memStorage?.backend === 'sqlite'
+            ? `<span class="pill pill-ok" title="${escapeHtml(memStorage.redirectedFromMount ? `已自动绕开 9P/网络盘并重定向至原生目录: ${memStorage.effectiveDbDir}` : `原生 SQLite 库: ${memStorage.dbPath}`)}">SQLite${memStorage.fts5Enabled ? '+FTS5' : ''}${memStorage.redirectedFromMount ? ' · 9P防坏库保护' : ''}</span>`
+            : '<span class="pill">JSONL</span>';
+          const remBadgeHtml = remSync?.enabled
+            ? (remSync.offline
+              ? `<span class="pill pill-warn" title="${escapeHtml(remSync.lastError || '远程端点离线，本地事务不受影响')}">远程离线(本地优先)</span>`
+              : `<span class="pill pill-ok" title="${escapeHtml(remSync.endpoint || '')}">远程桥已启用</span>`)
+            : '';
+
+          const catFormHtml = st.showCatalogForm
+            ? `<div class="quota-editor" style="margin-bottom:6px;">` +
+                `<div class="relay-form-row">` +
+                  `<input id="cat-proj-in" class="text-input" style="max-width:150px;" type="text" placeholder="项目名 (如 prism-suite)" />` +
+                  `<input id="cat-slot-in" class="text-input" style="max-width:120px;" type="text" placeholder="槽位 (如 main)" value="main" />` +
+                `</div>` +
+                `<input id="cat-cwd-in" class="text-input" type="text" placeholder="工作目录路径" value="${escapeHtml(appState.browse.dir || appState.homeDir || '')}" />` +
+                `<input id="cat-sum-in" class="text-input" type="text" placeholder="槽位职责或当前里程碑摘要" />` +
+                `<div class="relay-form-row">` +
+                  `<button type="button" class="mini-btn is-primary" data-acc-action="cat-save">保存槽位</button>` +
+                  `<button type="button" class="mini-btn" data-acc-action="cat-cancel">取消</button>` +
+                `</div>` +
+              `</div>`
+            : '';
+
+          const remCfgObj = typeof appState.models.data?.settings?.remoteMemory === 'object'
+            ? appState.models.data.settings.remoteMemory
+            : null;
+          const remoteCfgHtml = st.showRemoteConfig
+            ? `<div class="quota-editor" style="margin-bottom:6px;">` +
+                `<div class="relay-sub">可选配置远程 Streamable-HTTP MCP Memory 地址（本地 SQLite 事务优先提交，远程后台异步同步，断网零阻塞）：</div>` +
+                `<input id="rem-mem-url" class="text-input" type="text" placeholder="如 https://memory.example.com/mcp 或局域网 HTTP 端点（留空关闭）" value="${escapeHtml(remCfgObj?.endpointUrl || remSync?.endpoint || '')}" />` +
+                `<div class="relay-form-row">` +
+                  `<input id="rem-mem-env" class="text-input" style="max-width:190px;" type="text" placeholder="鉴权 Token 环境变量名 (可选)" value="${escapeHtml(remCfgObj?.apiKeyEnv || '')}" />` +
+                  `<button type="button" class="mini-btn is-primary" data-acc-action="rem-save">保存远程桥</button>` +
+                  `<button type="button" class="mini-btn" data-acc-action="rem-cancel">取消</button>` +
+                `</div>` +
+              `</div>`
+            : '';
+
+          const catItemsHtml = catSlots.length
+            ? catSlots.slice(0, 8).map((s, idx) =>
+                `<div class="radar-item">` +
+                  `<div class="relay-card-head">` +
+                    `<div class="search-card-meta">` +
+                      `<span class="pill pill-tier-t2">${escapeHtml(s.slotTag || `${s.project}:${s.slot}`)}</span>` +
+                      (s.gitBranch ? `<span class="pill">${escapeHtml(s.gitBranch)}</span>` : '') +
+                    `</div>` +
+                    `<div class="search-card-actions">` +
+                      (s.cwd ? `<button type="button" class="mini-btn" data-acc-action="cat-reveal" data-cwd="${escapeHtml(s.cwd)}">定位目录</button>` : '') +
+                      `<button type="button" class="mini-btn is-primary" data-acc-action="cat-copy-resume" data-idx="${idx}">复制接力</button>` +
+                    `</div>` +
+                  `</div>` +
+                  `<div>${escapeHtml(s.summary || '（已绑定活跃槽位）')}</div>` +
+                  `<div class="relay-sub">目录：<code>${escapeHtml(s.cwd || '-')}</code> · 更新于 ${escapeHtml((s.updatedAt || '').slice(0, 16).replace('T', ' ') || '-')}</div>` +
+                `</div>`
+              ).join('')
+            : '<p class="relay-sub">暂无活跃槽位索引；AI 调用 <code>prism_memory_store</code> 或切号写快照时会自动聚合生成 <code>catalog:master</code> 看板。</p>';
+
+          sideParts.unshift(
+            `<details class="relay-accordion" data-sec="catalog" ${st.openSections?.catalog ? 'open' : ''}>` +
               `<summary>` +
-                `<span>📖 如何添加主号与备用号（零输密码 · 3 步录入）</span>` +
-                `<span class="relay-acc-summary-right"><span class="pill">${accs.length} 槽</span><span class="relay-acc-chevron" aria-hidden="true">▸</span></span>` +
+                `<span>🗂️ 主目录槽位看板（catalog:master · 双模记忆）</span>` +
+                `<span class="relay-acc-summary-right">${storageBadgeHtml}${remBadgeHtml}<span class="pill">${catSlots.length} 槽</span><span class="relay-acc-chevron" aria-hidden="true">▸</span></span>` +
               `</summary>` +
               `<div class="relay-acc-body">` +
-                `<ol>` +
-                  `<li><strong>捕获主号</strong>：保持当前主力账号登录状态 → 上方填别名（如 <code>主号</code>）、选「主号」→ 点 <strong>「捕获当前活跃账号」</strong>；</li>` +
-                  `<li><strong>捕获备用号</strong>：去 Antigravity 设置切登录备用账号（全量会话与记录会自动保留），回来填别名选「备用」→ 再点一次 <strong>「捕获当前活跃账号」</strong>；</li>` +
-                  `<li><strong>免登录一键切</strong>：录好主备号后，以后随时点卡片右上角 <strong>「⚡ 切换并重启」</strong> 即可安全切号并自动重启生效。</li>` +
-                `</ol>` +
+                `<div class="relay-form-row" style="justify-content:flex-end;margin-bottom:4px;">` +
+                  `<button type="button" class="mini-btn${st.showCatalogForm ? ' is-active' : ''}" data-acc-action="cat-open-form">+ 登记槽位</button>` +
+                  `<button type="button" class="mini-btn${st.showRemoteConfig ? ' is-active' : ''}" data-acc-action="rem-open-cfg">⚙️ 远程 Memory 桥</button>` +
+                  (remSync?.enabled
+                    ? `<button type="button" class="mini-btn is-primary" data-acc-action="rem-sync-now" ${st.syncingRemote ? 'disabled' : ''}>${st.syncingRemote ? '同步中…' : '🔄 同步远程槽位'}</button>`
+                    : '') +
+                `</div>` +
+                catFormHtml +
+                remoteCfgHtml +
+                catItemsHtml +
               `</div>` +
             `</details>`
           );
@@ -4900,7 +6884,7 @@
               ).join('')
             : '<p class="relay-sub">暂无历史交接记忆；切号时勾选「切前落盘 4 要素交接」会自动记录。</p>';
 
-          parts.push(
+          sideParts.splice(1, 0,
             `<details class="relay-accordion" data-sec="memories" ${st.openSections?.memories ? 'open' : ''}>` +
               `<summary>` +
                 `<span>🧠 槽位交接记忆（按时间倒序 · 自动脱敏）</span>` +
@@ -5028,9 +7012,9 @@
               ? `<span class="pill pill-warn">新版本 ${escapeHtml(suInfo.latestTag)}</span>`
               : st.radarLoading
                 ? '<span class="pill">检查中</span>'
-                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.6.1</span>');
+                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.7.0</span>');
         const radarOpen = Boolean(st.openSections?.radar || st.radarLoading || rad || st.selfUpdateChecking || st.selfUpdateApplying || suInfo || suRes);
-        parts.push(
+        sideParts.push(
           `<details class="relay-accordion" data-sec="radar" ${radarOpen ? 'open' : ''}>` +
             `<summary>` +
               `<span>🚀 版本更新与上游动态（一键升级 / 进阶参考）</span>` +
@@ -5053,7 +7037,11 @@
           `</details>`
         );
 
-        accountsWrap.innerHTML = parts.join('');
+        accountsWrap.innerHTML =
+          `<div class="accounts-dashboard">` +
+            `<div class="accounts-col-main">${mainParts.join('')}</div>` +
+            `<div class="accounts-col-side">${sideParts.join('')}</div>` +
+          `</div>`;
       }
 
       // Apply open_prism_files tool result
@@ -5069,7 +7057,8 @@
             lastTab: RESTORABLE_TABS.includes(sc.state.lastTab) ? sc.state.lastTab : 'browse',
             showHidden: Boolean(sc.state.showHidden),
             doubleClickAction: sc.state.doubleClickAction === 'open_tab' ? 'open_tab' : 'reveal',
-            allowLanSmb: Boolean(sc.state.allowLanSmb)
+            allowLanSmb: Boolean(sc.state.allowLanSmb),
+            dismissedGuides: applyServerDismissedGuides(sc.state.dismissedGuides)
           };
         }
         if (sc.listing) {
@@ -5090,7 +7079,7 @@
         if (typeof sc.warning === 'string' && sc.warning.trim()) {
           showToast(sc.warning.trim(), true);
         }
-        if (sc.tab && ['browse', 'artifacts', 'pins', 'search', 'accounts'].includes(sc.tab) && !isExternalNavLocked()) {
+        if (sc.tab && ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'].includes(sc.tab) && !isExternalNavLocked()) {
           switchTab(sc.tab);
         }
         if (sc.selectFile) {
@@ -5128,7 +7117,7 @@
             return;
           }
           if (msg.type === 'init-sync') {
-            if (msg.switchTab && ['browse', 'artifacts', 'pins', 'search', 'accounts'].includes(msg.switchTab)) {
+            if (msg.switchTab && ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'].includes(msg.switchTab)) {
               navigateFromExternalBridge(msg.switchTab, {
                 intentId: String(msg.intentId || ''),
                 requestId: String(msg.requestId || ''),
@@ -5191,7 +7180,7 @@
         } else if (msg.method === 'ui/notifications/tool-input') {
           appState.hasToolInput = true;
           const args = msg.params?.arguments || msg.params || {};
-          if (args.tab && ['browse', 'artifacts', 'pins', 'search', 'accounts'].includes(args.tab)) {
+          if (args.tab && ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'].includes(args.tab)) {
             switchTab(args.tab);
           }
         } else if (msg.method === 'ui/notifications/tool-result') {
@@ -5201,9 +7190,51 @@
         }
       }, { signal });
 
-      // Topbar Events
+      // Topbar Events (Wheel Horizontal Scroll, Edge Fade Masks & Keyboard Tab Navigation)
       for (const btn of tabBtns) {
         btn.addEventListener('click', () => switchTab(btn.dataset.tab, { persist: true }));
+      }
+
+      if (tabGroupEl) {
+        tabGroupEl.addEventListener('scroll', updateTabGroupOverflow, { passive: true, signal });
+
+        tabGroupEl.addEventListener('wheel', (event) => {
+          const maxScroll = tabGroupEl.scrollWidth - tabGroupEl.clientWidth;
+          if (maxScroll <= 1) return;
+          if (Math.abs(event.deltaY) <= Math.abs(event.deltaX) || event.deltaY === 0) return;
+          const delta = event.deltaY;
+          const atStart = tabGroupEl.scrollLeft <= 0 && delta < 0;
+          const atEnd = tabGroupEl.scrollLeft >= maxScroll - 1 && delta > 0;
+          if (atStart || atEnd) return;
+          event.preventDefault();
+          tabGroupEl.scrollLeft += delta;
+          updateTabGroupOverflow();
+        }, { passive: false, signal });
+
+        tabGroupEl.addEventListener('keydown', (event) => {
+          if (event.ctrlKey || event.metaKey || event.altKey) return;
+          const k = event.key;
+          if (k !== 'ArrowLeft' && k !== 'ArrowRight' && k !== 'Home' && k !== 'End') return;
+          const focusedBtn = document.activeElement && document.activeElement.closest
+            ? document.activeElement.closest('.tab-btn')
+            : null;
+          let curIdx = focusedBtn ? tabBtns.indexOf(focusedBtn) : -1;
+          if (curIdx === -1) {
+            curIdx = tabBtns.findIndex((b) => b.dataset.tab === appState.activeTab);
+          }
+          if (curIdx === -1) curIdx = 0;
+          let nextIdx = curIdx;
+          if (k === 'ArrowRight') nextIdx = (curIdx + 1) % tabBtns.length;
+          else if (k === 'ArrowLeft') nextIdx = (curIdx - 1 + tabBtns.length) % tabBtns.length;
+          else if (k === 'Home') nextIdx = 0;
+          else if (k === 'End') nextIdx = tabBtns.length - 1;
+          event.preventDefault();
+          const nextBtn = tabBtns[nextIdx];
+          if (nextBtn) {
+            switchTab(nextBtn.dataset.tab, { persist: true });
+            try { nextBtn.focus({ preventScroll: true }); } catch { nextBtn.focus(); }
+          }
+        }, { signal });
       }
 
       btnSmbToggle.addEventListener('click', async () => {
@@ -5235,6 +7266,48 @@
         }
       });
 
+      if (btnGuideToggle) {
+        btnGuideToggle.addEventListener('click', () => {
+          toggleActiveTabGuide();
+        });
+      }
+
+      if (btnCloseWorkbench) {
+        btnCloseWorkbench.addEventListener('click', () => {
+          postBridgeToMain({ type: 'close-workbench' });
+        });
+      }
+
+      workspaceEl.addEventListener('click', async (event) => {
+        const dismissBtn = event.target.closest('button[data-guide-dismiss]');
+        if (dismissBtn) {
+          event.stopPropagation();
+          await setGuideDismissed(dismissBtn.dataset.guideDismiss);
+          return;
+        }
+        const restoreOneBtn = event.target.closest('button[data-guide-restore]');
+        if (restoreOneBtn) {
+          event.stopPropagation();
+          await setGuideDismissed(restoreOneBtn.dataset.guideRestore, false);
+          return;
+        }
+        const closeTabGuideBtn = event.target.closest('button[data-guide-close-tab]');
+        if (closeTabGuideBtn) {
+          event.stopPropagation();
+          const tKey = closeTabGuideBtn.dataset.guideCloseTab;
+          if (tKey && tKey in appState.guidesOpenInTab) {
+            appState.guidesOpenInTab[tKey] = false;
+            renderAll();
+          }
+          return;
+        }
+        const guideActBtn = event.target.closest('button[data-guide-action]');
+        if (guideActBtn && guideActBtn.dataset.guideAction === 'restore-all') {
+          event.stopPropagation();
+          await restoreAllDismissedGuides();
+        }
+      });
+
       btnRefresh.addEventListener('click', () => {
         btnRefresh.classList.remove('is-spinning');
         void btnRefresh.offsetWidth;
@@ -5250,6 +7323,8 @@
           loadPins();
         } else if (appState.activeTab === 'search' && searchInput.value.trim()) {
           runTranscriptSearch();
+        } else if (appState.activeTab === 'models') {
+          loadModelsTab();
         } else if (appState.activeTab === 'accounts') {
           loadAccountsTab({ forceRefresh: true });
         }
@@ -5273,9 +7348,21 @@
           const sec = det.dataset.sec;
           if (sec && appState.accounts.openSections) {
             appState.accounts.openSections[sec] = Boolean(det.open);
+            if (sec === 'guide') appState.accounts.guideTouchedByUser = true;
           }
         }
       }, true);
+
+      accountsWrap.addEventListener('dblclick', (event) => {
+        if (event.target.closest('button, input, select, textarea, a, label, details, .relay-more-drawer')) return;
+        const card = event.target.closest('.relay-card.is-standby-compact[data-standby-id]');
+        if (!card) return;
+        const id = card.dataset.standbyId;
+        const acc = (appState.accounts.data?.accounts || []).find((a) => a.id === id);
+        if (acc) {
+          startSwitchCountdown({ ...acc, alias: card.dataset.standbyName || acc.alias || acc.email });
+        }
+      });
 
       const safeCssEscape = (raw) => {
         const s = String(raw ?? '');
@@ -5313,7 +7400,12 @@
           const copyAllBtn = document.getElementById('radar-copy-all-btn');
           if (copyAllBtn) {
             const cnt = accountsWrap.querySelectorAll('.radar-pick-cb:checked').length;
-            copyAllBtn.textContent = `📋 一键复制已勾融合指令 (${cnt})`;
+            const nextLabel = `📋 一键复制已勾融合指令 (${cnt})`;
+            if (copyAllBtn.dataset.origHtml !== undefined) {
+              copyAllBtn.dataset.origHtml = escapeHtml(nextLabel);
+            } else {
+              copyAllBtn.textContent = nextLabel;
+            }
           }
         }
       });
@@ -5388,6 +7480,7 @@
             const email = btn.dataset.email || '';
             if (email) {
               const ok = await copyTextSafe(email);
+              if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
               showToast(ok ? `已复制邮箱 ${email}` : '复制失败', !ok);
             }
           } else if (act === 'edit-alias') {
@@ -5479,25 +7572,86 @@
             renderAccounts();
           } else if (act === 'copy-ext-mem' && appState.accounts.lastSwitchResult?.externalMemoryPrompt) {
             const ok = await copyTextSafe(appState.accounts.lastSwitchResult.externalMemoryPrompt);
+            if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
             showToast(ok ? '已复制外部 memory_store 指令' : '复制失败', !ok);
           } else if (act === 'copy-resume' && appState.accounts.lastSwitchResult?.resumePrompt) {
             const ok = await copyTextSafe(appState.accounts.lastSwitchResult.resumePrompt);
+            if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
             showToast(ok ? '已复制切后「接力」提示' : '复制失败', !ok);
           } else if (act === 'mem-copy-ext') {
             const item = appState.accounts.memories[Number(btn.dataset.idx)];
             if (item?.externalMemoryPrompt) {
               const ok = await copyTextSafe(item.externalMemoryPrompt);
+              if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
               showToast(ok ? '已复制外部 memory_store 指令' : '复制失败', !ok);
             }
           } else if (act === 'mem-copy-resume') {
             const item = appState.accounts.memories[Number(btn.dataset.idx)];
             if (item?.resumePrompt) {
               const ok = await copyTextSafe(item.resumePrompt);
+              if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
               showToast(ok ? '已复制「接力」恢复提示' : '复制失败', !ok);
             }
           } else if (act === 'mem-del') {
             await callServerTool('handoff_memory_remove', { id: btn.dataset.id });
             showToast('已删除该条交接记忆');
+            await loadAccountsTab();
+          } else if (act === 'cat-open-form') {
+            appState.accounts.showCatalogForm = !appState.accounts.showCatalogForm;
+            appState.accounts.openSections.catalog = true;
+            renderAccounts();
+          } else if (act === 'cat-cancel') {
+            appState.accounts.showCatalogForm = false;
+            renderAccounts();
+          } else if (act === 'cat-save') {
+            const project = document.getElementById('cat-proj-in')?.value?.trim() || '';
+            const slot = document.getElementById('cat-slot-in')?.value?.trim() || 'main';
+            const cwd = document.getElementById('cat-cwd-in')?.value?.trim() || '';
+            const summary = document.getElementById('cat-sum-in')?.value?.trim() || '';
+            await callServerTool('handoff_catalog_upsert', { project, slot, cwd, summary });
+            appState.accounts.showCatalogForm = false;
+            showToast('已更新 catalog:master 槽位索引');
+            await loadAccountsTab();
+          } else if (act === 'cat-reveal') {
+            if (btn.dataset.cwd) await revealPath(btn.dataset.cwd);
+          } else if (act === 'cat-copy-resume') {
+            const s = appState.accounts.catalogSlots[Number(btn.dataset.idx)];
+            if (s?.resumePrompt) {
+              const ok = await copyTextSafe(s.resumePrompt);
+              if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
+              showToast(ok ? `已复制 ${s.slotTag} 接力口令` : '复制失败', !ok);
+            }
+          } else if (act === 'rem-open-cfg') {
+            appState.accounts.showRemoteConfig = !appState.accounts.showRemoteConfig;
+            appState.accounts.openSections.catalog = true;
+            if (!appState.models.loaded) {
+              loadModelsTab({ silent: true }).then(() => renderAccounts());
+            } else {
+              renderAccounts();
+            }
+          } else if (act === 'rem-cancel') {
+            appState.accounts.showRemoteConfig = false;
+            renderAccounts();
+          } else if (act === 'rem-save') {
+            const urlVal = document.getElementById('rem-mem-url')?.value?.trim() || '';
+            const envVal = document.getElementById('rem-mem-env')?.value?.trim() || '';
+            const upd = await callServerTool('model_hub_update_settings', {
+              remoteMemory: urlVal
+                ? { enabled: true, endpointUrl: urlVal, apiKeyEnv: envVal }
+                : false
+            });
+            if (upd?.profile) appState.models.data = upd.profile;
+            if (upd?.remoteSync) appState.accounts.remoteSync = upd.remoteSync;
+            appState.accounts.showRemoteConfig = false;
+            showToast(urlVal ? '已开启远程 HTTP Memory 异步桥' : '已关闭远程 Memory 桥');
+            await loadAccountsTab();
+          } else if (act === 'rem-sync-now') {
+            appState.accounts.syncingRemote = true;
+            renderAccounts();
+            const syncRes = await callServerTool('handoff_remote_sync', { limit: 20 });
+            appState.accounts.syncingRemote = false;
+            if (syncRes?.remoteSync) appState.accounts.remoteSync = syncRes.remoteSync;
+            showToast(syncRes?.ok ? `已从远程同步 ${syncRes.updatedSlots || 0} 个槽位` : (syncRes?.error || '远程离线，继续使用本地 SQLite'), !syncRes?.ok);
             await loadAccountsTab();
           } else if (act === 'self-update-check') {
             appState.accounts.selfUpdateChecking = true;
@@ -5508,7 +7662,7 @@
             appState.accounts.selfUpdateChecking = false;
             appState.accounts.selfUpdateInfo = info;
             renderAccounts();
-            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.6.1'}`);
+            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.7.0'}`);
           } else if (act === 'self-update-repair-ask') {
             appState.accounts.selfUpdateConfirmRepair = true;
             renderAccounts();
@@ -5600,6 +7754,7 @@
               }
             }
             const ok = await copyTextSafe(promptLines.join('\n'));
+            if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
             showToast(ok ? `已合并复制 ${byRepo.size} 个仓库共 ${checks.length} 条融合指令，粘贴给 AI 即可` : '复制失败', !ok);
           } else if (act === 'radar-sync-all') {
             await callServerTool('sync_upstream_baseline', { keys: [] });
@@ -5614,6 +7769,7 @@
             renderAccounts();
           } else if (act === 'radar-copy' && appState.accounts.radarReport?.markdown) {
             const ok = await copyTextSafe(appState.accounts.radarReport.markdown);
+            if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
             showToast(ok ? '已复制上游择优评估简报' : '复制失败', !ok);
           }
         } catch (err) {
@@ -5625,6 +7781,546 @@
           renderAccounts();
         }
       });
+
+      // Model Hub Topbar, Local Filter Bar & Panel Event Delegation
+      if (modelsFilterInput) {
+        modelsFilterInput.addEventListener('input', () => {
+          appState.models.query = modelsFilterInput.value;
+          if (btnClearModelsFilter) btnClearModelsFilter.hidden = !modelsFilterInput.value;
+          renderModels();
+        });
+        modelsFilterInput.addEventListener('keydown', (event) => {
+          if (event.isComposing) return;
+          if (event.key === 'Escape') {
+            if (modelsFilterInput.value) {
+              event.preventDefault();
+              event.stopPropagation();
+              modelsFilterInput.value = '';
+              appState.models.query = '';
+              renderModels();
+            } else if (!appState.models.showProviderForm && !appState.models.showModelForm) {
+              modelsFilterInput.blur();
+            }
+          }
+        });
+      }
+      if (btnClearModelsFilter) {
+        btnClearModelsFilter.addEventListener('click', () => {
+          if (modelsFilterInput) modelsFilterInput.value = '';
+          appState.models.query = '';
+          renderModels();
+          modelsFilterInput?.focus();
+        });
+      }
+      for (const fBtn of modelsFilterBtns) {
+        fBtn.addEventListener('click', () => {
+          const clickedTf = fBtn.dataset.mhubFilter || 'all';
+          const nextTf = (clickedTf !== 'all' && appState.models.tierFilter === clickedTf) ? 'all' : clickedTf;
+          if (appState.models.tierFilter === nextTf) return;
+          appState.models.tierFilter = nextTf;
+          renderModels();
+        });
+      }
+
+      async function runModelHubDiscovery(explicitProviderId = '') {
+        const st = appState.models;
+        const providers = Array.isArray(st.data?.providers) ? st.data.providers : [];
+        const pid = explicitProviderId || document.getElementById('mh-disc-prov')?.value || st.discoverProviderId || providers[0]?.id || '';
+        if (!pid) {
+          showToast('请先添加至少一个兼容网关', true);
+          return;
+        }
+        const seq = ++st.discoverSeq;
+        st.discoverProviderId = pid;
+        st.discoverLoading = true;
+        st.discoverError = '';
+        renderModels();
+        try {
+          const res = await callServerTool('model_hub_discover_models', { providerId: pid });
+          if (seq !== st.discoverSeq) return;
+          st.discoverLoading = false;
+          if (res?.ok) {
+            st.discoverItems = Array.isArray(res.models) ? res.models : (Array.isArray(res.items) ? res.items : []);
+            st.discoverSelected = {};
+            showToast(`已从 ${pid} 发现 ${st.discoverItems.length} 个模型（对话模型 ${res.chatCount ?? st.discoverItems.length} 个）`);
+          } else {
+            st.discoverItems = [];
+            st.discoverError = res?.error || '未能拉取模型列表';
+          }
+        } catch (err) {
+          if (seq !== st.discoverSeq) return;
+          st.discoverLoading = false;
+          st.discoverError = err?.message || '拉取模型列表失败';
+        }
+        renderModels();
+      }
+
+      if (btnMhubAddProvider) {
+        btnMhubAddProvider.addEventListener('click', () => {
+          const closing = appState.models.showProviderForm && !appState.models.editingProviderId;
+          appState.models.showProviderForm = !closing;
+          appState.models.editingProviderId = '';
+          if (!closing) {
+            appState.models.showModelForm = false;
+            appState.models.showDiscoverPanel = false;
+          }
+          renderModels();
+        });
+      }
+      if (btnMhubDiscover) {
+        btnMhubDiscover.addEventListener('click', () => {
+          const nextOpen = !appState.models.showDiscoverPanel;
+          appState.models.showDiscoverPanel = nextOpen;
+          if (nextOpen) {
+            appState.models.showProviderForm = false;
+            appState.models.showModelForm = false;
+          }
+          renderModels();
+        });
+      }
+      if (btnMhubAddModel) {
+        btnMhubAddModel.addEventListener('click', () => {
+          const closing = appState.models.showModelForm && !appState.models.editingModelId;
+          appState.models.showModelForm = !closing;
+          appState.models.editingModelId = '';
+          if (!closing) {
+            appState.models.showProviderForm = false;
+            appState.models.showDiscoverPanel = false;
+          }
+          renderModels();
+        });
+      }
+      if (btnMhubAiSetup) {
+        btnMhubAiSetup.addEventListener('click', async () => {
+          const prompt = buildZeroSecretAiSetupPrompt(appState.models.data?.profilePath);
+          const ok = await copyTextSafe(prompt);
+          if (ok) flashButtonFeedback(btnMhubAiSetup, '✓ 已复制口令', 1300);
+          showToast(ok ? '已复制零密钥 AI 自动部署口令，粘贴到对话即可' : '复制失败', !ok);
+        });
+      }
+      if (btnMhubRevealProfile) {
+        btnMhubRevealProfile.addEventListener('click', async () => {
+          try {
+            const res = await callServerTool('model_hub_reveal_profile', {});
+            if (res?.ok) {
+              showToast(`已在 ${appState.platformLabel || '系统文件管理器'} 中定位 prism-profile.json`);
+            } else {
+              showToast(res?.error || '定位配置文件失败', true);
+            }
+          } catch (err) {
+            showToast(err?.message || '定位配置文件失败', true);
+          }
+        });
+      }
+      if (btnMhubProbeFavs) {
+        btnMhubProbeFavs.addEventListener('click', async () => {
+          const d = appState.models.data;
+          const targets = (d?.favorites?.length ? d.favorites : (d?.models || []).map((m) => m.id)).slice(0, 6);
+          if (!targets.length || appState.models.batchProbing) return;
+          appState.models.batchProbing = true;
+          renderModels();
+          let okCnt = 0;
+          for (const id of targets) {
+            appState.models.probingIds[id] = true;
+            renderModels();
+            try {
+              const r = await callServerTool('model_hub_probe_speed', { modelId: id });
+              if (r?.profile) appState.models.data = r.profile;
+              if (r?.ok) okCnt++;
+            } catch {}
+            delete appState.models.probingIds[id];
+            renderModels();
+          }
+          appState.models.batchProbing = false;
+          renderModels();
+          showToast(`批量测速完成：${okCnt}/${targets.length} 可用`);
+        });
+      }
+
+      if (modelsWrap) {
+        modelsWrap.addEventListener('toggle', (event) => {
+          const det = event.target;
+          if (det && det.matches && det.matches('details.relay-accordion[data-mhub-sec]')) {
+            appState.models.openSections[det.dataset.mhubSec] = Boolean(det.open);
+          }
+        }, true);
+
+        modelsWrap.addEventListener('input', (event) => {
+          const t = event.target;
+          if (t && t.dataset && t.dataset.autofilled === '1') {
+            t.dataset.autofilled = '0';
+          }
+          if (t && t.id === 'mh-disc-filter') {
+            const pos = t.selectionStart;
+            appState.models.discoverQuery = t.value;
+            renderModels();
+            const nextIn = document.getElementById('mh-disc-filter');
+            if (nextIn) {
+              nextIn.focus();
+              if (typeof pos === 'number') {
+                try { nextIn.setSelectionRange(pos, pos); } catch {}
+              }
+            }
+          }
+        });
+
+        modelsWrap.addEventListener('change', async (event) => {
+          const t = event.target;
+          if (!t) return;
+          if (t.id === 'mh-disc-prov') {
+            ++appState.models.discoverSeq;
+            appState.models.discoverLoading = false;
+            appState.models.discoverProviderId = t.value;
+            appState.models.discoverItems = [];
+            appState.models.discoverSelected = {};
+            appState.models.discoverError = '';
+            renderModels();
+            return;
+          }
+          if (t.id === 'mh-disc-chatonly') {
+            appState.models.discoverChatOnly = Boolean(t.checked);
+            renderModels();
+            return;
+          }
+          if (t.classList && t.classList.contains('mhub-disc-cb')) {
+            const mid = t.dataset.modelId;
+            if (mid) {
+              if (t.checked) {
+                const tierSel = modelsWrap.querySelector(`select[data-disc-tier-for="${safeCssEscape(mid)}"]`);
+                appState.models.discoverSelected[mid] = tierSel?.value || t.dataset.defTier || 'T2';
+              } else {
+                delete appState.models.discoverSelected[mid];
+              }
+              renderModels();
+            }
+            return;
+          }
+          if (t.dataset && t.dataset.discTierFor) {
+            const mid = t.dataset.discTierFor;
+            if (appState.models.discoverSelected[mid]) {
+              appState.models.discoverSelected[mid] = t.value;
+            }
+            return;
+          }
+          if (t.id === 'mh-prov-preset') {
+            const pKey = t.value;
+            const preset = appState.models.data?.presets?.[pKey];
+            if (preset) {
+              const protoEl = document.getElementById('mh-prov-proto');
+              const urlEl = document.getElementById('mh-prov-url');
+              const envEl = document.getElementById('mh-prov-env');
+              const lblEl = document.getElementById('mh-prov-label');
+              const idEl = document.getElementById('mh-prov-id');
+              const klEl = document.getElementById('mh-prov-keyless');
+              const setAutofillable = (el, val) => {
+                if (!el) return;
+                if (!el.value.trim() || el.dataset.autofilled === '1') {
+                  el.value = val || '';
+                  el.dataset.autofilled = '1';
+                }
+              };
+              if (protoEl) protoEl.value = preset.protocol;
+              setAutofillable(urlEl, preset.defaultBaseUrl || '');
+              setAutofillable(envEl, preset.suggestedEnv || '');
+              setAutofillable(lblEl, preset.label || '');
+              if (idEl && !idEl.readOnly) setAutofillable(idEl, pKey);
+              if (klEl) klEl.checked = pKey === 'ollama-local';
+            }
+          } else if (t.id === 'mh-set-websearch' || t.id === 'mh-set-redact') {
+            try {
+              const ws = Boolean(document.getElementById('mh-set-websearch')?.checked);
+              const rd = Boolean(document.getElementById('mh-set-redact')?.checked);
+              const res = await callServerTool('model_hub_update_settings', {
+                webSearch: ws,
+                redactOutboundSecrets: rd
+              });
+              if (res?.profile) appState.models.data = res.profile;
+              showToast('已保存模型中枢安全护栏设置');
+            } catch (err) {
+              showToast(err?.message || '保存设置失败', true);
+            }
+          }
+        });
+
+        // HTML5 Drag-and-Drop Favorites Reordering
+        modelsWrap.addEventListener('dragstart', (event) => {
+          const chip = event.target.closest('.mhub-fav-chip[data-fav-id]');
+          if (!chip || !event.dataTransfer) return;
+          const id = chip.dataset.favId;
+          appState.models.draggingFavId = id;
+          chip.classList.add('is-dragging');
+          event.dataTransfer.effectAllowed = 'move';
+          try { event.dataTransfer.setData('text/plain', id); } catch {}
+        });
+
+        modelsWrap.addEventListener('dragover', (event) => {
+          const chip = event.target.closest('.mhub-fav-chip[data-fav-id]');
+          if (!chip || !appState.models.draggingFavId) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'move';
+          modelsWrap.querySelectorAll('.mhub-fav-chip.is-drop-target').forEach((n) => {
+            if (n !== chip) n.classList.remove('is-drop-target');
+          });
+          if (chip.dataset.favId !== appState.models.draggingFavId) {
+            chip.classList.add('is-drop-target');
+          }
+        });
+
+        modelsWrap.addEventListener('dragend', () => {
+          appState.models.draggingFavId = '';
+          modelsWrap.querySelectorAll('.mhub-fav-chip').forEach((n) => {
+            n.classList.remove('is-dragging', 'is-drop-target');
+          });
+        });
+
+        modelsWrap.addEventListener('drop', async (event) => {
+          const targetChip = event.target.closest('.mhub-fav-chip[data-fav-id]');
+          const fromId = appState.models.draggingFavId;
+          appState.models.draggingFavId = '';
+          modelsWrap.querySelectorAll('.mhub-fav-chip').forEach((n) => {
+            n.classList.remove('is-dragging', 'is-drop-target');
+          });
+          if (!targetChip || !fromId || appState.models.reorderingFavs) return;
+          event.preventDefault();
+          const toId = targetChip.dataset.favId;
+          if (!toId || fromId === toId) return;
+          const curFavs = [...(appState.models.data?.favorites || [])];
+          const fromIdx = curFavs.indexOf(fromId);
+          const toIdx = curFavs.indexOf(toId);
+          if (fromIdx === -1 || toIdx === -1) return;
+          curFavs.splice(fromIdx, 1);
+          curFavs.splice(toIdx, 0, fromId);
+          appState.models.reorderingFavs = true;
+          try {
+            const res = await callServerTool('model_hub_reorder_favorites', { orderedIds: curFavs });
+            if (res?.profile) appState.models.data = res.profile;
+            renderModels();
+            showToast('已更新常用模型优先序');
+          } catch (err) {
+            showToast(err?.message || '排序保存失败', true);
+          } finally {
+            appState.models.reorderingFavs = false;
+          }
+        });
+
+        modelsWrap.addEventListener('click', async (event) => {
+          const btn = event.target.closest('button[data-mhub-action]');
+          if (!btn) return;
+          const act = btn.dataset.mhubAction;
+          try {
+            if (act === 'reload') {
+              await loadModelsTab();
+            } else if (act === 'open-add-provider') {
+              appState.models.showProviderForm = true;
+              appState.models.editingProviderId = '';
+              appState.models.showDiscoverPanel = false;
+              renderModels();
+            } else if (act === 'copy-ai-setup') {
+              const prompt = buildZeroSecretAiSetupPrompt(appState.models.data?.profilePath);
+              const ok = await copyTextSafe(prompt);
+              if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
+              showToast(ok ? '已复制零密钥 AI 自动部署口令' : '复制失败', !ok);
+            } else if (act === 'reveal-profile') {
+              const res = await callServerTool('model_hub_reveal_profile', {});
+              showToast(res?.ok ? `已定位 ${res.path || 'prism-profile.json'}` : (res?.error || '定位失败'), !res?.ok);
+            } else if (act === 'discover-provider') {
+              appState.models.showDiscoverPanel = true;
+              appState.models.showProviderForm = false;
+              appState.models.showModelForm = false;
+              appState.models.discoverProviderId = btn.dataset.id || '';
+              await runModelHubDiscovery(appState.models.discoverProviderId);
+            } else if (act === 'close-discover') {
+              appState.models.showDiscoverPanel = false;
+              renderModels();
+            } else if (act === 'run-discover') {
+              await runModelHubDiscovery();
+            } else if (act === 'disc-select-all') {
+              const st = appState.models;
+              const pid = st.discoverProviderId;
+              const existingModels = Array.isArray(st.data?.models) ? st.data.models : [];
+              const existingUpstreams = new Set(existingModels.filter((m) => m.providerId === pid).map((m) => String(m.upstreamModel || m.id)));
+              const dq = String(st.discoverQuery || '').trim().toLowerCase();
+              for (const it of st.discoverItems || []) {
+                const keyId = String(it.upstreamModel || it.suggestedId || '');
+                const sgId = String(it.suggestedId || keyId);
+                if (!keyId) continue;
+                if (st.discoverChatOnly && it.isChat === false) continue;
+                if (dq && !keyId.toLowerCase().includes(dq) && !String(it.vendor || '').toLowerCase().includes(dq)) continue;
+                if (it.alreadyAdded || existingUpstreams.has(keyId) || existingModels.some((m) => m.id === sgId || m.id === keyId)) continue;
+                const tierSel = modelsWrap.querySelector(`select[data-disc-tier-for="${safeCssEscape(keyId)}"]`);
+                st.discoverSelected[keyId] = tierSel?.value || it.tier || 'T2';
+              }
+              renderModels();
+            } else if (act === 'disc-select-none') {
+              appState.models.discoverSelected = {};
+              renderModels();
+            } else if (act === 'disc-import') {
+              const st = appState.models;
+              const pid = st.discoverProviderId;
+              const itemsById = new Map((st.discoverItems || []).map((x) => [String(x.upstreamModel || x.suggestedId || ''), x]));
+              const batch = Object.entries(st.discoverSelected || {})
+                .filter(([, tier]) => Boolean(tier))
+                .map(([mid, tier]) => {
+                  const meta = itemsById.get(mid) || {};
+                  const sg = meta.suggestedId || mid;
+                  return {
+                    id: sg,
+                    upstreamModel: meta.upstreamModel || mid,
+                    alias: sg,
+                    tier,
+                    vendor: meta.vendor || 'other',
+                    favorite: tier === 'T1' || tier === 'T2'
+                  };
+                });
+              if (!batch.length) return;
+              st.discoverImporting = true;
+              renderModels();
+              const res = await callServerTool('model_hub_batch_import_models', { providerId: pid, items: batch });
+              st.discoverImporting = false;
+              if (res?.profile) st.data = res.profile;
+              st.discoverSelected = {};
+              st.showDiscoverPanel = false;
+              renderModels();
+              const addedCnt = Number(res?.added ?? (res?.importedIds || []).length) || 0;
+              const skippedCnt = Number(res?.skipped) || 0;
+              showToast(`批量导入完成：新增 ${addedCnt} 个模型${skippedCnt ? `（跳过已存在 ${skippedCnt} 个）` : ''}`);
+            } else if (act === 'cancel-provider') {
+              appState.models.showProviderForm = false;
+              appState.models.editingProviderId = '';
+              renderModels();
+            } else if (act === 'edit-provider') {
+              appState.models.showProviderForm = true;
+              appState.models.editingProviderId = btn.dataset.id || '';
+              appState.models.showModelForm = false;
+              renderModels();
+            } else if (act === 'save-provider') {
+              const id = document.getElementById('mh-prov-id')?.value?.trim() || '';
+              const label = document.getElementById('mh-prov-label')?.value?.trim() || '';
+              const preset = document.getElementById('mh-prov-preset')?.value || '';
+              const protocol = document.getElementById('mh-prov-proto')?.value || 'openai-chat';
+              const baseUrl = document.getElementById('mh-prov-url')?.value?.trim() || '';
+              const apiKeyEnv = document.getElementById('mh-prov-env')?.value?.trim() || '';
+              const apiKeyVal = document.getElementById('mh-prov-key')?.value || '';
+              const allowKeyless = Boolean(document.getElementById('mh-prov-keyless')?.checked);
+              const payload = { id, label, preset, protocol, baseUrl, apiKeyEnv, allowKeyless };
+              if (apiKeyVal.trim()) payload.apiKey = apiKeyVal.trim();
+              const res = await callServerTool('model_hub_upsert_provider', payload);
+              if (res?.profile) appState.models.data = res.profile;
+              appState.models.showProviderForm = false;
+              appState.models.editingProviderId = '';
+              renderModels();
+              showToast(`已保存网关 ${res?.provider?.label || id}`);
+            } else if (act === 'clear-prov-vault') {
+              const id = btn.dataset.id;
+              const res = await callServerTool('model_hub_upsert_provider', { id, clearVaultKey: true });
+              if (res?.profile) appState.models.data = res.profile;
+              renderModels();
+              showToast('已从系统隔离凭据库清除该网关密钥');
+            } else if (act === 'del-provider') {
+              const id = btn.dataset.id;
+              const res = await callServerTool('model_hub_remove_provider', { providerId: id });
+              if (res?.profile) appState.models.data = res.profile;
+              renderModels();
+              showToast(`已删除网关 ${id}`);
+            } else if (act === 'cancel-model') {
+              appState.models.showModelForm = false;
+              appState.models.editingModelId = '';
+              renderModels();
+            } else if (act === 'edit-model') {
+              appState.models.showModelForm = true;
+              appState.models.editingModelId = btn.dataset.id || '';
+              appState.models.showProviderForm = false;
+              renderModels();
+            } else if (act === 'save-model') {
+              const providerId = document.getElementById('mh-mod-prov')?.value || '';
+              const id = document.getElementById('mh-mod-id')?.value?.trim() || '';
+              const upstreamModel = document.getElementById('mh-mod-upstream')?.value?.trim() || id;
+              const alias = document.getElementById('mh-mod-alias')?.value?.trim() || id;
+              const tier = document.getElementById('mh-mod-tier')?.value || 'T2';
+              const vendor = document.getElementById('mh-mod-vendor')?.value || 'other';
+              const fallbackModelId = document.getElementById('mh-mod-fb')?.value || '';
+              const roleHint = document.getElementById('mh-mod-hint')?.value?.trim() || '';
+              const favorite = Boolean(document.getElementById('mh-mod-fav')?.checked);
+              const res = await callServerTool('model_hub_upsert_model', {
+                id, providerId, upstreamModel, alias, tier, vendor, fallbackModelId, roleHint, favorite
+              });
+              if (res?.profile) appState.models.data = res.profile;
+              appState.models.showModelForm = false;
+              appState.models.editingModelId = '';
+              renderModels();
+              showToast(`已保存模型 ${alias}`);
+            } else if (act === 'del-model') {
+              const id = btn.dataset.id;
+              const res = await callServerTool('model_hub_remove_model', { modelId: id });
+              if (res?.profile) appState.models.data = res.profile;
+              renderModels();
+              showToast(`已移除模型 ${id}`);
+            } else if (act === 'toggle-fav' || act === 'fav-remove') {
+              const id = btn.dataset.id;
+              const m = (appState.models.data?.models || []).find((x) => x.id === id);
+              if (!m) return;
+              const nextFav = act === 'fav-remove' ? false : !m.isFavorite;
+              const res = await callServerTool('model_hub_upsert_model', { id: m.id, providerId: m.providerId, favorite: nextFav });
+              if (res?.profile) appState.models.data = res.profile;
+              renderModels();
+            } else if (act === 'fav-move') {
+              if (appState.models.reorderingFavs) return;
+              const id = btn.dataset.id;
+              const dir = Number(btn.dataset.dir) || 0;
+              const cur = [...(appState.models.data?.favorites || [])];
+              const idx = cur.indexOf(id);
+              const nextIdx = idx + dir;
+              if (idx === -1 || nextIdx < 0 || nextIdx >= cur.length) return;
+              cur.splice(idx, 1);
+              cur.splice(nextIdx, 0, id);
+              appState.models.reorderingFavs = true;
+              try {
+                const res = await callServerTool('model_hub_reorder_favorites', { orderedIds: cur });
+                if (res?.profile) appState.models.data = res.profile;
+                renderModels();
+              } finally {
+                appState.models.reorderingFavs = false;
+              }
+            } else if (act === 'probe-one') {
+              const id = btn.dataset.id;
+              if (!id) return;
+              appState.models.probingIds[id] = true;
+              renderModels();
+              const probe = await callServerTool('model_hub_probe_speed', { modelId: id });
+              delete appState.models.probingIds[id];
+              if (probe?.profile) appState.models.data = probe.profile;
+              renderModels();
+              showToast(
+                probe?.ok ? `${id} 测速通过：TTFT ${probe.ttftMs}ms` : `${id} 测速未通过：${probe?.error || '连接失败'}`,
+                !probe?.ok
+              );
+            } else if (act === 'copy-id') {
+              const id = btn.dataset.id || '';
+              if (id) {
+                const ok = await copyTextSafe(id);
+                if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
+                showToast(ok ? `已复制模型 ID：${id}` : '复制失败', !ok);
+              }
+            } else if (act === 'copy-ask') {
+              const id = btn.dataset.id;
+              const prompt = `请调用 prism_ask_model（指定 model="${id}"）对当前方案或代码 Diff 进行跨厂商交叉审查，并汇报审查结论。`;
+              const ok = await copyTextSafe(prompt);
+              if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
+              showToast(ok ? `已复制 ${id} 跨厂商会诊口令` : '复制失败', !ok);
+            } else if (act === 'reset-filter') {
+              appState.models.query = '';
+              appState.models.tierFilter = 'all';
+              if (modelsFilterInput) modelsFilterInput.value = '';
+              renderModels();
+            }
+          } catch (err) {
+            appState.models.probingIds = {};
+            appState.models.batchProbing = false;
+            renderModels();
+            showToast(err?.message || '模型中枢操作失败', true);
+          }
+        });
+      }
 
       // Browse Toolbar & Breadcrumbs Events
       pathBreadcrumbs.addEventListener('click', (event) => {
@@ -5728,6 +8424,17 @@
               loadPreview(cur.path);
             }
           }
+        } else if (event.key === 'Escape') {
+          if (filterInput.value) {
+            event.preventDefault();
+            event.stopPropagation();
+            filterInput.value = '';
+            appState.browse.query = '';
+            btnClearFilter.hidden = true;
+            navigateToDir(appState.browse.dir, '');
+          } else {
+            filterInput.blur();
+          }
         }
       });
 
@@ -5748,6 +8455,25 @@
       artifactsFilterInput.addEventListener('input', () => {
         appState.artifacts.query = artifactsFilterInput.value;
         renderArtifacts();
+      });
+
+      artifactsFilterInput.addEventListener('keydown', (event) => {
+        if (event.isComposing) return;
+        if (event.key === 'Escape') {
+          if (artifactsFilterInput.value) {
+            event.preventDefault();
+            event.stopPropagation();
+            artifactsFilterInput.value = '';
+            appState.artifacts.query = '';
+            renderArtifacts();
+          } else {
+            artifactsFilterInput.blur();
+          }
+        } else if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          artifactsFilterInput.blur();
+          stepActiveListSelection(1);
+        }
       });
 
       btnClearArtifactsFilter.addEventListener('click', () => {
@@ -5932,6 +8658,12 @@
 
       window.addEventListener('resize', () => {
         if (appState.openTargets.menuOpen) closeOpenWithMenu();
+        updateTabGroupOverflow();
+        renderTopbar();
+        renderPreviewDrawer({ preserveFocus: true });
+        if (appState.preview.visible && isFileTab(appState.activeTab) && appState.preview.data?.previewType === 'image' && appState.preview.imgScaleMode === '1:1') {
+          applyActiveImagePreviewMode();
+        }
       }, { signal });
 
       // Search Tab Events
@@ -5969,7 +8701,8 @@
 
       for (const btn of searchFilterBtns) {
         btn.addEventListener('click', () => {
-          const nextFilter = btn.dataset.searchFilter || 'all';
+          const clickedFilter = btn.dataset.searchFilter || 'all';
+          const nextFilter = (clickedFilter !== 'all' && appState.search.filter === clickedFilter) ? 'all' : clickedFilter;
           if (appState.search.filter === nextFilter) return;
           appState.search.filter = nextFilter;
           renderSearch();
@@ -5988,6 +8721,7 @@
         const act = actionBtn.dataset.searchAction;
         if (act === 'copy') {
           const ok = await copyTextSafe(item.snippet || '');
+          if (ok) flashButtonFeedback(actionBtn, '✓ 已复制', 1200);
           showToast(ok ? '已复制脱敏片段' : '复制失败', !ok);
         } else if (act === 'open-conv') {
           await openConversationUri(item.conversationUri || `conversation://${item.sessionId}`);
@@ -5997,8 +8731,10 @@
       });
 
       btnPreviewReveal.addEventListener('click', () => {
-        if (appState.preview.data?.path) {
+        if (appState.preview.visible && appState.preview.data?.path) {
           revealPath(appState.preview.data.path);
+        } else if (appState.activeTab === 'browse' && appState.browse.dir) {
+          revealPath(appState.browse.dir);
         }
       });
 
@@ -6006,6 +8742,7 @@
         const text = appState.preview.data?.text;
         if (typeof text !== 'string') return;
         const ok = await copyTextSafe(text);
+        if (ok) flashButtonFeedback(btnPreviewCopy, '✓ 已复制', 1200);
         showToast(ok ? '已复制文件全文到剪贴板' : '复制失败', !ok);
       });
 
@@ -6046,6 +8783,18 @@
           showToast('当前仍有未保存修改，请先保存或点击取消', true);
           return;
         }
+        if (!appState.preview.visible && window.innerWidth >= WIDE_SPLIT_MIN_WIDTH) {
+          if (isFileTab(appState.activeTab) && appState.preview.userClosedInWideByTab) {
+            appState.preview.userClosedInWideByTab[appState.activeTab] = true;
+          }
+        } else if (appState.preview.visible && window.innerWidth >= WIDE_SPLIT_MIN_WIDTH) {
+          // Return from file preview to directory inspector; second click closes wide pane completely
+          appState.preview.visible = false;
+          appState.preview.editing = false;
+          appState.preview.dirty = false;
+          renderPreviewDrawer();
+          return;
+        }
         appState.preview.visible = false;
         appState.preview.editing = false;
         appState.preview.dirty = false;
@@ -6080,6 +8829,21 @@
       });
 
       previewBody.addEventListener('click', (event) => {
+        const imgModeBtn = event.target.closest('button[data-img-mode]');
+        if (imgModeBtn) {
+          const mode = imgModeBtn.dataset.imgMode === '1:1' ? '1:1' : 'fit';
+          if (appState.preview.imgScaleMode !== mode) {
+            appState.preview.imgScaleMode = mode;
+            applyActiveImagePreviewMode();
+          }
+          return;
+        }
+        const imgActBtn = event.target.closest('button[data-img-action="pixel"]');
+        if (imgActBtn) {
+          appState.preview.imgPixelated = !Boolean(appState.preview.imgPixelated);
+          applyActiveImagePreviewMode();
+          return;
+        }
         const lnEl = event.target.closest('.code-ln[data-line]');
         if (lnEl) {
           const lineNum = Number(lnEl.dataset.line);
@@ -6104,6 +8868,22 @@
           }
           return;
         }
+        const inspBtn = event.target.closest('button[data-inspector-action]');
+        if (inspBtn) {
+          const curDir = appState.browse.dir || appState.homeDir || '';
+          const iAct = inspBtn.dataset.inspectorAction;
+          if (iAct === 'copy-dir' && curDir) {
+            copyTextSafe(curDir).then((ok) => {
+              if (ok) flashButtonFeedback(inspBtn, '✓ 已复制', 1200);
+              showToast(ok ? `已复制路径 ${curDir}` : '复制失败', !ok);
+            });
+          } else if (iAct === 'pin-dir' && curDir) {
+            togglePinPath(curDir).then(() => renderPreviewDrawer({ preserveFocus: true }));
+          } else if (iAct === 'reveal-dir' && curDir) {
+            revealPath(curDir);
+          }
+          return;
+        }
         const btn = event.target.closest('button[data-placeholder-action]');
         if (!btn) return;
         const act = btn.dataset.placeholderAction;
@@ -6114,28 +8894,51 @@
         }
       });
 
-      // Resizable Split Handle
+      // Resizable Split Handle (col-resize >= 820px / row-resize < 820px)
       let dragging = false;
+      let dragIsWide = false;
       let dragStartY = 0;
+      let dragStartX = 0;
       let dragStartHeight = 290;
+      let dragStartWidth = 380;
 
       previewResizer.addEventListener('pointerdown', (event) => {
         dragging = true;
-        dragStartY = event.clientY;
-        dragStartHeight = appState.preview.collapsed ? 220 : previewDrawer.getBoundingClientRect().height;
+        dragIsWide = workspaceEl.classList.contains('is-split-wide');
+        if (dragIsWide) {
+          dragStartX = event.clientX;
+          const wsW = Math.max(600, workspaceEl.getBoundingClientRect().width);
+          dragStartWidth = appState.preview.collapsed
+            ? Math.round(wsW * (Number(appState.preview.widthRatio) || 0.46))
+            : previewDrawer.getBoundingClientRect().width;
+        } else {
+          dragStartY = event.clientY;
+          dragStartHeight = appState.preview.collapsed ? 220 : previewDrawer.getBoundingClientRect().height;
+        }
         previewDrawer.classList.add('is-resizing');
         previewResizer.setPointerCapture(event.pointerId);
       });
 
       previewResizer.addEventListener('pointermove', (event) => {
         if (!dragging) return;
-        const delta = dragStartY - event.clientY;
-        const maxH = Math.max(180, Math.floor(workspaceEl.getBoundingClientRect().height * 0.78));
-        const nextH = Math.max(120, Math.min(maxH, Math.round(dragStartHeight + delta)));
-        appState.preview.collapsed = false;
-        appState.preview.height = nextH;
-        previewDrawer.classList.remove('is-collapsed');
-        previewDrawer.style.height = `${nextH}px`;
+        if (dragIsWide) {
+          const wsW = Math.max(600, workspaceEl.getBoundingClientRect().width);
+          const deltaX = dragStartX - event.clientX;
+          const maxW = Math.max(260, wsW - 280);
+          const nextW = Math.max(260, Math.min(maxW, Math.round(dragStartWidth + deltaX)));
+          appState.preview.collapsed = false;
+          appState.preview.widthRatio = Math.max(0.24, Math.min(0.72, nextW / wsW));
+          previewDrawer.classList.remove('is-collapsed');
+          workspaceEl.style.setProperty('--preview-width', `${nextW}px`);
+        } else {
+          const delta = dragStartY - event.clientY;
+          const maxH = Math.max(180, Math.floor(workspaceEl.getBoundingClientRect().height * 0.78));
+          const nextH = Math.max(120, Math.min(maxH, Math.round(dragStartHeight + delta)));
+          appState.preview.collapsed = false;
+          appState.preview.height = nextH;
+          previewDrawer.classList.remove('is-collapsed');
+          previewDrawer.style.height = `${nextH}px`;
+        }
       });
 
       function stopDrag(event) {
@@ -6145,6 +8948,7 @@
         try {
           previewResizer.releasePointerCapture(event.pointerId);
         } catch {}
+        syncWorkspaceSplitLayout();
         renderPreviewHeaderOnly();
       }
 
@@ -6170,6 +8974,20 @@
         return role === 'button' || role === 'tab' || role === 'menuitem' || role === 'link';
       }
 
+      function scheduleLiveArrowPreview(item) {
+        if (arrowPreviewTimer) {
+          clearTimeout(arrowPreviewTimer);
+          arrowPreviewTimer = 0;
+        }
+        if (!item || item.isDir || item.exists === false) return;
+        if (window.innerWidth < WIDE_SPLIT_MIN_WIDTH && !appState.preview.visible) return;
+        if (appState.preview.editing && appState.preview.dirty) return;
+        arrowPreviewTimer = setTimeout(() => {
+          arrowPreviewTimer = 0;
+          loadPreview(item.path);
+        }, 120);
+      }
+
       function stepActiveListSelection(delta) {
         const tab = appState.activeTab;
         if (tab === 'browse') {
@@ -6182,6 +9000,7 @@
           appState.browse.selectedPath = items[nextIdx].path;
           renderBrowse();
           browseListWrap.querySelector('.list-row.is-selected')?.scrollIntoView({ block: 'nearest' });
+          scheduleLiveArrowPreview(items[nextIdx]);
         } else if (tab === 'artifacts') {
           const q = appState.artifacts.query.trim().toLowerCase();
           const items = q
@@ -6195,6 +9014,7 @@
           appState.artifacts.selectedPath = items[nextIdx].path;
           renderArtifacts();
           artifactsListWrap.querySelector('.list-row.is-selected')?.scrollIntoView({ block: 'nearest' });
+          scheduleLiveArrowPreview(items[nextIdx]);
         } else if (tab === 'pins') {
           const items = appState.pins.items;
           if (!items.length) return;
@@ -6205,6 +9025,7 @@
           appState.pins.selectedPath = items[nextIdx].path;
           renderPins();
           pinsListWrap.querySelector('.list-row.is-selected')?.scrollIntoView({ block: 'nearest' });
+          scheduleLiveArrowPreview(items[nextIdx]);
         }
       }
 
@@ -6244,14 +9065,40 @@
         return false;
       }
 
-      // Global Shortcuts: Escape, Ctrl/Cmd+L, Ctrl/Cmd+S, and Keyboard Navigation (Up/Down/Enter/Backspace)
+      // Global Shortcuts: Escape, Alt+1..6, /, Ctrl/Cmd+L, Ctrl/Cmd+S, and Keyboard Navigation
+      const ALT_TAB_ORDER = ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'];
       window.addEventListener('keydown', (event) => {
+        if (event.isComposing || event.keyCode === 229) return;
         if (event.key === 'Escape') {
           if (appState.openTargets.menuOpen) {
+            event.preventDefault();
             closeOpenWithMenu();
             return;
           }
-          if (getLineRangeSelection()) {
+          if (appState.activeTab === 'models' && (appState.models.showProviderForm || appState.models.showModelForm || appState.models.showDiscoverPanel)) {
+            event.preventDefault();
+            appState.models.showProviderForm = false;
+            appState.models.editingProviderId = '';
+            appState.models.showModelForm = false;
+            appState.models.editingModelId = '';
+            appState.models.showDiscoverPanel = false;
+            renderModels();
+            return;
+          }
+          if (appState.activeTab === 'accounts') {
+            const acc = appState.accounts;
+            if (acc.editingAliasId || acc.editingQuotaId || acc.showCatalogForm || acc.showRemoteConfig || acc.selfUpdateConfirmRepair) {
+              event.preventDefault();
+              acc.editingAliasId = '';
+              acc.editingQuotaId = '';
+              acc.showCatalogForm = false;
+              acc.showRemoteConfig = false;
+              acc.selfUpdateConfirmRepair = false;
+              renderAccounts();
+              return;
+            }
+          }
+          if (isFileTab(appState.activeTab) && getLineRangeSelection()) {
             appState.preview.lineSelStart = 0;
             appState.preview.lineSelEnd = 0;
             previewBody.querySelectorAll('.code-ln.is-selected').forEach((n) => n.classList.remove('is-selected'));
@@ -6259,6 +9106,20 @@
             return;
           }
         }
+
+        if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+          const digitMatch = String(event.code || '').match(/^Digit([1-6])$/) || String(event.key || '').match(/^([1-6])$/);
+          if (digitMatch) {
+            const tabIdx = Number(digitMatch[1]) - 1;
+            const targetTab = ALT_TAB_ORDER[tabIdx];
+            if (targetTab) {
+              event.preventDefault();
+              switchTab(targetTab, { persist: true });
+            }
+          }
+          return;
+        }
+
         const mod = event.ctrlKey || event.metaKey;
         if (mod) {
           const key = event.key.toLowerCase();
@@ -6266,13 +9127,29 @@
             event.preventDefault();
             if (appState.activeTab !== 'browse') switchTab('browse', { persist: true });
             enterPathEditMode();
-          } else if (key === 's' && appState.preview.visible && appState.preview.editing) {
+          } else if (key === 's' && isFileTab(appState.activeTab) && appState.preview.visible && appState.preview.editing) {
             event.preventDefault();
             saveEditedFile();
           }
           return;
         }
-        if (event.altKey || appState.openTargets.menuOpen || appState.preview.editing || isTypingFocus(event.target)) return;
+        if (event.altKey || appState.openTargets.menuOpen || isTypingFocus(event.target)) return;
+
+        if (event.key === '/') {
+          let targetInput = null;
+          if (appState.activeTab === 'browse') targetInput = filterInput;
+          else if (appState.activeTab === 'artifacts') targetInput = artifactsFilterInput;
+          else if (appState.activeTab === 'search') targetInput = searchInput;
+          else if (appState.activeTab === 'models' && modelsFilterBar && !modelsFilterBar.hidden) targetInput = modelsFilterInput;
+          if (targetInput) {
+            event.preventDefault();
+            targetInput.focus();
+            targetInput.select();
+            return;
+          }
+        }
+
+        if (appState.preview.editing) return;
         if (appState.activeTab === 'browse' || appState.activeTab === 'artifacts' || appState.activeTab === 'pins') {
           if (event.key === 'ArrowDown') {
             event.preventDefault();
@@ -6314,7 +9191,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.6.1' },
+            appInfo: { name: 'prism-files', version: '0.7.0' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};

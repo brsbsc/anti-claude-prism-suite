@@ -58,6 +58,7 @@ function defaultSpawnDetached(bin, args, options = {}) {
     shell: false,
     detached: true,
     stdio: 'ignore',
+    windowsHide: true,
     ...options
   });
   child.unref();

@@ -1,5 +1,5 @@
 /* ============================================================================
- * Anti-Claude Prism Suite v0.5.0 (Clean-Room Original, MIT)
+ * Anti-Claude Prism Suite v0.7.0 (Clean-Room Original, MIT)
  * Performance-first architecture:
  *   - Zero document.body MutationObserver (0.0ms typing latency in composer)
  *   - Stream ink observer attaches ONLY to [data-testid="autoscroll-viewport"]
@@ -12,7 +12,7 @@
     try { window.__agPrismSuiteDispose(); } catch {}
   }
 
-  const SUITE_VERSION = '0.6.1';
+  const SUITE_VERSION = '0.7.0';
   const REPO_RELEASES_API = 'https://api.github.com/repos/wushuai0802/anti-claude-prism-suite/releases/latest';
   const REPO_RELEASES_URL = 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest';
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';
@@ -60,7 +60,7 @@
     mascot: boolValidator,
     mascotCountMode: enumValidator(['fixed', 'agents']),
     mascotMinCount: (v) => (Number.isFinite(Number(v)) ? clampMascotMinCount(v) : undefined),
-    mascotStyle: enumValidator(['trio', 'crab', 'cat']),
+    mascotStyle: enumValidator(['trio', 'zoo', 'cyber', 'crab', 'cat', 'penguin', 'fox']),
     mascotRoam: boolValidator,
     mascotVibe: enumValidator(['calm', 'lively']),
     mascotSize: (v) => (Number.isFinite(Number(v)) ? clampMascotSize(v) : undefined),
@@ -244,6 +244,14 @@
     prefs._ts = Math.max(MIN_USER_TS, Date.now());
     prefs._tsOrigin = 'explicit';
     persistPrefsMirrors(prefs);
+    try {
+      if (typeof window.__agProjectCall === 'function') {
+        const cand = sanitizePrefsCandidate(prefs);
+        if (cand) {
+          window.__agProjectCall('savePrismUiPrefs', { prefs: cand.clean }, 3000);
+        }
+      }
+    } catch {}
   }
 
   let disposed = false;
@@ -387,6 +395,73 @@
    * 2. Conversation Outline Drawer, Viewport-Anchored Alt+Up/Down Jump & /btw
    * ========================================================================== */
   let jumpToastTimer = 0;
+  let popCloseTimer = 0;
+  let outlineCloseTimer = 0;
+
+  function notifyOverlayChange() {
+    if (disposed) return;
+    try {
+      window.dispatchEvent(new CustomEvent('ag-prism-overlay-change'));
+    } catch {}
+  }
+
+  function cancelPopoverClose(pop) {
+    if (popCloseTimer) {
+      clearTimeout(popCloseTimer);
+      popCloseTimer = 0;
+    }
+    if (pop) pop.removeAttribute('data-closing');
+  }
+
+  function cancelOutlineClose(drawer) {
+    if (outlineCloseTimer) {
+      clearTimeout(outlineCloseTimer);
+      outlineCloseTimer = 0;
+    }
+    if (drawer) drawer.removeAttribute('data-closing');
+  }
+
+  function closePopoverAnimated(dispatchOverlay = true) {
+    const pop = document.getElementById('ag-ps-popover');
+    if (!pop) return false;
+    const wasOpen = pop.getAttribute('data-open') === '1';
+    pop.removeAttribute('data-open');
+    if (!wasOpen) {
+      cancelPopoverClose(pop);
+      return false;
+    }
+    cancelPopoverClose(pop);
+    if (!REDUCED_MOTION && !disposed && !document.hidden) {
+      pop.setAttribute('data-closing', '1');
+      popCloseTimer = setTimeout(() => {
+        popCloseTimer = 0;
+        if (pop.isConnected) pop.removeAttribute('data-closing');
+      }, 130);
+    }
+    if (dispatchOverlay) notifyOverlayChange();
+    return true;
+  }
+
+  function closeOutlineAnimated(dispatchOverlay = true) {
+    const drawer = document.getElementById('ag-ps-outline');
+    if (!drawer) return false;
+    const wasOpen = drawer.getAttribute('data-open') === '1';
+    drawer.removeAttribute('data-open');
+    if (!wasOpen) {
+      cancelOutlineClose(drawer);
+      return false;
+    }
+    cancelOutlineClose(drawer);
+    if (!REDUCED_MOTION && !disposed && !document.hidden) {
+      drawer.setAttribute('data-closing', '1');
+      outlineCloseTimer = setTimeout(() => {
+        outlineCloseTimer = 0;
+        if (drawer.isConnected) drawer.removeAttribute('data-closing');
+      }, 130);
+    }
+    if (dispatchOverlay) notifyOverlayChange();
+    return true;
+  }
 
   function showJumpToast(text) {
     let el = document.getElementById('ag-ps-jump-toast');
@@ -399,12 +474,18 @@
     if (!el) return;
     el.textContent = text;
     el.setAttribute('data-show', '1');
+    notifyOverlayChange();
     clearTimeout(jumpToastTimer);
     jumpToastTimer = setTimeout(() => {
       el.removeAttribute('data-show');
+      notifyOverlayChange();
     }, 2000);
   }
-  onCleanup(() => clearTimeout(jumpToastTimer));
+  onCleanup(() => {
+    clearTimeout(jumpToastTimer);
+    clearTimeout(popCloseTimer);
+    clearTimeout(outlineCloseTimer);
+  });
 
   function isElementRendered(el) {
     if (!el || !el.isConnected) return false;
@@ -574,14 +655,14 @@
     }
     const pop = document.getElementById('ag-ps-popover');
     if (pop && pop.getAttribute('data-open') === '1') {
-      pop.removeAttribute('data-open');
+      closePopoverAnimated(true);
       syncToolbarActiveStates();
       if (restoreFocus) document.getElementById('ag-ps-btn-suite')?.focus();
       return true;
     }
     const drawer = document.getElementById('ag-ps-outline');
     if (drawer && drawer.getAttribute('data-open') === '1') {
-      drawer.removeAttribute('data-open');
+      closeOutlineAnimated(true);
       syncToolbarActiveStates();
       if (restoreFocus) document.getElementById('ag-ps-btn-outline')?.focus();
       return true;
@@ -731,7 +812,7 @@
         if (act && typeof act.onClick === 'function' && turns[idx]) {
           try { act.onClick(idx, turns[idx], buildBusHelpers()); } catch {}
         }
-        drawer.removeAttribute('data-open');
+        closeOutlineAnimated(true);
         syncToolbarActiveStates();
         return;
       }
@@ -741,7 +822,7 @@
         const idx = Number(btw.getAttribute('data-btw-idx'));
         const turns = getUserTurnElements();
         if (turns[idx]) insertBtwQuote(turns[idx].textContent || '');
-        drawer.removeAttribute('data-open');
+        closeOutlineAnimated(true);
         syncToolbarActiveStates();
         return;
       }
@@ -775,19 +856,20 @@
 
   function toggleOutlineDrawer(forceState) {
     const drawer = ensureOutlineDrawer();
-    const pop = document.getElementById('ag-ps-popover');
-    if (pop) pop.removeAttribute('data-open');
+    closePopoverAnimated(false);
     const open = typeof forceState === 'boolean' ? forceState : drawer.getAttribute('data-open') !== '1';
     if (open) {
+      cancelOutlineClose(drawer);
       drawer.setAttribute('data-open', '1');
       positionFloatingPanel(drawer, document.getElementById('ag-ps-btn-outline'));
       const input = drawer.querySelector('.ag-ps-outline-search');
       if (input) input.value = '';
       renderOutlineList('');
     } else {
-      drawer.removeAttribute('data-open');
+      closeOutlineAnimated(false);
     }
     syncToolbarActiveStates();
+    notifyOverlayChange();
   }
 
   /* ==========================================================================
@@ -912,10 +994,14 @@
       .join('');
 
     const wrap = existing || document.createElement('div');
+    const scopeSwitched = Boolean(
+      existing && existing.hasAttribute('data-scope') && existing.getAttribute('data-scope') !== String(bookScopeIdx)
+    );
     wrap.className = 'ag-ps-usage-extra';
     wrap.setAttribute('data-sig', sig);
+    wrap.setAttribute('data-scope', String(bookScopeIdx));
     wrap.innerHTML = `
-      <div class="ag-ps-book-row" title="点击切换 今日 / 近12周 名著换算（基于精确总量 ${fmtTokens(scopeTokens)}）">
+      <div class="ag-ps-book-row" role="button" tabindex="0"${scopeSwitched && !REDUCED_MOTION ? ' data-switching="1"' : ''} title="点击切换 今日 / 近12周 名著换算（基于精确总量 ${fmtTokens(scopeTokens)}）">
         <span class="ag-ov-muted">📚 ${scopeLbl}体量</span>
         <span class="ag-ps-book-val">${escapeHtml(bookText)}</span>
       </div>
@@ -934,6 +1020,14 @@
         if (e.target.closest('.ag-ps-book-row')) {
           bookScopeIdx = (bookScopeIdx + 1) % 2;
           syncUsageExtraMount();
+        }
+      });
+      wrap.addEventListener('keydown', (e) => {
+        if ((e.key === 'Enter' || e.key === ' ') && e.target.closest('.ag-ps-book-row')) {
+          e.preventDefault();
+          bookScopeIdx = (bookScopeIdx + 1) % 2;
+          syncUsageExtraMount();
+          wrap.querySelector('.ag-ps-book-row')?.focus({ preventScroll: true });
         }
       });
       wrap.addEventListener('mouseover', (e) => {
@@ -1094,12 +1188,13 @@
   }
 
   /* ==========================================================================
-   * 5. Composer Pixel Mascots (Original Crisp Pixel SVGs, 0fps Idle)
+   * 5. Composer Pixel Mascots (12 Original Crisp 12x11 Pixel SVGs, 0fps Idle)
    * ========================================================================== */
   const SVG_CRAB = `<svg class="ag-ps-sprite" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true">
     <rect x="2" y="2" width="1" height="2" fill="#E06C3A"/><rect x="9" y="2" width="1" height="2" fill="#E06C3A"/>
     <rect x="1" y="3" width="1" height="2" fill="#F28552"/><rect x="10" y="3" width="1" height="2" fill="#F28552"/>
     <rect x="3" y="3" width="6" height="5" fill="#EA7541"/><rect x="2" y="4" width="8" height="3" fill="#EA7541"/>
+    <rect x="4" y="3" width="2" height="1" fill="#FDBA74"/>
     <rect x="4" y="5" width="1" height="1" fill="#18181B"/><rect x="7" y="5" width="1" height="1" fill="#18181B"/>
     <rect x="2" y="8" width="1" height="2" fill="#C9592B"/><rect x="4" y="8" width="1" height="2" fill="#C9592B"/>
     <rect x="7" y="8" width="1" height="2" fill="#C9592B"/><rect x="9" y="8" width="1" height="2" fill="#C9592B"/>
@@ -1107,25 +1202,31 @@
 
   const SVG_CAT = `<svg class="ag-ps-sprite" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true">
     <rect x="2" y="1" width="2" height="2" fill="#8B5CF6"/><rect x="8" y="1" width="2" height="2" fill="#8B5CF6"/>
-    <rect x="2" y="3" width="8" height="5" fill="#9D76FA"/><rect x="3" y="2" width="6" height="1" fill="#9D76FA"/>
+    <rect x="3" y="2" width="1" height="1" fill="#F9A8D4"/><rect x="8" y="2" width="1" height="1" fill="#F9A8D4"/>
+    <rect x="2" y="3" width="8" height="5" fill="#9D76FA"/><rect x="4" y="2" width="4" height="1" fill="#9D76FA"/>
     <rect x="4" y="5" width="1" height="1" fill="#18181B"/><rect x="7" y="5" width="1" height="1" fill="#18181B"/>
+    <rect x="4" y="4" width="1" height="1" fill="#EDE9FE"/><rect x="7" y="4" width="1" height="1" fill="#EDE9FE"/>
     <rect x="5" y="6" width="2" height="1" fill="#F9A8D4"/>
     <rect x="3" y="8" width="2" height="2" fill="#7C3AED"/><rect x="7" y="8" width="2" height="2" fill="#7C3AED"/>
     <rect x="10" y="6" width="1" height="3" fill="#8B5CF6"/>
   </svg>`;
 
   const SVG_SLIME = `<svg class="ag-ps-sprite" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true">
-    <rect x="4" y="3" width="4" height="1" fill="#3B82F6"/>
+    <rect x="4" y="3" width="4" height="1" fill="#60A5FA"/>
     <rect x="3" y="4" width="6" height="1" fill="#60A5FA"/>
+    <rect x="4" y="4" width="2" height="1" fill="#BAE6FD"/>
     <rect x="2" y="5" width="8" height="4" fill="#3B82F6"/>
     <rect x="3" y="9" width="6" height="1" fill="#2563EB"/>
     <rect x="4" y="6" width="1" height="1" fill="#FFFFFF"/><rect x="7" y="6" width="1" height="1" fill="#FFFFFF"/>
+    <rect x="4" y="7" width="1" height="1" fill="#1E3A8A"/><rect x="7" y="7" width="1" height="1" fill="#1E3A8A"/>
   </svg>`;
 
   const SVG_FROG = `<svg class="ag-ps-sprite" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true">
     <rect x="2" y="2" width="2" height="2" fill="#22C55E"/><rect x="8" y="2" width="2" height="2" fill="#22C55E"/>
+    <rect x="2" y="2" width="1" height="1" fill="#FFFFFF"/><rect x="9" y="2" width="1" height="1" fill="#FFFFFF"/>
     <rect x="3" y="2" width="1" height="1" fill="#18181B"/><rect x="8" y="2" width="1" height="1" fill="#18181B"/>
     <rect x="2" y="4" width="8" height="4" fill="#4ADE80"/>
+    <rect x="3" y="5" width="1" height="1" fill="#FCA5A5"/><rect x="8" y="5" width="1" height="1" fill="#FCA5A5"/>
     <rect x="4" y="6" width="4" height="2" fill="#BBF7D0"/>
     <rect x="2" y="8" width="2" height="2" fill="#16A34A"/><rect x="8" y="8" width="2" height="2" fill="#16A34A"/>
   </svg>`;
@@ -1133,6 +1234,7 @@
   const SVG_CHICK = `<svg class="ag-ps-sprite" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true">
     <rect x="5" y="1" width="2" height="1" fill="#EA580C"/>
     <rect x="3" y="2" width="6" height="6" fill="#FBBF24"/>
+    <rect x="4" y="2" width="2" height="1" fill="#FEF08A"/>
     <rect x="2" y="4" width="8" height="3" fill="#F59E0B"/>
     <rect x="4" y="4" width="1" height="1" fill="#18181B"/><rect x="7" y="4" width="1" height="1" fill="#18181B"/>
     <rect x="5" y="5" width="2" height="1" fill="#EA580C"/>
@@ -1141,14 +1243,109 @@
 
   const SVG_BUNNY = `<svg class="ag-ps-sprite" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true">
     <rect x="3" y="0" width="2" height="3" fill="#F472B6"/><rect x="7" y="0" width="2" height="3" fill="#F472B6"/>
+    <rect x="4" y="1" width="1" height="2" fill="#FCE7F3"/><rect x="7" y="1" width="1" height="2" fill="#FCE7F3"/>
     <rect x="3" y="3" width="6" height="5" fill="#F9A8D4"/>
     <rect x="2" y="4" width="8" height="3" fill="#F472B6"/>
     <rect x="4" y="5" width="1" height="1" fill="#18181B"/><rect x="7" y="5" width="1" height="1" fill="#18181B"/>
+    <rect x="5" y="6" width="2" height="1" fill="#FFFFFF"/>
     <rect x="3" y="8" width="2" height="2" fill="#DB2777"/><rect x="7" y="8" width="2" height="2" fill="#DB2777"/>
   </svg>`;
 
-  const SPRITE_POOL = [SVG_CRAB, SVG_CAT, SVG_SLIME, SVG_FROG, SVG_CHICK, SVG_BUNNY];
+  const SVG_FOX = `<svg class="ag-ps-sprite" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true">
+    <rect x="2" y="1" width="2" height="2" fill="#EA580C"/><rect x="7" y="1" width="2" height="2" fill="#EA580C"/>
+    <rect x="2" y="1" width="1" height="1" fill="#431407"/><rect x="8" y="1" width="1" height="1" fill="#431407"/>
+    <rect x="2" y="3" width="7" height="5" fill="#F97316"/>
+    <rect x="4" y="3" width="3" height="1" fill="#FB923C"/>
+    <rect x="2" y="6" width="2" height="2" fill="#FFF7ED"/><rect x="7" y="6" width="2" height="2" fill="#FFF7ED"/>
+    <rect x="4" y="7" width="3" height="2" fill="#FFFFFF"/>
+    <rect x="3" y="5" width="1" height="1" fill="#18181B"/><rect x="7" y="5" width="1" height="1" fill="#18181B"/>
+    <rect x="3" y="4" width="1" height="1" fill="#FFEDD5"/><rect x="7" y="4" width="1" height="1" fill="#FFEDD5"/>
+    <rect x="5" y="6" width="1" height="1" fill="#18181B"/>
+    <rect x="3" y="8" width="1" height="2" fill="#431407"/><rect x="7" y="8" width="1" height="2" fill="#431407"/>
+    <rect x="9" y="5" width="2" height="4" fill="#EA580C"/><rect x="10" y="4" width="2" height="2" fill="#FFFFFF"/>
+  </svg>`;
+
+  const SVG_SHIBA = `<svg class="ag-ps-sprite" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true">
+    <rect x="2" y="1" width="2" height="2" fill="#D97706"/><rect x="7" y="1" width="2" height="2" fill="#D97706"/>
+    <rect x="2" y="3" width="7" height="5" fill="#F59E0B"/>
+    <rect x="4" y="4" width="1" height="1" fill="#FFFFFF"/><rect x="6" y="4" width="1" height="1" fill="#FFFFFF"/>
+    <rect x="3" y="5" width="1" height="1" fill="#18181B"/><rect x="7" y="5" width="1" height="1" fill="#18181B"/>
+    <rect x="3" y="6" width="5" height="2" fill="#FEFCE8"/><rect x="4" y="8" width="3" height="1" fill="#FFFFFF"/>
+    <rect x="5" y="6" width="1" height="1" fill="#18181B"/>
+    <rect x="3" y="8" width="1" height="2" fill="#D97706"/><rect x="7" y="8" width="1" height="2" fill="#D97706"/>
+    <rect x="9" y="4" width="2" height="3" fill="#F59E0B"/><rect x="10" y="4" width="1" height="1" fill="#FEFCE8"/>
+  </svg>`;
+
+  const SVG_PENGUIN = `<svg class="ag-ps-sprite" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true">
+    <rect x="3" y="1" width="6" height="2" fill="#1E293B"/>
+    <rect x="4" y="1" width="2" height="1" fill="#475569"/>
+    <rect x="2" y="3" width="8" height="6" fill="#0F172A"/>
+    <rect x="1" y="5" width="1" height="3" fill="#1E293B"/><rect x="10" y="5" width="1" height="3" fill="#1E293B"/>
+    <rect x="3" y="4" width="6" height="5" fill="#F8FAFC"/>
+    <rect x="5" y="3" width="2" height="2" fill="#0F172A"/>
+    <rect x="4" y="4" width="1" height="1" fill="#18181B"/><rect x="7" y="4" width="1" height="1" fill="#18181B"/>
+    <rect x="4" y="3" width="1" height="1" fill="#FFFFFF"/><rect x="7" y="3" width="1" height="1" fill="#FFFFFF"/>
+    <rect x="5" y="5" width="2" height="1" fill="#F59E0B"/>
+    <rect x="3" y="9" width="2" height="1" fill="#EA580C"/><rect x="7" y="9" width="2" height="1" fill="#EA580C"/>
+  </svg>`;
+
+  const SVG_OWLET = `<svg class="ag-ps-sprite" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true">
+    <rect x="2" y="1" width="2" height="1" fill="#78350F"/><rect x="8" y="1" width="2" height="1" fill="#78350F"/>
+    <rect x="2" y="2" width="8" height="7" fill="#92400E"/>
+    <rect x="1" y="4" width="1" height="4" fill="#78350F"/><rect x="10" y="4" width="1" height="4" fill="#78350F"/>
+    <rect x="3" y="3" width="2" height="2" fill="#FBBF24"/><rect x="7" y="3" width="2" height="2" fill="#FBBF24"/>
+    <rect x="3" y="3" width="1" height="1" fill="#FEF3C7"/><rect x="8" y="3" width="1" height="1" fill="#FEF3C7"/>
+    <rect x="4" y="4" width="1" height="1" fill="#18181B"/><rect x="7" y="4" width="1" height="1" fill="#18181B"/>
+    <rect x="5" y="5" width="2" height="1" fill="#F59E0B"/>
+    <rect x="4" y="6" width="4" height="3" fill="#FDE68A"/>
+    <rect x="4" y="7" width="1" height="1" fill="#92400E"/><rect x="7" y="7" width="1" height="1" fill="#92400E"/><rect x="5" y="8" width="2" height="1" fill="#92400E"/>
+    <rect x="4" y="9" width="1" height="1" fill="#D97706"/><rect x="7" y="9" width="1" height="1" fill="#D97706"/>
+  </svg>`;
+
+  const SVG_AXOLOTL = `<svg class="ag-ps-sprite" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true">
+    <rect x="1" y="2" width="1" height="1" fill="#F43F5E"/><rect x="0" y="4" width="2" height="1" fill="#FB7185"/><rect x="1" y="6" width="1" height="1" fill="#F43F5E"/>
+    <rect x="10" y="2" width="1" height="1" fill="#F43F5E"/><rect x="10" y="4" width="2" height="1" fill="#FB7185"/><rect x="10" y="6" width="1" height="1" fill="#F43F5E"/>
+    <rect x="3" y="2" width="6" height="1" fill="#FBCFE8"/>
+    <rect x="2" y="3" width="8" height="5" fill="#F9A8D4"/>
+    <rect x="4" y="6" width="4" height="2" fill="#FDF2F8"/>
+    <rect x="3" y="4" width="1" height="1" fill="#18181B"/><rect x="8" y="4" width="1" height="1" fill="#18181B"/>
+    <rect x="3" y="5" width="1" height="1" fill="#F43F5E"/><rect x="8" y="5" width="1" height="1" fill="#F43F5E"/>
+    <rect x="5" y="5" width="2" height="1" fill="#DB2777"/>
+    <rect x="3" y="8" width="2" height="2" fill="#F472B6"/><rect x="7" y="8" width="2" height="2" fill="#F472B6"/>
+    <rect x="9" y="7" width="2" height="2" fill="#FB7185"/>
+  </svg>`;
+
+  const SVG_ROBOT = `<svg class="ag-ps-sprite" viewBox="0 0 12 11" shape-rendering="crispEdges" aria-hidden="true">
+    <rect x="5" y="0" width="2" height="1" fill="#22D3EE"/><rect x="5" y="1" width="2" height="1" fill="#64748B"/>
+    <rect x="2" y="2" width="8" height="6" fill="#94A3B8"/>
+    <rect x="3" y="2" width="6" height="1" fill="#CBD5E1"/>
+    <rect x="1" y="4" width="1" height="2" fill="#475569"/><rect x="10" y="4" width="1" height="2" fill="#475569"/>
+    <rect x="3" y="4" width="6" height="2" fill="#0F172A"/>
+    <rect x="4" y="4" width="1" height="1" fill="#38BDF8"/><rect x="7" y="4" width="1" height="1" fill="#38BDF8"/>
+    <rect x="4" y="5" width="1" height="1" fill="#A5F3FC"/><rect x="7" y="5" width="1" height="1" fill="#A5F3FC"/>
+    <rect x="5" y="6" width="2" height="1" fill="#22D3EE"/>
+    <rect x="3" y="7" width="6" height="1" fill="#64748B"/>
+    <rect x="3" y="8" width="2" height="2" fill="#334155"/><rect x="7" y="8" width="2" height="2" fill="#334155"/>
+  </svg>`;
+
+  const SPRITE_CATALOG = [
+    { id: 'crab', name: '橘蟹', emoji: '🦀', svg: SVG_CRAB, lines: ['钳子蓄力，缓存命中稳稳的 ✨', '横行无阻，构建一遍过 🦀', '主控钳就位，Token 省到极致！'] },
+    { id: 'cat', name: '紫猫', emoji: '🐱', svg: SVG_CAT, lines: ['喵～零重排丝滑如猫步 🐾', '踩踩键盘，灵感自动补全 ✨', '呼噜呼噜，空闲稳稳 0fps 💤'] },
+    { id: 'slime', name: '蓝萌', emoji: '💧', svg: SVG_SLIME, lines: ['Q 弹水墨淡入，一点不卡顿 💧', '软乎乎接住所有边界情况 ✨', '内存干干净净，毫无泄漏 🫧'] },
+    { id: 'frog', name: '翡翠蛙', emoji: '🐸', svg: SVG_FROG, lines: ['呱！跳过所有深坑直达绿灯 🐸', '荷叶待命，输入延迟 0ms ⚡', '稳稳落地，自检全绿通过 ✅'] },
+    { id: 'chick', name: '闪电鸡', emoji: '🐤', svg: SVG_CHICK, lines: ['叽叽！首字响应快如闪电 ⚡', '小翅膀扇风，吞吐量拉满 🚀', '精神饱满，随时准备冲刺 🐤'] },
+    { id: 'bunny', name: '樱花兔', emoji: '🐰', svg: SVG_BUNNY, lines: ['竖起长耳朵盯紧像素对齐 🐰', '高分屏整数坐标，字字锐利 ✨', '蹦蹦跳跳把界面打磨到发光 🌸'] },
+    { id: 'fox', name: '极客赤狐', emoji: '🦊', svg: SVG_FOX, lines: ['嗅觉敏锐，根因一抓一个准 🦊', '翻遍上下文，绝不漏掉细节 🔍', '蓬松大尾巴扫清一切死角 ✨'] },
+    { id: 'shiba', name: '守护柴犬', emoji: '🐕', svg: SVG_SHIBA, lines: ['汪！代码防线巡逻完毕，零 Bug 🐕', '乐观锁看门中，草稿稳如泰山 🛡️', '摇摇卷尾，守护每一次提交 ✨'] },
+    { id: 'penguin', name: 'WSL 企鹅', emoji: '🐧', svg: SVG_PENGUIN, lines: ['WSL 跨盘路径已就绪，丝滑互通 🐧', 'Linux 内核级冷静，零挂起秒回 ❄️', '拍拍雪白肚皮，终端命令稳稳落地 ⚡'] },
+    { id: 'owlet', name: '博学猫头鹰', emoji: '🦉', svg: SVG_OWLET, lines: ['琥珀大眼交叉二审，逻辑严丝合缝 🦉', '架构全貌尽收眼底，零盲区 ✨', '咕咕～边界条件全部核验完毕 📚'] },
+    { id: 'axolotl', name: '霓虹六角恐龙', emoji: '🦎', svg: SVG_AXOLOTL, lines: ['六角外鳃接收灵感电波中 🌈', '微动效丝滑再生，像素级治愈 ✨', '保持微笑，复杂交互也能很轻盈 💖'] },
+    { id: 'robot', name: '棱镜小机甲', emoji: '🤖', svg: SVG_ROBOT, lines: ['小天线满格，多模型协同在线 🤖', 'GPU 合成层引擎全开，空闲 0fps ⚡', '棱镜光谱校准完成，随时出击 🔷'] }
+  ];
+  const SPRITE_BY_ID = Object.fromEntries(SPRITE_CATALOG.map((s) => [s.id, s]));
+  const SPRITE_POOL = SPRITE_CATALOG.map((s) => s.svg);
   const MAX_DYNAMIC_ACTORS = 8;
+  const actorSkinOverrides = new Map();
 
   function hashString(str) {
     let h = 2166136261;
@@ -1170,9 +1367,62 @@
     const curId = getCurrentCascadeIdFromUrl();
     if (!metrics || !metrics.stats || !Array.isArray(metrics.stats.children)) return [];
     if (curId && metrics.cascadeId && metrics.cascadeId !== curId) return [];
+    // Strictly filter to actively running subagents so completed/idle subagents trigger exit animation & leave zero residue
     return metrics.stats.children
-      .filter((c) => c && !c.killed)
+      .filter((c) => c && !c.killed && Boolean(c.running))
       .sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
+  }
+
+  const ROLE_THEME_RULES = [
+    { re: /wsl|linux|ubuntu|distro|installer|shell|bash|ops|deploy|docker|nas/i, ids: ['penguin', 'robot'] },
+    { re: /ui|ux|frontend|css|design|motion|canvas|svg|workbench|theme|visual|前端|界面/i, ids: ['bunny', 'axolotl', 'cat'] },
+    { re: /review|audit|security|verify|qa|test|check|guard|safe|审计|审查|安全|测试/i, ids: ['owlet', 'shiba'] },
+    { re: /research|search|explore|doc|read|analy|investigat|radar|upstream|调研|检索|分析/i, ids: ['fox', 'owlet'] },
+    { re: /mcp|hub|model|council|bridge|browser|api|proto|rpc|swarm|模型|会诊/i, ids: ['robot', 'slime', 'chick'] }
+  ];
+
+  function pickDistinctSpriteSpec(preferredIds, fallbackSeed, usedIds) {
+    for (let i = 0; i < preferredIds.length; i++) {
+      const spec = SPRITE_BY_ID[preferredIds[i]];
+      if (spec && !usedIds.has(spec.id)) return spec;
+    }
+    const nonCoordCount = SPRITE_CATALOG.length - 1;
+    const startOffset = hashString(fallbackSeed) % nonCoordCount;
+    for (let step = 0; step < nonCoordCount; step++) {
+      const cand = SPRITE_CATALOG[1 + ((startOffset + step) % nonCoordCount)];
+      if (cand && !usedIds.has(cand.id)) return cand;
+    }
+    if (preferredIds.length && SPRITE_BY_ID[preferredIds[0]]) {
+      return SPRITE_BY_ID[preferredIds[0]];
+    }
+    return SPRITE_CATALOG[1 + startOffset];
+  }
+
+  function pickSubagentSpriteSpec(sub, idx, actorKey, usedIds) {
+    const overrideId = actorSkinOverrides.get(actorKey);
+    if (overrideId && SPRITE_BY_ID[overrideId]) return SPRITE_BY_ID[overrideId];
+    const hint = `${sub.agentName || ''} ${sub.title || ''} ${sub.role || ''}`;
+    let preferred = [];
+    for (let r = 0; r < ROLE_THEME_RULES.length; r++) {
+      if (ROLE_THEME_RULES[r].re.test(hint)) {
+        preferred = ROLE_THEME_RULES[r].ids;
+        break;
+      }
+    }
+    return pickDistinctSpriteSpec(preferred, String(sub.id || hint || idx), usedIds);
+  }
+
+  function makeFixedMascotEntry(key, defaultSpriteId, defaultLabel, busy) {
+    const overrideId = actorSkinOverrides.get(key);
+    const spec = (overrideId && SPRITE_BY_ID[overrideId]) || SPRITE_BY_ID[defaultSpriteId] || SPRITE_CATALOG[0];
+    const label = overrideId && overrideId !== defaultSpriteId ? `${spec.name}伙伴` : defaultLabel;
+    return {
+      key,
+      label,
+      spriteId: spec.id,
+      svg: spec.svg,
+      busy: Boolean(busy)
+    };
   }
 
   function buildMascotRoster(busy) {
@@ -1192,65 +1442,109 @@
           : subs;
       const visibleSubs = selectedSubs;
       const overflow = Math.max(0, subs.length - visibleSubs.length);
+      const coordOverride = actorSkinOverrides.get('coordinator');
+      const coordSpec = (coordOverride && SPRITE_BY_ID[coordOverride]) || SPRITE_BY_ID.crab;
+      const usedIds = new Set([coordSpec.id]);
       const roster = [
         {
           key: 'coordinator',
           label: '主控 Agent',
-          svg: SVG_CRAB,
+          spriteId: coordSpec.id,
+          svg: coordSpec.svg,
           busy: Boolean(busy)
         }
       ];
       for (let i = 0; i < visibleSubs.length; i++) {
         const sub = visibleSubs[i];
         const name = sub.agentName || sub.title || `子 Agent #${i + 1}`;
-        // Pick stable distinct sprite from non-crab pool first so coordinator stands out
-        const poolIdx = 1 + (hashString(sub.id || name) % (SPRITE_POOL.length - 1));
+        const subKey = `sub:${sub.id || i}`;
+        const spec = pickSubagentSpriteSpec(sub, i, subKey, usedIds);
+        usedIds.add(spec.id);
         roster.push({
-          key: `sub:${sub.id || i}`,
+          key: subKey,
           label: name,
-          svg: SPRITE_POOL[poolIdx],
+          spriteId: spec.id,
+          svg: spec.svg,
           busy: Boolean(sub.running)
         });
       }
       // Guarantee user-selected floor count (1..3) so composer is never empty when no subagents are active
       const floorCount = clampMascotMinCount(prefs.mascotMinCount);
-      const fillerSpecs = [
-        { key: 'floor:cat', label: '紫猫', svg: SVG_CAT },
-        { key: 'floor:slime', label: '蓝萌', svg: SVG_SLIME }
+      const fillerDefs = [
+        { key: 'floor:cat', defaultId: 'cat', label: '紫猫' },
+        { key: 'floor:slime', defaultId: 'slime', label: '蓝萌' }
       ];
       let fi = 0;
-      while (roster.length < floorCount && fi < fillerSpecs.length) {
-        const f = fillerSpecs[fi++];
+      while (roster.length < floorCount && fi < fillerDefs.length) {
+        const f = fillerDefs[fi++];
+        const ovId = actorSkinOverrides.get(f.key);
+        const fSpec = (ovId && SPRITE_BY_ID[ovId]) || pickDistinctSpriteSpec([f.defaultId], f.key, usedIds);
+        usedIds.add(fSpec.id);
         roster.push({
           key: f.key,
-          label: f.label,
-          svg: f.svg,
+          label: ovId ? fSpec.name : f.label,
+          spriteId: fSpec.id,
+          svg: fSpec.svg,
           busy: Boolean(busy)
         });
       }
       return { roster, overflow, liveSubCount: subs.length };
     }
     const styleKey = prefs.mascotStyle || 'trio';
-    const fixedItems =
-      styleKey === 'crab'
-        ? [{ key: 'fixed:crab', label: '橘蟹伙伴', svg: SVG_CRAB, busy: Boolean(busy) }]
-        : styleKey === 'cat'
-          ? [{ key: 'fixed:cat', label: '紫猫伙伴', svg: SVG_CAT, busy: Boolean(busy) }]
-          : [
-              { key: 'fixed:crab', label: '橘蟹伙伴', svg: SVG_CRAB, busy: Boolean(busy) },
-              { key: 'fixed:cat', label: '紫猫伙伴', svg: SVG_CAT, busy: Boolean(busy) },
-              { key: 'fixed:slime', label: '蓝萌伙伴', svg: SVG_SLIME, busy: Boolean(busy) }
-            ];
+    let fixedItems;
+    if (styleKey === 'crab') {
+      fixedItems = [makeFixedMascotEntry('fixed:crab', 'crab', '橘蟹伙伴', busy)];
+    } else if (styleKey === 'cat') {
+      fixedItems = [makeFixedMascotEntry('fixed:cat', 'cat', '紫猫伙伴', busy)];
+    } else if (styleKey === 'penguin') {
+      fixedItems = [makeFixedMascotEntry('fixed:penguin', 'penguin', 'WSL 企鹅', busy)];
+    } else if (styleKey === 'fox') {
+      fixedItems = [makeFixedMascotEntry('fixed:fox', 'fox', '极客赤狐', busy)];
+    } else if (styleKey === 'zoo') {
+      fixedItems = [
+        makeFixedMascotEntry('fixed:fox', 'fox', '极客赤狐', busy),
+        makeFixedMascotEntry('fixed:shiba', 'shiba', '守护柴犬', busy),
+        makeFixedMascotEntry('fixed:penguin', 'penguin', 'WSL 企鹅', busy)
+      ];
+    } else if (styleKey === 'cyber') {
+      fixedItems = [
+        makeFixedMascotEntry('fixed:robot', 'robot', '棱镜小机甲', busy),
+        makeFixedMascotEntry('fixed:owlet', 'owlet', '博学猫头鹰', busy),
+        makeFixedMascotEntry('fixed:axolotl', 'axolotl', '霓虹六角恐龙', busy)
+      ];
+    } else {
+      fixedItems = [
+        makeFixedMascotEntry('fixed:crab', 'crab', '橘蟹伙伴', busy),
+        makeFixedMascotEntry('fixed:cat', 'cat', '紫猫伙伴', busy),
+        makeFixedMascotEntry('fixed:slime', 'slime', '蓝萌伙伴', busy)
+      ];
+    }
     return { roster: fixedItems, overflow: 0, liveSubCount: 0 };
   }
 
   const CHEER_LINES = ['代码一遍过 ✨', '缓存命中稳稳的', '摸摸头，继续冲！', '0fps 节能待机中', '今天效率拉满 🚀'];
   const COMBO_LINES = [
-    '别戳啦！正在帮你狂省 Token ✨',
-    '连击 ×5！送你 99% 缓存好运 🍀',
-    '头晕啦～再戳我就去写 Bug 啦 🌀',
-    '摸头暴击！灵感 +999 🚀'
+    'SSR 暴击 ×5！全员人浪祈福 · 今日代码零回滚 🌟',
+    '连击 ×5 共鸣达成！送你 99% 缓存命中锦鲤 🍀',
+    '全员起立欢呼 🎉 灵感暴击 +999，Bug 退散！',
+    '触发隐藏人浪彩蛋 ✨ 祝你把把一遍过 🚀'
   ];
+  const SLEEP_WAKE_LINES = [
+    '呼噜…醒啦！伸个懒腰随时待命 ⚡',
+    '揉揉像素眼 🫧 满电复活，继续冲！',
+    '刚刚在 0fps 省电打盹，一戳秒醒 ✨'
+  ];
+  const LATE_NIGHT_LINES = [
+    '夜深啦，代码交给我们盯，记得喝水早点休息 🌙',
+    '凌晨还在打磨细节，辛苦啦～注意护眼喔 🍵',
+    '星光不负赶路人 ✨ 跑完这轮就去睡个好觉吧 🌙',
+    '深夜静音巡航中 🌙 愿你今晚零报错好梦'
+  ];
+
+  function isLateNightHour() {
+    const hr = new Date().getHours();
+    return hr >= 23 || hr < 5;
+  }
   let wasMascotBusy = false;
   let mascotCheerUntil = 0;
   let mascotIdleSince = Date.now();
@@ -1400,9 +1694,9 @@
   });
 
   function getMascotDims() {
-    const w = clampMascotSize(prefs.mascotSize);
-    const h = Math.max(14, Math.round((w * 11) / 12));
-    const gap = Math.max(4, Math.round(w * 0.22));
+    const w = Math.round(clampMascotSize(prefs.mascotSize)) | 0;
+    const h = Math.max(14, Math.round((w * 11) / 12)) | 0;
+    const gap = Math.max(4, Math.round(w * 0.22)) | 0;
     return { w, h, gap };
   }
 
@@ -1439,13 +1733,203 @@
     if (actor.settleTimer) { clearTimeout(actor.settleTimer); actor.settleTimer = 0; }
     if (actor.clickTimer) { clearTimeout(actor.clickTimer); actor.clickTimer = 0; }
     if (actor.emoteTimer) { clearTimeout(actor.emoteTimer); actor.emoteTimer = 0; }
+    if (actor.enterTimer) { clearTimeout(actor.enterTimer); actor.enterTimer = 0; }
+  }
+
+  const mascotExitTimers = new Set();
+  const mascotEggTimers = new Set();
+
+  function scheduleEggTimer(fn, ms) {
+    const id = setTimeout(() => {
+      mascotEggTimers.delete(id);
+      if (!disposed) fn();
+    }, ms);
+    mascotEggTimers.add(id);
+    return id;
+  }
+
+  function clearMascotEggTimers() {
+    for (const id of mascotEggTimers) {
+      clearTimeout(id);
+    }
+    mascotEggTimers.clear();
+  }
+  onCleanup(clearMascotEggTimers);
+
+  function clearAllMascotExitTimers(removeDom = false) {
+    for (const entry of mascotExitTimers) {
+      clearTimeout(entry.timer);
+      if (removeDom && entry.el && entry.el.isConnected) {
+        entry.el.remove();
+      }
+    }
+    mascotExitTimers.clear();
+  }
+
+  function createMascotActorRecord(item, idx, isEntering = false) {
+    const el = document.createElement('span');
+    el.className = 'ag-ps-actor';
+    el.setAttribute('data-actor-idx', String(idx));
+    el.setAttribute('data-busy', item.busy ? '1' : '0');
+    if (item.spriteId) el.setAttribute('data-sprite', item.spriteId);
+    el.style.setProperty('--ag-ps-idx', String(idx));
+    el.setAttribute('data-ag-ps-tip', `${item.label} · ${item.busy ? '运行中' : '待命'}`);
+    el.setAttribute('data-ag-ps-tip-status', item.busy ? 'busy' : 'idle');
+    el.innerHTML = `<span class="ag-ps-emote" aria-hidden="true"></span><span class="ag-ps-actor-body">${item.svg}</span>`;
+    const rec = {
+      key: item.key,
+      label: item.label,
+      spriteId: item.spriteId || 'crab',
+      busy: item.busy,
+      svg: item.svg,
+      el,
+      emoteEl: el.querySelector('.ag-ps-emote'),
+      emoteText: '',
+      emoteTempUntil: 0,
+      emoteTimer: 0,
+      enterTimer: 0,
+      tapTimes: [],
+      x: 0,
+      facing: 1,
+      moveTimer: 0,
+      settleTimer: 0,
+      clickTimer: 0,
+      roaming: false
+    };
+    if (isEntering && !REDUCED_MOTION) {
+      el.setAttribute('data-entering', '1');
+      setActorEmote(rec, '⚡', false, 620);
+      rec.enterTimer = setTimeout(() => {
+        rec.enterTimer = 0;
+        if (!disposed && el.isConnected) el.removeAttribute('data-entering');
+      }, 560);
+    }
+    return rec;
+  }
+
+  function cancelMascotExitGhostByKey(key) {
+    if (!key) return;
+    for (const entry of Array.from(mascotExitTimers)) {
+      if (entry.key === key) {
+        clearTimeout(entry.timer);
+        mascotExitTimers.delete(entry);
+        if (entry.el && entry.el.isConnected) entry.el.remove();
+      }
+    }
+  }
+
+  function retireMascotActorWithExit(actor, dock, nextAnchorActor = null) {
+    if (!actor) return;
+    clearActorTimers(actor);
+    if (actor.key && actor.key.startsWith('sub:')) {
+      actorSkinOverrides.delete(actor.key);
+    }
+    actor.roaming = false;
+    const el = actor.el;
+    if (!el || !el.isConnected || !dock || !dock.isConnected) return;
+
+    // Rescue shared speech bubble before retiring this actor's DOM node
+    const bubble = el.querySelector('.ag-ps-mascot-bubble');
+    if (bubble) {
+      const validAnchor =
+        nextAnchorActor &&
+        nextAnchorActor.el &&
+        nextAnchorActor.el.isConnected &&
+        nextAnchorActor.el.getAttribute('data-exiting') !== '1'
+          ? nextAnchorActor.el
+          : dock;
+      validAnchor.insertBefore(bubble, validAnchor.firstChild);
+      if (mascotBubbleOwner === actor) {
+        mascotBubbleOwner = validAnchor === dock ? null : nextAnchorActor;
+      }
+    }
+    if (tipTarget && (tipTarget === el || el.contains(tipTarget))) {
+      hideCustomTooltip();
+    }
+
+    if (REDUCED_MOTION || document.hidden) {
+      el.remove();
+      return;
+    }
+
+    el.removeAttribute('data-actor-idx');
+    el.removeAttribute('data-act');
+    el.removeAttribute('data-entering');
+    el.removeAttribute('data-sleep');
+    el.setAttribute('data-exiting', '1');
+    if (actor.emoteEl) {
+      actor.emoteEl.textContent = '✨';
+      actor.emoteEl.setAttribute('data-show', '1');
+      actor.emoteEl.removeAttribute('data-sleep-z');
+    }
+    const entry = {
+      key: actor.key || '',
+      el,
+      timer: setTimeout(() => {
+        mascotExitTimers.delete(entry);
+        if (el.isConnected) el.remove();
+      }, 700)
+    };
+    mascotExitTimers.add(entry);
+  }
+
+  function measureOrbDockZone(dock, dockRect) {
+    if (!dock || !dockRect || dockRect.width <= 0) return null;
+    if (document.documentElement.getAttribute('data-ag-ps-orb-replace') === '1') return null;
+    const hostBox = dock.parentElement;
+    const orbDock = (hostBox && hostBox.querySelector('#ag-ps-orb-dock')) || document.getElementById('ag-ps-orb-dock');
+    if (!orbDock || !orbDock.isConnected || orbDock.hidden) return null;
+    try {
+      const cs = window.getComputedStyle(orbDock);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return null;
+    } catch {}
+    const orbBtn = orbDock.querySelector('.ag-ps-orb-btn');
+    const btnRect = (orbBtn && orbBtn.isConnected ? orbBtn : orbDock).getBoundingClientRect();
+    if (btnRect.width <= 0 || btnRect.height <= 0) return null;
+    if (btnRect.bottom < dockRect.top - 18 || btnRect.top > dockRect.bottom + 18) return null;
+    if (btnRect.right < dockRect.left - 12 || btnRect.left > dockRect.right + 12) return null;
+
+    let orbLeft = btnRect.left;
+    let orbRight = btnRect.right;
+
+    const stage = orbDock.getAttribute('data-stage') || '';
+    const activeStage = stage === 'thinking' || stage === 'tools' || stage === 'streaming' || stage === 'done';
+    let hovered = orbDock.getAttribute('data-hover') === '1';
+    if (!hovered && typeof orbDock.matches === 'function') {
+      try { hovered = orbDock.matches(':hover'); } catch {}
+    }
+    if (activeStage || hovered) {
+      const pill = orbDock.querySelector('.ag-ps-orb-pill');
+      if (pill && pill.isConnected) {
+        const pr = pill.getBoundingClientRect();
+        if (pr.width > 0 && pr.height > 0) {
+          orbLeft = Math.min(orbLeft, pr.left);
+          orbRight = Math.max(orbRight, pr.right);
+        }
+      }
+    }
+
+    const zl = Math.max(0, Math.floor(orbLeft - dockRect.left - 8));
+    const zr = Math.min(Math.ceil(dockRect.width), Math.ceil(orbRight - dockRect.left + 8));
+    if (zr <= zl) return null;
+    const isLeftSide = (orbLeft - dockRect.left) < dockRect.width * 0.45;
+    return { zl, zr, isLeftSide };
   }
 
   function getMascotRunwayBounds(dock) {
     const trackW = dock ? (dock.clientWidth || dock.parentElement?.getBoundingClientRect().width || 0) : 0;
     const { w } = getMascotDims();
     const hasBadge = Boolean(dock && dock.querySelector('.ag-ps-more-badge'));
-    const minX = Math.min(92, Math.max(12, Math.round(trackW * 0.16)));
+    let minX = Math.min(92, Math.max(12, Math.round(trackW * 0.16)));
+    if (dock && dock.isConnected && trackW > 0) {
+      const dockRect = dock.getBoundingClientRect();
+      if (dockRect.width > 0) {
+        const orbZone = measureOrbDockZone(dock, dockRect);
+        if (orbZone && orbZone.isLeftSide) {
+          minX = Math.max(minX, Math.ceil(orbZone.zr));
+        }
+      }
+    }
     const maxX = Math.max(minX, Math.round(trackW - (hasBadge ? 44 : 16) - w));
     return { trackW, w, minX, maxX, hasBadge };
   }
@@ -1492,12 +1976,17 @@
     if (!searchRoot) return { zones: [], crowded: false, sig: '' };
 
     const rawZones = [];
+    const orbZone = measureOrbDockZone(dock, dockRect);
+    if (orbZone) {
+      rawZones.push([orbZone.zl, orbZone.zr]);
+    }
     const controls = searchRoot.querySelectorAll('button, [role="button"], a[href], input:not([type="hidden"]), [role="tab"], [role="radio"]');
     for (let i = 0; i < controls.length; i++) {
       const el = controls[i];
       if (!el.isConnected || dock.contains(el)) continue;
       if (hostBox && hostBox.contains(el)) continue;
-      if (el.closest('#ag-ps-orb-dock, #ag-ps-popover, #ag-ps-tooltip, #ag-ps-outline, .ag-ps-turn-actions')) continue;
+      if (el.closest('#ag-ps-popover, #ag-ps-tooltip, #ag-ps-outline, .ag-ps-turn-actions')) continue;
+      if (el.id === 'ag-ps-orb-btn' || el.parentElement?.id === 'ag-ps-orb-dock') continue;
       // Scrolling chat messages/links inside autoscroll-viewport are NOT composer toolbar obstacles (unless inside a floating approval/question prompt)
       if (
         el.closest('[data-testid="autoscroll-viewport"]') &&
@@ -1578,24 +2067,34 @@
     const totalW = count * w + Math.max(0, count - 1) * gap;
     const info = scan || (dock ? scanDockObstacles(dock) : { zones: [], crowded: false });
     const zones = info.zones || [];
+    let minHomeX = 12;
+    if (dock && dock.isConnected && trackW > 0) {
+      const dr = dock.getBoundingClientRect();
+      if (dr.width > 0) {
+        const oz = measureOrbDockZone(dock, dr);
+        if (oz && oz.isLeftSide) {
+          minHomeX = Math.max(minHomeX, Math.ceil(oz.zr));
+        }
+      }
+    }
     let anchorRight = trackW - rightPad;
 
     // If right-side controls (e.g. ^ / × or interactive card buttons) overlap default home, park neatly to their left
     for (let i = zones.length - 1; i >= 0; i--) {
       const [zl, zr] = zones[i];
       if (zr >= anchorRight - totalW && zl < anchorRight) {
-        if (zl - 10 - totalW >= 12) {
+        if (zl - 10 - totalW >= minHomeX) {
           anchorRight = zl - 10;
         }
       }
     }
 
-    const startX = Math.max(12, Math.round(anchorRight - totalW));
+    const startX = Math.max(minHomeX, Math.round(anchorRight - totalW));
     const xs = [];
     for (let i = 0; i < count; i++) {
       let cx = startX + i * (w + gap);
       if (zones.length && isIntervalBlocked(cx, w, zones)) {
-        const safe = findNearestSafeX(cx, w, 12, Math.max(12, trackW - rightPad - w), zones, 0, 0);
+        const safe = findNearestSafeX(cx, w, minHomeX, Math.max(minHomeX, trackW - rightPad - w), zones, 0, 0);
         if (safe !== null) cx = safe;
       }
       xs.push(cx);
@@ -1781,26 +2280,38 @@
     if (!act) {
       const r = Math.random();
       if (isCalm) {
-        act = r < 0.55 ? 'leap' : 'wiggle';
-      } else if (r < 0.34) {
+        if (r < 0.34) act = 'leap';
+        else if (r < 0.62) act = 'jelly';
+        else if (r < 0.84) act = 'wiggle';
+        else act = 'dance';
+      } else if (r < 0.22) {
         act = facingRight ? 'flip-r' : 'flip-l';
-      } else if (r < 0.58) {
+      } else if (r < 0.38) {
+        act = 'spin-jump';
+      } else if (r < 0.54) {
         act = 'leap';
-      } else if (r < 0.80) {
+      } else if (r < 0.68) {
         act = 'double-hop';
+      } else if (r < 0.80) {
+        act = 'jelly';
+      } else if (r < 0.91) {
+        act = 'dance';
       } else {
         act = 'wiggle';
       }
     }
     const durMap = {
       'combo-flip': 1340,
+      dance: 880,
+      'double-hop': 760,
       'flip-r': 740,
       'flip-l': 740,
-      'double-hop': 760,
+      'spin-jump': 740,
+      jelly: 720,
       wiggle: 680,
       leap: 640
     };
-    const ms = durMap[act] || 660;
+    const ms = durMap[act] || 680;
     actor.el.removeAttribute('data-act');
     void actor.el.offsetWidth;
     actor.el.setAttribute('data-act', act);
@@ -1818,25 +2329,29 @@
       if (act === 'run' || act === 'roll-r' || act === 'roll-l' || act === 'combo-flip') return false;
       return Math.abs(other.x - actor.x) <= w + 20;
     });
-    if (!neighbor || Math.random() > 0.48) return false;
+    if (!neighbor || Math.random() > 0.52) return false;
     lastHighFiveAt = now;
-    // Turn toward each other and share a quick high-five hop
+    // Turn toward each other and share either a synchronized dance battle or a high-five hop
     const actorFacesRight = neighbor.x >= actor.x ? 1 : -1;
     applyActorTransform(actor, actor.x, actorFacesRight, 0.15);
     applyActorTransform(neighbor, neighbor.x, -actorFacesRight, 0.15);
-    const msA = triggerActorTrick(actor, 'leap');
-    const msB = triggerActorTrick(neighbor, 'leap');
-    const icon = Math.random() < 0.55 ? '🤝' : '⚡';
-    setActorEmote(actor, icon, false, 900);
-    setActorEmote(neighbor, icon, false, 900);
+    const doDance = Math.random() < 0.5;
+    const sharedAct = doDance ? 'dance' : 'leap';
+    const msA = triggerActorTrick(actor, sharedAct);
+    const msB = triggerActorTrick(neighbor, sharedAct);
+    const icon = doDance
+      ? (Math.random() < 0.5 ? '🎵' : '🎶')
+      : (Math.random() < 0.55 ? '🤝' : '⚡');
+    setActorEmote(actor, icon, false, doDance ? 1050 : 900);
+    setActorEmote(neighbor, icon, false, doDance ? 1050 : 900);
     if (neighbor.clickTimer) clearTimeout(neighbor.clickTimer);
     neighbor.clickTimer = setTimeout(() => {
       neighbor.clickTimer = 0;
-      if (neighbor.el?.getAttribute('data-act') === 'leap') neighbor.el.removeAttribute('data-act');
+      if (neighbor.el?.getAttribute('data-act') === sharedAct) neighbor.el.removeAttribute('data-act');
     }, msB);
     actor.settleTimer = setTimeout(() => {
       actor.settleTimer = 0;
-      if (actor.el?.getAttribute('data-act') === 'leap') actor.el.removeAttribute('data-act');
+      if (actor.el?.getAttribute('data-act') === sharedAct) actor.el.removeAttribute('data-act');
       scheduleActorRoamStep(idx);
     }, msA);
     return true;
@@ -1861,10 +2376,7 @@
         stopMascotRoaming(true);
         return;
       }
-      const { w } = getMascotDims();
-      const hasBadge = Boolean(dock.querySelector('.ag-ps-more-badge'));
-      const minX = Math.min(92, Math.max(12, Math.round(trackW * 0.16)));
-      const maxX = Math.max(minX, Math.round(trackW - (hasBadge ? 44 : 16) - w));
+      const { w, minX, maxX } = getMascotRunwayBounds(dock);
       const span = maxX - minX;
 
       const roll = Math.random();
@@ -1999,97 +2511,259 @@
     }
   }
 
+  function handleMascotActorClick(e, dock) {
+    const actorEl = e.target.closest('.ag-ps-actor:not([data-exiting="1"])');
+    if (!actorEl) return;
+    e.stopPropagation();
+    const idx = Number(actorEl.getAttribute('data-actor-idx'));
+    const actor = mascotActors[idx];
+    const now = Date.now();
+    const wasSleeping = dock.getAttribute('data-mood') === 'sleep';
+    mascotIdleSince = now;
+    mascotCheerUntil = now + 2000;
+    if (wasSleeping) {
+      dock.setAttribute('data-mood', 'calm');
+    }
+
+    if (!actor) {
+      dock.setAttribute('data-mood', 'cheer');
+      showMascotBubble(CHEER_LINES[Math.floor(Math.random() * CHEER_LINES.length)], 2200, null);
+      return;
+    }
+
+    // Easter Egg 1: Shift + Click => Instant pixel costume swap across 12 characters
+    if (e.shiftKey && !e.altKey) {
+      actor.tapTimes = [];
+      const curSpecIdx = SPRITE_CATALOG.findIndex((s) => s.id === actor.spriteId);
+      const nextSpec = SPRITE_CATALOG[(curSpecIdx + 1) % SPRITE_CATALOG.length];
+      actorSkinOverrides.set(actor.key, nextSpec.id);
+      actor.spriteId = nextSpec.id;
+      actor.svg = nextSpec.svg;
+      if (actor.key.startsWith('fixed:') || actor.key.startsWith('floor:')) {
+        actor.label = actor.key.startsWith('fixed:') ? `${nextSpec.name}伙伴` : nextSpec.name;
+      }
+      actorEl.setAttribute('data-sprite', nextSpec.id);
+      setAttrIfChanged(actorEl, 'data-ag-ps-tip', `${actor.label} · ${actor.busy ? '运行中' : '待命'}`);
+      const bodySpan = actorEl.querySelector('.ag-ps-actor-body');
+      if (bodySpan) bodySpan.innerHTML = nextSpec.svg;
+      const curOverflow = dock.querySelector('.ag-ps-more-badge') ? Number((dock.querySelector('.ag-ps-more-badge').textContent || '').replace(/\D+/g, '')) || 0 : 0;
+      lastRosterSig = `${prefs.mascotCountMode}|${curOverflow}|${mascotActors.map((a) => `${a.key}:${a.spriteId || ''}`).join(',')}`;
+
+      const trickMs = triggerActorTrick(actor, 'spin-jump');
+      setActorEmote(actor, '💨', false, 950);
+      if (actor.clickTimer) clearTimeout(actor.clickTimer);
+      actor.clickTimer = setTimeout(() => {
+        actor.clickTimer = 0;
+        if (actorEl.getAttribute('data-act') === 'spin-jump') actorEl.removeAttribute('data-act');
+      }, trickMs);
+      showMascotBubble(`噗——变身「${nextSpec.name}」${nextSpec.emoji}！`, 2300, actor);
+      return;
+    }
+
+    // Easter Egg 3: Alt + Click => Squad emergency rally & synchronized high-five
+    if (e.altKey && !e.shiftKey) {
+      actor.tapTimes = [];
+      clearMascotEggTimers();
+      const trackW = dock.clientWidth || 0;
+      if (mascotActors.length >= 2 && trackW >= 320) {
+        const { w, minX, maxX } = getMascotRunwayBounds(dock);
+        const zones = getDockObstacleZones(dock);
+        const centerX = Math.max(minX, Math.min(maxX, actor.x));
+        let peerRank = 0;
+        mascotActors.forEach((peer) => {
+          clearActorTimers(peer);
+          if (peer === actor) {
+            peer.el?.removeAttribute('data-act');
+            return;
+          }
+          peerRank++;
+          const side = peerRank % 2 === 1 ? -1 : 1;
+          const distSlots = Math.ceil(peerRank / 2);
+          let candX = Math.round(centerX + side * distSlots * (w + 6));
+          candX = Math.max(minX, Math.min(maxX, candX));
+          if (zones.length && isIntervalBlocked(candX, w, zones)) {
+            const safe = findNearestSafeX(candX, w, minX, maxX, zones, 0, 0);
+            if (safe !== null) candX = safe;
+          }
+          const dir = candX <= centerX ? 1 : -1;
+          if (peer.el) peer.el.setAttribute('data-act', 'run');
+          applyActorTransform(peer, candX, dir, 0.28);
+        });
+        scheduleEggTimer(() => {
+          if (!dock.isConnected) return;
+          mascotActors.forEach((a) => {
+            if (!a.el?.isConnected) return;
+            triggerActorTrick(a, a === actor ? 'spin-jump' : 'leap');
+            setActorEmote(a, '🤝', false, 920);
+          });
+          showMascotBubble('🤝 小队集结完毕！协同火力全开', 2300, actor);
+        }, 290);
+        scheduleEggTimer(() => {
+          if (!dock.isConnected) return;
+          mascotActors.forEach((a) => a.el?.removeAttribute('data-act'));
+          if (mascotRoamingActive) {
+            mascotActors.forEach((a, i) => {
+              if (a.busy) {
+                a.roaming = true;
+                scheduleActorRoamStep(i, 180 + i * 160);
+              }
+            });
+          } else {
+            parkActorsHome(dock, false);
+          }
+        }, 1250);
+        return;
+      }
+      const soloMs = triggerActorTrick(actor, 'spin-jump');
+      setActorEmote(actor, '🫡', false, 950);
+      if (actor.clickTimer) clearTimeout(actor.clickTimer);
+      actor.clickTimer = setTimeout(() => {
+        actor.clickTimer = 0;
+        if (actorEl.getAttribute('data-act') === 'spin-jump') actorEl.removeAttribute('data-act');
+      }, soloMs);
+      showMascotBubble('单兵就位！随时呼叫队友支援 ⚡', 2000, actor);
+      return;
+    }
+
+    actor.tapTimes = (actor.tapTimes || []).filter((t) => now - t <= 2000);
+    actor.tapTimes.push(now);
+    const isCombo = actor.tapTimes.length >= 5;
+    if (isCombo) actor.tapTimes = [];
+
+    // Easter Egg 2: Combo x5 => Protagonist 3.5x somersault + full-runway Mexican Wave resonance
+    if (isCombo) {
+      clearActorTimers(actor);
+      const trickMs = triggerActorTrick(actor, 'combo-flip');
+      setActorEmote(actor, '🌟', false, 1650);
+      if (actor.clickTimer) clearTimeout(actor.clickTimer);
+      actor.clickTimer = setTimeout(() => {
+        actor.clickTimer = 0;
+        if (actorEl.getAttribute('data-act') === 'combo-flip') actorEl.removeAttribute('data-act');
+        if (actor.roaming && mascotRoamingActive && !disposed) {
+          scheduleActorRoamStep(idx, 500);
+        }
+      }, trickMs);
+
+      const peers = mascotActors
+        .map((p, pi) => ({ p, pi }))
+        .filter((entry) => entry.p !== actor && entry.p.el?.isConnected)
+        .sort((a, b) => a.p.x - b.p.x);
+      peers.forEach(({ p, pi }, waveIdx) => {
+        scheduleEggTimer(() => {
+          if (!p.el?.isConnected) return;
+          const curPeerAct = p.el.getAttribute('data-act') || '';
+          const peerMoving = curPeerAct === 'run' || curPeerAct === 'roll-r' || curPeerAct === 'roll-l';
+          if (peerMoving) clearActorTimers(p);
+          const waveAct = waveIdx % 2 === 0 ? 'spin-jump' : 'double-hop';
+          const wMs = triggerActorTrick(p, waveAct);
+          setActorEmote(p, waveIdx % 2 === 0 ? '🎉' : '✨', false, 1100);
+          if (p.clickTimer) clearTimeout(p.clickTimer);
+          p.clickTimer = setTimeout(() => {
+            p.clickTimer = 0;
+            if (p.el?.getAttribute('data-act') === waveAct) p.el.removeAttribute('data-act');
+            if (peerMoving && p.roaming && mascotRoamingActive && !disposed) {
+              scheduleActorRoamStep(pi, 360);
+            }
+          }, wMs);
+        }, (waveIdx + 1) * 90);
+      });
+
+      const ssrLine = COMBO_LINES[Math.floor(Math.random() * COMBO_LINES.length)];
+      showMascotBubble(ssrLine, 2900, actor);
+      return;
+    }
+
+    // Easter Egg 4b: Sleeping mascot poked awake => Q-bounce jelly stretch + sleepy bubble
+    if (wasSleeping) {
+      const wakeMs = triggerActorTrick(actor, 'jelly');
+      setActorEmote(actor, '🫧', false, 1100);
+      if (actor.clickTimer) clearTimeout(actor.clickTimer);
+      actor.clickTimer = setTimeout(() => {
+        actor.clickTimer = 0;
+        if (actorEl.getAttribute('data-act') === 'jelly') actorEl.removeAttribute('data-act');
+      }, wakeMs);
+      const wakeLine = SLEEP_WAKE_LINES[Math.floor(Math.random() * SLEEP_WAKE_LINES.length)];
+      const wakeMsg = prefs.mascotCountMode === 'agents' && actor.label ? `${actor.label}：${wakeLine}` : wakeLine;
+      showMascotBubble(wakeMsg, 2300, actor);
+      return;
+    }
+
+    const curAct = actorEl.getAttribute('data-act') || '';
+    const isMoving = curAct === 'run' || curAct === 'roll-r' || curAct === 'roll-l';
+    if (!isMoving) {
+      const trickMs = triggerActorTrick(actor);
+      if (actor.clickTimer) clearTimeout(actor.clickTimer);
+      const appliedAct = actorEl.getAttribute('data-act');
+      actor.clickTimer = setTimeout(() => {
+        actor.clickTimer = 0;
+        if (actorEl.getAttribute('data-act') === appliedAct) actorEl.removeAttribute('data-act');
+      }, trickMs);
+    }
+
+    // Easter Egg 5: Character-specific persona lines + Late-night warm companion lines (23:00–05:00)
+    let line = '';
+    if (isLateNightHour() && Math.random() < 0.42) {
+      line = LATE_NIGHT_LINES[Math.floor(Math.random() * LATE_NIGHT_LINES.length)];
+      setActorEmote(actor, '🌙', false, 1100);
+    } else {
+      const spec = SPRITE_BY_ID[actor.spriteId];
+      if (spec && Array.isArray(spec.lines) && spec.lines.length && Math.random() < 0.68) {
+        line = spec.lines[Math.floor(Math.random() * spec.lines.length)];
+      } else {
+        line = CHEER_LINES[Math.floor(Math.random() * CHEER_LINES.length)];
+      }
+    }
+    const msg = prefs.mascotCountMode === 'agents' && actor.label ? `${actor.label}：${line}` : line;
+    showMascotBubble(msg, 2200, actor);
+  }
+
   function syncMascotDock(busy) {
     const box = getActiveInputBox();
     let dock = document.getElementById('ag-ps-mascot-dock');
     if (!prefs.mascot || !box) {
       stopMascotRoaming(false);
+      clearMascotEggTimers();
+      clearAllMascotExitTimers(true);
+      mascotActors.forEach(clearActorTimers);
       mascotActors = [];
       lastRosterSig = '';
       if (dock) dock.remove();
       return;
     }
     const { roster, overflow } = buildMascotRoster(busy);
-    const rosterSig = `${prefs.mascotCountMode}|${overflow}|${roster.map((r) => r.key).join(',')}`;
+    const rosterSig = `${prefs.mascotCountMode}|${overflow}|${roster.map((r) => `${r.key}:${r.spriteId || ''}`).join(',')}`;
     let rebuilt = false;
     if (!dock || dock.parentElement !== box) {
       stopMascotRoaming(false);
+      clearMascotEggTimers();
+      clearAllMascotExitTimers(true);
+      mascotActors.forEach(clearActorTimers);
+      mascotActors = [];
       if (dock) dock.remove();
       dock = document.createElement('div');
       dock.id = 'ag-ps-mascot-dock';
       dock.setAttribute('data-ag-i18n-ignore', '1');
-      dock.addEventListener('click', (e) => {
-        const actorEl = e.target.closest('.ag-ps-actor');
-        if (!actorEl) return;
-        e.stopPropagation();
-        const idx = Number(actorEl.getAttribute('data-actor-idx'));
-        const actor = mascotActors[idx];
-        const now = Date.now();
-        mascotCheerUntil = now + 2000;
-        let isCombo = false;
-        if (actor) {
-          actor.tapTimes = (actor.tapTimes || []).filter((t) => now - t <= 2000);
-          actor.tapTimes.push(now);
-          isCombo = actor.tapTimes.length >= 5;
-          if (isCombo) actor.tapTimes = [];
-
-          const curAct = actorEl.getAttribute('data-act') || '';
-          const isMoving = curAct === 'run' || curAct === 'roll-r' || curAct === 'roll-l';
-          if (isCombo || !isMoving) {
-            if (isCombo) clearActorTimers(actor);
-            const trickMs = triggerActorTrick(actor, isCombo ? 'combo-flip' : undefined);
-            if (isCombo) setActorEmote(actor, '✨', false, 1500);
-            if (actor.clickTimer) clearTimeout(actor.clickTimer);
-            const appliedAct = actorEl.getAttribute('data-act');
-            actor.clickTimer = setTimeout(() => {
-              actor.clickTimer = 0;
-              if (actorEl.getAttribute('data-act') === appliedAct) actorEl.removeAttribute('data-act');
-              if (isCombo && actor.roaming && mascotRoamingActive && !disposed) {
-                scheduleActorRoamStep(idx, 500);
-              }
-            }, trickMs);
-          }
-        } else {
-          dock.setAttribute('data-mood', 'cheer');
-        }
-        const pool = isCombo ? COMBO_LINES : CHEER_LINES;
-        const line = pool[Math.floor(Math.random() * pool.length)];
-        const msg = !isCombo && prefs.mascotCountMode === 'agents' && actor?.label ? `${actor.label}：${line}` : line;
-        showMascotBubble(msg, isCombo ? 2800 : 2200, actor);
-      });
+      dock.addEventListener('click', (e) => handleMascotActorClick(e, dock));
       box.appendChild(dock);
       rebuilt = true;
     }
     ensureMascotDodgeWatcher(box);
-    if (rebuilt || rosterSig !== lastRosterSig) {
-      stopMascotRoaming(false);
+    if (rebuilt) {
       lastRosterSig = rosterSig;
       dock.setAttribute('data-mode', prefs.mascotCountMode);
-      const actorsHtml = roster
-        .map(
-          (item, idx) =>
-            `<span class="ag-ps-actor" data-actor-idx="${idx}" data-busy="${item.busy ? '1' : '0'}" style="--ag-ps-idx:${idx}" data-ag-ps-tip="${escapeHtml(item.label)} · ${item.busy ? '运行中' : '待命'}" data-ag-ps-tip-status="${item.busy ? 'busy' : 'idle'}"><span class="ag-ps-emote" aria-hidden="true"></span><span class="ag-ps-actor-body">${item.svg}</span></span>`
-        )
-        .join('');
-      const badgeHtml = overflow > 0 ? `<span class="ag-ps-more-badge" data-ag-ps-tip="还有 ${overflow} 个活跃 Agent">+${overflow}</span>` : '';
-      dock.innerHTML = `<span class="ag-ps-mascot-bubble"></span>${actorsHtml}${badgeHtml}`;
-      mascotActors = Array.from(dock.querySelectorAll('.ag-ps-actor')).map((el, idx) => ({
-        key: roster[idx].key,
-        label: roster[idx].label,
-        busy: roster[idx].busy,
-        el,
-        emoteEl: el.querySelector('.ag-ps-emote'),
-        emoteText: '',
-        emoteTempUntil: 0,
-        emoteTimer: 0,
-        tapTimes: [],
-        x: 0,
-        facing: 1,
-        moveTimer: 0,
-        settleTimer: 0,
-        clickTimer: 0,
-        roaming: false
-      }));
+      dock.innerHTML = '<span class="ag-ps-mascot-bubble"></span>';
+      mascotActors = roster.map((item, idx) => {
+        const rec = createMascotActorRecord(item, idx, false);
+        dock.appendChild(rec.el);
+        return rec;
+      });
+      if (overflow > 0) {
+        const badge = document.createElement('span');
+        badge.className = 'ag-ps-more-badge';
+        badge.setAttribute('data-ag-ps-tip', `还有 ${overflow} 个活跃 Agent`);
+        badge.textContent = `+${overflow}`;
+        dock.appendChild(badge);
+      }
       applyMascotSizeVars(dock, false);
       parkActorsHome(dock, true, false);
       const obs = scanDockObstacles(dock);
@@ -2101,6 +2775,130 @@
         if (tipTarget && dock.contains(tipTarget)) hideCustomTooltip();
       } else {
         dock.removeAttribute('data-yield');
+      }
+    } else if (rosterSig !== lastRosterSig) {
+      const prevMode = dock.getAttribute('data-mode') || '';
+      const modeChanged = prevMode !== prefs.mascotCountMode;
+      lastRosterSig = rosterSig;
+      dock.setAttribute('data-mode', prefs.mascotCountMode);
+
+      const prevByKey = new Map(mascotActors.map((a) => [a.key, a]));
+      const nextKeys = new Set(roster.map((r) => r.key));
+      const nextActors = [];
+      const newlyAdded = [];
+
+      // 1. Build nextActors in roster order, reusing surviving actors in-place
+      let badgeEl = dock.querySelector('.ag-ps-more-badge');
+      for (let idx = 0; idx < roster.length; idx++) {
+        const item = roster[idx];
+        cancelMascotExitGhostByKey(item.key);
+        const existing = !modeChanged ? prevByKey.get(item.key) : null;
+        if (existing && existing.el && existing.el.isConnected) {
+          existing.busy = item.busy;
+          existing.label = item.label;
+          existing.spriteId = item.spriteId || existing.spriteId || 'crab';
+          existing.el.removeAttribute('data-exiting');
+          setAttrIfChanged(existing.el, 'data-actor-idx', String(idx));
+          setAttrIfChanged(existing.el, 'data-sprite', existing.spriteId);
+          existing.el.style.setProperty('--ag-ps-idx', String(idx));
+          setAttrIfChanged(existing.el, 'data-busy', item.busy ? '1' : '0');
+          setAttrIfChanged(existing.el, 'data-ag-ps-tip', `${item.label} · ${item.busy ? '运行中' : '待命'}`);
+          setAttrIfChanged(existing.el, 'data-ag-ps-tip-status', item.busy ? 'busy' : 'idle');
+          if (existing.svg !== item.svg) {
+            existing.svg = item.svg;
+            const bodySpan = existing.el.querySelector('.ag-ps-actor-body');
+            if (bodySpan) bodySpan.innerHTML = item.svg;
+          }
+          nextActors.push(existing);
+        } else {
+          const isSubSpawn = prefs.mascotCountMode === 'agents' && item.key.startsWith('sub:');
+          const created = createMascotActorRecord(item, idx, isSubSpawn);
+          if (badgeEl && badgeEl.parentElement === dock) {
+            dock.insertBefore(created.el, badgeEl);
+          } else {
+            dock.appendChild(created.el);
+          }
+          nextActors.push(created);
+          newlyAdded.push({ actor: created, idx, isSubSpawn });
+        }
+      }
+
+      // Explicitly align DOM child order with nextActors so nth-of-type, tab order, and accessibility stay deterministic
+      let orderRef = badgeEl && badgeEl.parentElement === dock ? badgeEl : null;
+      for (let i = nextActors.length - 1; i >= 0; i--) {
+        const el = nextActors[i].el;
+        if (el && el.parentElement === dock && el.nextSibling !== orderRef) {
+          dock.insertBefore(el, orderRef);
+        }
+        orderRef = el;
+      }
+
+      // 2. Play farewell exit animation on retired actors (or remove immediately on mode switch)
+      let retiredSubCount = 0;
+      let spawnedSubCount = newlyAdded.filter((n) => n.isSubSpawn).length;
+      const anchorActor = nextActors[0] || null;
+      for (const oldActor of mascotActors) {
+        if (!modeChanged && nextKeys.has(oldActor.key)) continue;
+        if (modeChanged) {
+          clearActorTimers(oldActor);
+          const b = oldActor.el?.querySelector('.ag-ps-mascot-bubble');
+          if (b && anchorActor?.el) anchorActor.el.insertBefore(b, anchorActor.el.firstChild);
+          oldActor.el?.remove();
+        } else {
+          if (oldActor.key.startsWith('sub:')) retiredSubCount++;
+          retireMascotActorWithExit(oldActor, dock, anchorActor);
+        }
+      }
+
+      // 3. Sync overflow badge without wiping dock
+      if (overflow > 0) {
+        if (!badgeEl) {
+          badgeEl = document.createElement('span');
+          badgeEl.className = 'ag-ps-more-badge';
+          dock.appendChild(badgeEl);
+        }
+        badgeEl.hidden = false;
+        badgeEl.textContent = `+${overflow}`;
+        setAttrIfChanged(badgeEl, 'data-ag-ps-tip', `还有 ${overflow} 个活跃 Agent`);
+      } else if (badgeEl) {
+        badgeEl.remove();
+        badgeEl = null;
+      }
+
+      mascotActors = nextActors;
+      applyMascotSizeVars(dock, false);
+      const obs = scanDockObstacles(dock);
+      lastObstacleSig = obs.sig;
+      const trackW = dock.clientWidth || dock.parentElement?.getBoundingClientRect().width || 0;
+      if (trackW > 0 && newlyAdded.length > 0) {
+        const homeXs = computeHomePositions(trackW, mascotActors.length, overflow > 0, dock, obs);
+        for (const entry of newlyAdded) {
+          applyActorTransform(entry.actor, homeXs[entry.idx] ?? 16, 1, 0);
+        }
+      }
+      // Re-index active roam timers cleanly so closure indices stay valid, while smoothly sliding idle actors home
+      if (mascotRoamingActive) {
+        mascotActors.forEach((a) => {
+          clearActorTimers(a);
+          a.roaming = false;
+        });
+        mascotRoamingActive = false;
+      }
+      parkActorsHome(dock, modeChanged, false, obs);
+
+      const { w } = getMascotDims();
+      const anyBlocked = obs.zones.length > 0 && mascotActors.some((a) => isIntervalBlocked(a.x, w, obs.zones));
+      if (obs.crowded || anyBlocked) {
+        dock.setAttribute('data-yield', '1');
+        if (tipTarget && dock.contains(tipTarget)) hideCustomTooltip();
+      } else {
+        dock.removeAttribute('data-yield');
+      }
+
+      if (retiredSubCount > 0) {
+        showMascotBubble(retiredSubCount > 1 ? `${retiredSubCount} 个子 Agent 完工退场 ✨` : '子 Agent 完工退场 ✨', 2100, anchorActor);
+      } else if (spawnedSubCount > 0) {
+        showMascotBubble(spawnedSubCount > 1 ? `召唤 ${spawnedSubCount} 个子 Agent 协同出战 ⚡` : '新子 Agent 加入协同 ⚡', 1900, newlyAdded[newlyAdded.length - 1].actor);
       }
     } else {
       mascotActors.forEach((actor, idx) => {
@@ -2217,8 +3015,52 @@
     }
     wasMascotBusy = anyBusy;
   }
+  let mascotObstacleRaf = 0;
+
+  function nudgeMascotObstacleSync() {
+    if (disposed || mascotObstacleRaf || !prefs.mascot || document.hidden) return;
+    mascotObstacleRaf = requestAnimationFrame(() => {
+      mascotObstacleRaf = 0;
+      if (disposed || !prefs.mascot) return;
+      const dock = document.getElementById('ag-ps-mascot-dock');
+      if (!dock || !dock.isConnected) return;
+      const obs = scanDockObstacles(dock);
+      lastObstacleSig = obs.sig;
+      if (obs.crowded) {
+        dock.setAttribute('data-yield', '1');
+        if (tipTarget && dock.contains(tipTarget)) hideCustomTooltip();
+        return;
+      }
+      dock.removeAttribute('data-yield');
+      if (mascotRoamingActive) {
+        clampRoamingActorsInBounds(dock);
+        const { w, minX, maxX } = getMascotRunwayBounds(dock);
+        for (const actor of mascotActors) {
+          if (actor.roaming && actor.el && isIntervalBlocked(actor.x, w, obs.zones)) {
+            const safe = findNearestSafeX(actor.x, w, minX, maxX, obs.zones, 0, 0);
+            if (safe !== null) {
+              applyActorTransform(actor, safe, safe >= actor.x ? 1 : -1, 0.22);
+            }
+          }
+        }
+      } else {
+        parkActorsHome(dock, false, false, obs);
+      }
+    });
+  }
+  window.addEventListener('ag-prism-orb-change', nudgeMascotObstacleSync);
+  onCleanup(() => {
+    window.removeEventListener('ag-prism-orb-change', nudgeMascotObstacleSync);
+    if (mascotObstacleRaf) {
+      cancelAnimationFrame(mascotObstacleRaf);
+      mascotObstacleRaf = 0;
+    }
+  });
+
   onCleanup(() => {
     stopMascotRoaming(false);
+    clearAllMascotExitTimers(true);
+    mascotActors.forEach(clearActorTimers);
     mascotActors = [];
     lastRosterSig = '';
     lastObstacleSig = '';
@@ -2913,6 +3755,12 @@
       return;
     }
 
+    if (data.type === 'close-workbench') {
+      if (!isOwnedIframeWindow(src)) return;
+      toggleOrClosePrismWorkbench();
+      return;
+    }
+
     if (data.type === 'account-summary' && data.summary && typeof data.summary === 'object') {
       if (!isOwnedIframeWindow(src)) return;
       bridgeTargetWin = src;
@@ -3249,12 +4097,16 @@
                 </div>
                 ${
                   prefs.mascotCountMode === 'fixed'
-                    ? `<div class="ag-ps-toggle-row">
-                        <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">样式</span></div>
-                        <div class="ag-ps-seg-group">
+                    ? `<div class="ag-ps-toggle-row" style="align-items:flex-start;flex-direction:column;gap:5px">
+                        <div class="ag-ps-toggle-label"><span class="ag-ps-toggle-sub">样式预设（Shift+点精灵自由变装 · Alt+点集结）</span></div>
+                        <div class="ag-ps-seg-group ag-ps-mascot-style-grid">
                           <button type="button" class="ag-ps-seg-btn" data-mascot-style="trio" data-selected="${prefs.mascotStyle === 'trio' ? '1' : '0'}">三萌</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="zoo" data-selected="${prefs.mascotStyle === 'zoo' ? '1' : '0'}">萌宠队</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="cyber" data-selected="${prefs.mascotStyle === 'cyber' ? '1' : '0'}">极客队</button>
                           <button type="button" class="ag-ps-seg-btn" data-mascot-style="crab" data-selected="${prefs.mascotStyle === 'crab' ? '1' : '0'}">橘蟹</button>
                           <button type="button" class="ag-ps-seg-btn" data-mascot-style="cat" data-selected="${prefs.mascotStyle === 'cat' ? '1' : '0'}">紫猫</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="penguin" data-selected="${prefs.mascotStyle === 'penguin' ? '1' : '0'}">企鹅</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="fox" data-selected="${prefs.mascotStyle === 'fox' ? '1' : '0'}">赤狐</button>
                         </div>
                       </div>`
                     : `<div class="ag-ps-toggle-row">
@@ -3336,7 +4188,7 @@
       const jumpUsage = e.target.closest('[data-jump-usage]');
       if (jumpUsage) {
         e.preventDefault();
-        pop.removeAttribute('data-open');
+        closePopoverAnimated(true);
         syncToolbarActiveStates();
         const ovBtn = document.querySelector('[data-testid="toggle-overview-panel"]');
         const ovPanel = document.querySelector('[data-testid="overview-panel"]');
@@ -3429,6 +4281,9 @@
       }
       const ms = e.target.closest('[data-mascot-style]');
       if (ms) {
+        for (const k of Array.from(actorSkinOverrides.keys())) {
+          if (k.startsWith('fixed:')) actorSkinOverrides.delete(k);
+        }
         prefs.mascotStyle = PREF_VALIDATORS.mascotStyle(ms.getAttribute('data-mascot-style')) || 'trio';
         savePrefs();
         emitBus('prefs');
@@ -3523,17 +4378,18 @@
 
   function togglePopover(forceState) {
     const pop = ensurePopover();
-    const drawer = document.getElementById('ag-ps-outline');
-    if (drawer) drawer.removeAttribute('data-open');
+    closeOutlineAnimated(false);
     const open = typeof forceState === 'boolean' ? forceState : pop.getAttribute('data-open') !== '1';
     if (open) {
+      cancelPopoverClose(pop);
       renderPopoverContent(pop);
       pop.setAttribute('data-open', '1');
       positionFloatingPanel(pop, document.getElementById('ag-ps-btn-suite'));
     } else {
-      pop.removeAttribute('data-open');
+      closePopoverAnimated(false);
     }
     syncToolbarActiveStates();
+    notifyOverlayChange();
   }
 
   function syncToolbarActiveStates() {
@@ -3541,11 +4397,209 @@
     const outOpen = document.getElementById('ag-ps-outline')?.getAttribute('data-open') === '1';
     const pBtn = document.getElementById('ag-ps-btn-suite');
     const oBtn = document.getElementById('ag-ps-btn-outline');
+    const wBtn = document.getElementById('ag-ps-btn-workbench');
     if (pBtn) pBtn.setAttribute('data-active', popOpen ? '1' : '0');
     if (oBtn) oBtn.setAttribute('data-active', outOpen ? '1' : '0');
+    if (wBtn) {
+      const rightTab = findWorkbenchEntry(document, { skipSidebar: true });
+      const wbOpen = isFullPageWorkbenchActive() || Boolean(rightTab && isAuxWorkbenchTabActive(rightTab));
+      wBtn.setAttribute('data-active', wbOpen ? '1' : '0');
+    }
   }
 
   let workbenchOpening = false;
+  let lastChatConvPath = /^\/c\/[A-Za-z0-9_-]{6,}/.test(window.location.pathname || '')
+    ? window.location.pathname
+    : '';
+
+  function isOwnedWorkbenchFrameVisible(minWidthRatio = 0.08) {
+    try {
+      const frames = document.querySelectorAll('iframe');
+      const minW = Math.max(80, (window.innerWidth || 1000) * minWidthRatio);
+      for (let i = 0; i < frames.length; i++) {
+        const f = frames[i];
+        if (!f.isConnected) continue;
+        const r = f.getBoundingClientRect();
+        if (r.width < minW || r.height < 80) continue;
+        if (bridgeTargetWin && f.contentWindow === bridgeTargetWin) return true;
+        const meta = `${f.title || ''} ${f.getAttribute('aria-label') || ''} ${f.name || ''} ${f.src || ''}`;
+        if (/prism[-_\s]*(?:files|工作台|workbench)/i.test(meta)) return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  function isAuxWorkbenchTabActive(tabEl) {
+    if (!tabEl || !tabEl.isConnected) return false;
+    if (
+      tabEl.getAttribute('aria-selected') === 'true' ||
+      tabEl.getAttribute('data-state') === 'active' ||
+      tabEl.getAttribute('data-active') === 'true' ||
+      tabEl.classList.contains('is-active') ||
+      tabEl.classList.contains('active')
+    ) {
+      return true;
+    }
+    return isOwnedWorkbenchFrameVisible(0.12);
+  }
+
+  function isFullPageWorkbenchActive() {
+    if (document.querySelector('[data-testid="autoscroll-viewport"]')) return false;
+    if (document.getElementById('antigravity.agentSidePanelInputBox')) return false;
+    if (document.querySelector('[data-testid="settings-sidebar"]')) return false;
+    if (isOwnedWorkbenchFrameVisible(0.42)) return true;
+    const sbEntry = findSidebarWorkbenchEntry();
+    if (!sbEntry) return false;
+    const checkActive = (n) =>
+      Boolean(
+        n &&
+          (n.getAttribute('aria-current') === 'page' ||
+            n.getAttribute('aria-selected') === 'true' ||
+            n.getAttribute('data-active') === 'true' ||
+            n.getAttribute('data-selected') === 'true' ||
+            n.getAttribute('data-state') === 'active')
+      );
+    return checkActive(sbEntry) || checkActive(sbEntry.parentElement);
+  }
+
+  function findSidebarWorkbenchEntry() {
+    const candidates = document.querySelectorAll('aside button, aside a, aside [role="button"], nav button, nav a, [data-testid*="sidebar" i] button, [data-testid*="sidebar" i] a');
+    for (const el of candidates) {
+      if (!el.isConnected) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0 || r.left > 340) continue;
+      const txt = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+      const aria = String(el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+      if ((txt.length <= 28 && /Prism\s*(?:工作台|文件)/i.test(txt)) || /Prism\s*(?:工作台|文件)/i.test(aria)) {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  function closeAuxWorkbenchTab(rightTab) {
+    if (!rightTab || !rightTab.isConnected) return false;
+    const isCloseControl = (b) => {
+      if (!b || !b.isConnected) return false;
+      const r = b.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return false;
+      const lbl = `${b.getAttribute('aria-label') || ''} ${b.getAttribute('title') || ''} ${b.getAttribute('data-testid') || ''}`;
+      if (/close|关闭|dismiss/i.test(lbl)) return true;
+      const txt = (b.textContent || '').trim();
+      if (txt === '×' || txt === '✕') return true;
+      return Boolean(b.querySelector('svg[class*="lucide-x" i], svg[data-lucide="x"]'));
+    };
+
+    const innerBtns = rightTab.querySelectorAll('button, [role="button"]');
+    for (const b of innerBtns) {
+      if (b !== rightTab && isCloseControl(b)) {
+        triggerRadixTrigger(b);
+        setTimeout(syncToolbarActiveStates, 80);
+        return true;
+      }
+    }
+    const tabRow = rightTab.parentElement;
+    if (tabRow) {
+      for (const b of tabRow.querySelectorAll('button, [role="button"]')) {
+        if (b !== rightTab && isCloseControl(b)) {
+          const tr = rightTab.getBoundingClientRect();
+          const br = b.getBoundingClientRect();
+          if (Math.abs(br.top - tr.top) < 24 && br.left >= tr.left && br.left <= tr.right + 36) {
+            triggerRadixTrigger(b);
+            setTimeout(syncToolbarActiveStates, 80);
+            return true;
+          }
+        }
+      }
+    }
+    let anc = rightTab.parentElement;
+    for (let depth = 0; anc && anc !== document.body && depth < 5; depth++, anc = anc.parentElement) {
+      const hdrBtns = anc.querySelectorAll('button, [role="button"]');
+      for (const b of hdrBtns) {
+        if (b !== rightTab && isCloseControl(b)) {
+          const tr = rightTab.getBoundingClientRect();
+          const br = b.getBoundingClientRect();
+          if (Math.abs(br.top - tr.top) < 28 && br.left > tr.left) {
+            triggerRadixTrigger(b);
+            setTimeout(syncToolbarActiveStates, 80);
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  function returnFromFullPageWorkbench() {
+    const wantedCid = lastChatConvPath.startsWith('/c/') ? lastChatConvPath.slice(3).split('/')[0] : '';
+    const rows = Array.from(document.querySelectorAll('[data-testid="conversation-row-sidebar"], aside a[href^="/c/"], nav a[href^="/c/"]'));
+    let targetRow = null;
+    if (wantedCid) {
+      targetRow = rows.find((el) => {
+        if (!isElementRendered(el)) return false;
+        const href = el.getAttribute('href') || el.querySelector?.('a[href]')?.getAttribute('href') || '';
+        const cid = el.getAttribute('data-cascade-id') || '';
+        return cid === wantedCid || href.includes(wantedCid);
+      });
+    }
+    if (!targetRow) {
+      targetRow = rows.find((el) => isElementRendered(el) && (el.getAttribute('data-selected') === 'true' || el.getAttribute('aria-current') === 'page'));
+    }
+    if (!targetRow) {
+      targetRow = rows.find((el) => isElementRendered(el));
+    }
+    if (targetRow) {
+      const clickable = targetRow.matches('a, button, [role="button"]')
+        ? targetRow
+        : (targetRow.querySelector('a, button, [role="button"]') || targetRow);
+      triggerRadixTrigger(clickable);
+      setTimeout(syncToolbarActiveStates, 90);
+      return true;
+    }
+    try {
+      if (window.history.length > 1) {
+        window.history.back();
+        setTimeout(syncToolbarActiveStates, 90);
+        return true;
+      }
+    } catch {}
+    const newBtn = document.querySelector('[data-testid="new-conversation-button"], aside a[href="/"], nav a[href="/"]');
+    if (newBtn && isElementRendered(newBtn)) {
+      triggerRadixTrigger(newBtn);
+      return true;
+    }
+    return false;
+  }
+
+  function toggleOrClosePrismWorkbench() {
+    if (isFullPageWorkbenchActive()) {
+      return returnFromFullPageWorkbench();
+    }
+    const rightTab = findWorkbenchEntry(document, { skipSidebar: true });
+    if (rightTab && isAuxWorkbenchTabActive(rightTab)) {
+      if (closeAuxWorkbenchTab(rightTab)) return true;
+    }
+    return false;
+  }
+
+  function onSidebarWorkbenchToggleCapture(e) {
+    if (disposed || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const t = e.target;
+    if (!t || !t.closest) return;
+    const sbEntry = findSidebarWorkbenchEntry();
+    if (!sbEntry || !sbEntry.contains(t)) return;
+    // Ignore secondary menu/unpin buttons inside the sidebar row
+    const innerBtn = t.closest('button, [role="button"]');
+    if (innerBtn && innerBtn !== sbEntry && sbEntry.contains(innerBtn)) return;
+    if (isFullPageWorkbenchActive()) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+      returnFromFullPageWorkbench();
+    }
+  }
+  document.addEventListener('click', onSidebarWorkbenchToggleCapture, true);
+  onCleanup(() => document.removeEventListener('click', onSidebarWorkbenchToggleCapture, true));
 
   function findWorkbenchEntry(root = document, { skipSidebar = false } = {}) {
     if (!root || !root.querySelectorAll) return null;
@@ -3610,13 +4664,8 @@
   function trySidebarFallback() {
     const fallback = findWorkbenchEntry(document, { skipSidebar: false });
     if (!fallback) return false;
-    const isAlreadyHere =
-      fallback.getAttribute('aria-current') === 'page' ||
-      fallback.getAttribute('data-active') === 'true' ||
-      (!document.querySelector('[data-testid="autoscroll-viewport"]') && !document.getElementById('antigravity.agentSidePanelInputBox'));
-    if (isAlreadyHere) {
-      showJumpToast('当前已在 Prism 工作台');
-      return true;
+    if (isFullPageWorkbenchActive()) {
+      return returnFromFullPageWorkbench();
     }
     triggerRadixTrigger(fallback);
     return true;
@@ -3624,11 +4673,15 @@
 
   function openPrismWorkbenchQuick(targetTab = '') {
     const wantTab = targetTab && ALLOWED_BRIDGE_TABS.has(targetTab) ? targetTab : '';
-    if (wantTab) {
-      dispatchSwitchTabWithRetry(wantTab);
-    } else {
-      // Opening the workbench from general buttons must not inherit a stale account-switch intent
+    if (!wantTab) {
+      // Pure toggle click: if Workbench is already active (either full-page or active right aux pane), close/return!
+      if (toggleOrClosePrismWorkbench()) {
+        clearPendingWorkbenchNav();
+        return true;
+      }
       clearPendingWorkbenchNav();
+    } else {
+      dispatchSwitchTabWithRetry(wantTab);
     }
     // 1. Prioritize already-open right-side aux pane tab (skipping left global sidebar)
     const rightTab = findWorkbenchEntry(document, { skipSidebar: true });
@@ -3640,6 +4693,7 @@
           if (!disposed && pendingIntentId) broadcastBridgePing();
         }, 160));
       }
+      setTimeout(syncToolbarActiveStates, 80);
       return true;
     }
     if (workbenchOpening) return false;
@@ -3782,12 +4836,12 @@
     if (disposed) return;
     const pop = document.getElementById('ag-ps-popover');
     if (pop && pop.getAttribute('data-open') === '1' && !pop.contains(e.target) && !e.target.closest('#ag-ps-btn-suite')) {
-      pop.removeAttribute('data-open');
+      closePopoverAnimated(true);
       syncToolbarActiveStates();
     }
     const drawer = document.getElementById('ag-ps-outline');
     if (drawer && drawer.getAttribute('data-open') === '1' && !drawer.contains(e.target) && !e.target.closest('#ag-ps-btn-outline')) {
-      drawer.removeAttribute('data-open');
+      closeOutlineAnimated(true);
       syncToolbarActiveStates();
     }
   }
@@ -3849,6 +4903,9 @@
     if (disposed || document.hidden) return;
     const curBox = getActiveInputBox();
     // Detect SPA conversation switch (either URL pathname change OR cached multi-view inputBox switch)
+    if (/^\/c\/[A-Za-z0-9_-]{6,}/.test(window.location.pathname || '')) {
+      lastChatConvPath = window.location.pathname;
+    }
     if (window.location.pathname !== lastPath || (curBox && curBox !== lastActiveBox)) {
       lastPath = window.location.pathname;
       lastActiveBox = curBox;
@@ -3981,6 +5038,14 @@
       const pop = document.getElementById('ag-ps-popover');
       if (pop && pop.getAttribute('data-open') === '1') renderPopoverContent(pop);
     },
+    emit(type) {
+      if (disposed || !type) return;
+      if (type === 'orb-stage') {
+        nudgeMascotObstacleSync();
+      }
+      emitBus(String(type));
+    },
+    syncMascotObstacles: nudgeMascotObstacleSync,
     setAttrIfChanged,
     setStyleVarIfChanged,
     onCleanup

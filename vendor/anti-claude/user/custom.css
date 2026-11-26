@@ -17,7 +17,7 @@
  * ============================================================================ */
 @font-face {
   font-family: 'AG PingFang 945';
-  src: local('PingFangSC-Light'), local('PingFang SC Light'), local('PingFangSC-Regular');
+  src: local('PingFangSC-Light'), local('PingFang SC Light'), local('PingFangSC-Regular'), local('Microsoft YaHei UI Light'), local('Microsoft YaHei Light'), local('Microsoft YaHei UI');
   font-weight: 300;
   size-adjust: 94.5%;
   unicode-range: U+2E80-9FFF, U+F900-FAFF, U+3000-303F, U+FF01-FF60;
@@ -25,7 +25,7 @@
 
 @font-face {
   font-family: 'AG PingFang 945';
-  src: local('PingFangSC-Regular'), local('PingFang SC Regular'), local('PingFang SC');
+  src: local('PingFangSC-Regular'), local('PingFang SC Regular'), local('PingFang SC'), local('Microsoft YaHei UI'), local('Microsoft YaHei');
   font-weight: 400;
   size-adjust: 94.5%;
   unicode-range: U+2E80-9FFF, U+F900-FAFF, U+3000-303F, U+FF01-FF60;
@@ -33,7 +33,7 @@
 
 @font-face {
   font-family: 'AG PingFang 945';
-  src: local('PingFangSC-Medium'), local('PingFang SC Medium'), local('PingFang SC');
+  src: local('PingFangSC-Medium'), local('PingFang SC Medium'), local('PingFang SC'), local('Microsoft YaHei UI'), local('Microsoft YaHei');
   font-weight: 500;
   size-adjust: 94.5%;
   unicode-range: U+2E80-9FFF, U+F900-FAFF, U+3000-303F, U+FF01-FF60;
@@ -41,7 +41,7 @@
 
 @font-face {
   font-family: 'AG PingFang 945';
-  src: local('PingFangSC-Semibold'), local('PingFang SC Semibold'), local('PingFang SC');
+  src: local('PingFangSC-Semibold'), local('PingFang SC Semibold'), local('PingFang SC'), local('Microsoft YaHei UI Bold'), local('Microsoft YaHei Bold'), local('Microsoft YaHei UI');
   font-weight: 600 700;
   size-adjust: 94.5%;
   unicode-range: U+2E80-9FFF, U+F900-FAFF, U+3000-303F, U+FF01-FF60;
@@ -49,7 +49,7 @@
 
 @font-face {
   font-family: 'AG PingFang 950';
-  src: local('PingFangSC-Light'), local('PingFang SC Light'), local('PingFangSC-Regular');
+  src: local('PingFangSC-Light'), local('PingFang SC Light'), local('PingFangSC-Regular'), local('Microsoft YaHei UI Light'), local('Microsoft YaHei Light'), local('Microsoft YaHei UI');
   font-weight: 300;
   size-adjust: 95%;
   unicode-range: U+2E80-9FFF, U+F900-FAFF, U+3000-303F, U+FF01-FF60;
@@ -57,7 +57,7 @@
 
 @font-face {
   font-family: 'AG PingFang 950';
-  src: local('PingFangSC-Regular'), local('PingFang SC Regular'), local('PingFang SC');
+  src: local('PingFangSC-Regular'), local('PingFang SC Regular'), local('PingFang SC'), local('Microsoft YaHei UI'), local('Microsoft YaHei');
   font-weight: 400;
   size-adjust: 95%;
   unicode-range: U+2E80-9FFF, U+F900-FAFF, U+3000-303F, U+FF01-FF60;
@@ -65,7 +65,7 @@
 
 @font-face {
   font-family: 'AG PingFang 950';
-  src: local('PingFangSC-Medium'), local('PingFang SC Medium'), local('PingFang SC');
+  src: local('PingFangSC-Medium'), local('PingFang SC Medium'), local('PingFang SC'), local('Microsoft YaHei UI'), local('Microsoft YaHei');
   font-weight: 500;
   size-adjust: 95%;
   unicode-range: U+2E80-9FFF, U+F900-FAFF, U+3000-303F, U+FF01-FF60;
@@ -73,7 +73,7 @@
 
 @font-face {
   font-family: 'AG PingFang 950';
-  src: local('PingFangSC-Semibold'), local('PingFang SC Semibold'), local('PingFang SC');
+  src: local('PingFangSC-Semibold'), local('PingFang SC Semibold'), local('PingFang SC'), local('Microsoft YaHei UI Bold'), local('Microsoft YaHei Bold'), local('Microsoft YaHei UI');
   font-weight: 600 700;
   size-adjust: 95%;
   unicode-range: U+2E80-9FFF, U+F900-FAFF, U+3000-303F, U+FF01-FF60;
@@ -81,7 +81,7 @@
 
 @font-face {
   font-family: 'AG PingFang Tuned';
-  src: local('PingFangSC-Light'), local('PingFang SC Light'), local('PingFangSC-Regular');
+  src: local('PingFangSC-Light'), local('PingFang SC Light'), local('PingFangSC-Regular'), local('Microsoft YaHei UI Light'), local('Microsoft YaHei Light'), local('Microsoft YaHei UI');
   font-weight: 300;
   size-adjust: 95%;
   unicode-range: U+2E80-9FFF, U+F900-FAFF, U+3000-303F, U+FF01-FF60;
@@ -89,7 +89,7 @@
 
 @font-face {
   font-family: 'AG PingFang Tuned';
-  src: local('PingFangSC-Regular'), local('PingFang SC Regular'), local('PingFang SC');
+  src: local('PingFangSC-Regular'), local('PingFang SC Regular'), local('PingFang SC'), local('Microsoft YaHei UI'), local('Microsoft YaHei');
   font-weight: 400;
   size-adjust: 95%;
   unicode-range: U+2E80-9FFF, U+F900-FAFF, U+3000-303F, U+FF01-FF60;
@@ -97,7 +97,7 @@
 
 @font-face {
   font-family: 'AG PingFang Tuned';
-  src: local('PingFangSC-Medium'), local('PingFang SC Medium'), local('PingFang SC');
+  src: local('PingFangSC-Medium'), local('PingFang SC Medium'), local('PingFang SC'), local('Microsoft YaHei UI'), local('Microsoft YaHei');
   font-weight: 500;
   size-adjust: 95%;
   unicode-range: U+2E80-9FFF, U+F900-FAFF, U+3000-303F, U+FF01-FF60;
@@ -105,7 +105,7 @@
 
 @font-face {
   font-family: 'AG PingFang Tuned';
-  src: local('PingFangSC-Semibold'), local('PingFang SC Semibold'), local('PingFang SC');
+  src: local('PingFangSC-Semibold'), local('PingFang SC Semibold'), local('PingFang SC'), local('Microsoft YaHei UI Bold'), local('Microsoft YaHei Bold'), local('Microsoft YaHei UI');
   font-weight: 600 700;
   size-adjust: 95%;
   unicode-range: U+2E80-9FFF, U+F900-FAFF, U+3000-303F, U+FF01-FF60;
@@ -2772,6 +2772,22 @@ html:not([data-ag-theme-mode="dark"]) body:not(.dark) .ag-claude-folder-badge[da
 }
 
 /* 统一侧栏模式（unified）：原生虚拟列表仅承接顶部的置顶对话，高度严丝合缝，与下方全量「最近对话」共享外层单一滚动条 */
+.bg-sidebar :is(
+  [data-testid="sidebar-navigation-items"],
+  [data-ag-sb-unified],
+  [data-testid="conversation-list-sidebar"],
+  #ag-claude-recent-section,
+  #ag-claude-recent-section *,
+  [data-testid="settings-button"]
+),
+:has(> #ag-claude-recent-section[data-mode="unified"]) {
+  -webkit-app-region: no-drag !important;
+}
+
+:has(> #ag-claude-recent-section[data-mode="unified"]) {
+  min-height: 0 !important;
+}
+
 [data-ag-sb-unified="pinned"] {
   flex: 0 0 auto !important;
   height: var(--ag-sb-pinned-height, auto) !important;

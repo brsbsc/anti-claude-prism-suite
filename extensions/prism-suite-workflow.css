@@ -1,5 +1,5 @@
 /* ============================================================================
- * Anti-Claude Prism Suite v0.5.0 — Workflow & i18n Module Styles (MIT)
+ * Anti-Claude Prism Suite v0.7.0 — Workflow & i18n Module Styles (MIT)
  * Clean-room original styles for:
  *   1. Image Context Menu (#ag-ps-img-menu)
  *   2. SSH Paste Auto-Parse Confirmation Status (.ag-ps-ssh-status)
@@ -11,11 +11,11 @@
 @keyframes agPsMenuIn {
   from {
     opacity: 0;
-    transform: translateY(-3px) scale(0.975);
+    transform: translateY(-4px);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(0);
   }
 }
 
@@ -37,7 +37,10 @@
   font-size: 12px;
   line-height: 1.4;
   user-select: none;
-  animation: agPsMenuIn 120ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+  transform: none;
+  will-change: auto;
+  outline: none;
+  animation: agPsMenuIn 140ms cubic-bezier(0.22, 1, 0.36, 1) 1;
 }
 
 html[data-ag-theme-mode="dark"] #ag-ps-img-menu,
@@ -76,7 +79,13 @@ body.dark #ag-ps-img-menu {
   font-weight: 500;
   text-align: left;
   cursor: pointer;
-  transition: background-color 110ms ease, color 110ms ease;
+  transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+              color 140ms ease,
+              transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ag-ps-img-menu-item:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .ag-ps-img-menu-item:hover,
@@ -87,6 +96,10 @@ body.dark #ag-ps-img-menu {
 
 .ag-ps-img-menu-item:focus-visible {
   box-shadow: 0 0 0 1.5px var(--primary, #2563EB) inset;
+}
+
+.ag-ps-img-menu-item:active:not([disabled]) {
+  transform: scale(0.97);
 }
 
 .ag-ps-img-menu-item[disabled] {
@@ -105,7 +118,8 @@ body.dark #ag-ps-img-menu {
   color: var(--muted-foreground, #73726C);
 }
 
-.ag-ps-img-menu-item:hover .ag-ps-img-menu-ico {
+.ag-ps-img-menu-item:hover .ag-ps-img-menu-ico,
+.ag-ps-img-menu-item:focus-visible .ag-ps-img-menu-ico {
   color: var(--primary, #2563EB);
 }
 
@@ -221,7 +235,16 @@ body.dark .ag-ps-ssh-status[data-tone="warn"] {
   font-weight: 500;
   line-height: 1;
   cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+  transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+              color 140ms ease,
+              border-color 140ms ease,
+              transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ag-ps-turn-act-btn:focus:not(:focus-visible),
+.ag-ps-inline-btn:focus:not(:focus-visible),
+.ag-ps-wf-seg-btn:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .ag-ps-turn-act-btn:hover,
@@ -230,6 +253,14 @@ body.dark .ag-ps-ssh-status[data-tone="warn"] {
   color: var(--foreground, #141413);
   border-color: var(--primary, #2563EB);
   outline: none;
+}
+
+.ag-ps-turn-act-btn:focus-visible {
+  box-shadow: 0 0 0 1.5px var(--primary, #2563EB);
+}
+
+.ag-ps-turn-act-btn:active:not([data-busy="1"]) {
+  transform: scale(0.97);
 }
 
 .ag-ps-turn-act-btn[data-busy="1"] {
@@ -413,6 +444,7 @@ body.dark .ag-ps-inline-warn {
 @media (prefers-reduced-motion: reduce) {
   #ag-ps-img-menu,
   .ag-ps-img-menu-item,
+  .ag-ps-drop-target,
   .ag-ps-turn-actions,
   .ag-ps-turn-act-btn,
   .ag-ps-inline-btn,

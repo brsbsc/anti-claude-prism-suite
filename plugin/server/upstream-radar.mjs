@@ -63,8 +63,44 @@ const UPSTREAM_ZH_META = {
   'agy-switch': {
     displayNameZh: 'agy-switch（切号机制参考）',
     roleZh: '多账号切换流程与安全边界参考'
+  },
+  windowsMcp: {
+    displayNameZh: 'Windows-MCP（桌面无障碍操控参考）',
+    roleZh: 'UIA 无障碍树压缩、操控状态浮层与显式授权机制参考'
+  },
+  'windows-mcp': {
+    displayNameZh: 'Windows-MCP（桌面无障碍操控参考）',
+    roleZh: 'UIA 无障碍树压缩、操控状态浮层与显式授权机制参考'
+  },
+  playwrightMcp: {
+    displayNameZh: 'Playwright-MCP（浏览器无障碍操控参考）',
+    roleZh: '浏览器扩展桥协议与无障碍快照压缩策略参考（Apache-2.0）'
+  },
+  'playwright-mcp': {
+    displayNameZh: 'Playwright-MCP（浏览器无障碍操控参考）',
+    roleZh: '浏览器扩展桥协议与无障碍快照压缩策略参考（Apache-2.0）'
+  },
+  macCodexCua: {
+    displayNameZh: 'antigravity-codex-computer-control（安全策略与增量对比参考）',
+    roleZh: '操控安全拦截策略与动作前后增量 diff 思路参考（禁二进制）'
+  },
+  'antigravity-codex-computer-control': {
+    displayNameZh: 'antigravity-codex-computer-control（安全策略与增量对比参考）',
+    roleZh: '操控安全拦截策略与动作前后增量 diff 思路参考（禁二进制）'
   }
 };
+
+function resolveUpstreamZhMeta(key, entry = {}) {
+  const repoSlug = String(entry?.repo || '').split('/').pop()?.toLowerCase() || '';
+  return (
+    UPSTREAM_ZH_META[key] ||
+    UPSTREAM_ZH_META[String(key || '').toLowerCase()] ||
+    UPSTREAM_ZH_META[repoSlug] || {
+      displayNameZh: entry?.repo || key,
+      roleZh: entry?.role || ''
+    }
+  );
+}
 
 export function compareSemver(a, b) {
   const pa = String(a || '').replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
@@ -127,7 +163,17 @@ const PRE_MT_TERM_REPLACEMENTS = [
   [/\bzero[-\s]?AMSI\b/gi, '防杀软误报(免AMSI拦截)'],
   [/\bToS\s+sync\b/gi, '服务条款状态同步'],
   [/\brelaunch\b/gi, '自动重启'],
-  [/\bi18n\b/gi, '多语言汉化']
+  [/\bi18n\b/gi, '多语言汉化'],
+  [/\baccessibility\s+snapshots?\b/gi, '无障碍快照'],
+  [/\baccessibility\s+trees?\b/gi, '无障碍树'],
+  [/\bUIA\s+trees?\b/gi, 'UIA无障碍树'],
+  [/\bbrowser\s+extension\s+bridge\b/gi, '浏览器扩展桥'],
+  [/\bextension\s+bridge\b/gi, '浏览器扩展桥'],
+  [/\bcontrol[\s_-]?overlay\b/gi, '操控状态浮层'],
+  [/\bcontrol[\s_-]?consent\b/gi, '显式操控授权(control_consent)'],
+  [/\bsafety[\s_-]?policy\b/gi, '安全拦截策略'],
+  [/\banonymized[\s_-]?telemetry\b/gi, '匿名遥测'],
+  [/\btelemetry\b/gi, '遥测']
 ];
 
 function preRewriteTermsForMt(text) {
@@ -151,6 +197,10 @@ export function polishZhTechTerms(text) {
     .replace(/黑暗光环/g, '深色极光背景')
     .replace(/模型选项卡/g, '模型页签')
     .replace(/外部仪表板/g, '外部面板')
+    .replace(/可访问性树|辅助功能树/g, '无障碍树')
+    .replace(/可访问性快照|辅助功能快照/g, '无障碍快照')
+    .replace(/(?<!浏览器)扩展桥接?(?:器)?/g, '浏览器扩展桥')
+    .replace(/控制覆盖(?:层)?|操控覆盖(?:层)?/g, '操控状态浮层')
     .replace(/\.lnk\s*(?:helper|快捷方式)?/gi, '.lnk 快捷方式')
     .replace(/\btooltipNote\b/gi, '运行中提示条(tooltipNote)')
     .replace(/\bProject composer\b/gi, '项目输入框')
@@ -162,6 +212,13 @@ export function polishZhTechTerms(text) {
     .replace(/\bAMSI\b/g, 'AMSI')
     .replace(/\bi18n\b/gi, '多语言汉化')
     .replace(/\bCI test\b/gi, 'CI 自动测试')
+    .replace(/\baccessibility\s+snapshots?\b/gi, '无障碍快照')
+    .replace(/\baccessibility\s+trees?\b/gi, '无障碍树')
+    .replace(/\bbrowser\s+extension\s+bridge\b/gi, '浏览器扩展桥')
+    .replace(/\bextension\s+bridge\b/gi, '浏览器扩展桥')
+    .replace(/\bcontrol[\s_-]?overlay\b/gi, '操控状态浮层')
+    .replace(/\bcontrol[\s_-]?consent\b/gi, '显式操控授权(control_consent)')
+    .replace(/\btelemetry\b/gi, '遥测')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -284,6 +341,14 @@ function classifyCommitMessage(msg, role = '') {
   if (role === 'inspiration-only' || role === 'ecosystem-watch') {
     return isHostOrSecuritySignal ? 'compat' : 'feature';
   }
+  if (role === 'cua-reference' || role === 'browser-cua-reference') {
+    const isCuaBreakingOrSecurity =
+      /^security(\(.+\))?:/i.test(low) ||
+      /^(?:feat|fix|refactor)(\([^)]*\))?!:/i.test(low) ||
+      /\b(security|cve(?:-\d{4}-\d+)?|(?:control_)?consent|(?:prompt[\s_-]+)?injection|sandbox|extension[\s_-]+protocol|antigravity)\b/i.test(low) ||
+      /\bbreaking\b.*\b(accessibility|uia|extension|protocol|consent)\b/i.test(low);
+    return isCuaBreakingOrSecurity ? 'compat' : 'feature';
+  }
   if (isHostOrSecuritySignal || /^(fix|perf|refactor|security)(\(.+\))?:|\b(daemon|hook|crash|leak)\b/i.test(low)) {
     return 'compat';
   }
@@ -322,7 +387,7 @@ export function evaluateRepoUpdate(key, entry, fetched = {}) {
   const aheadBy = Number.isFinite(Number(fetched.aheadBy)) ? Number(fetched.aheadBy) : compareCommits.length;
 
   if (fetched.error) {
-    const zhMeta = UPSTREAM_ZH_META[key] || { displayNameZh: entry.repo, roleZh: entry.role || '' };
+    const zhMeta = resolveUpstreamZhMeta(key, entry);
     return {
       key,
       repo: entry.repo,
@@ -356,7 +421,7 @@ export function evaluateRepoUpdate(key, entry, fetched = {}) {
   const hasUpdate = tagChanged || shaChanged || aheadBy > 0;
 
   if (!hasUpdate) {
-    const zhMeta = UPSTREAM_ZH_META[key] || { displayNameZh: entry.repo, roleZh: entry.role || '' };
+    const zhMeta = resolveUpstreamZhMeta(key, entry);
     return {
       key,
       repo: entry.repo,
@@ -437,7 +502,7 @@ export function evaluateRepoUpdate(key, entry, fetched = {}) {
     impactLevel = 'MEDIUM';
   }
 
-  const zhMeta = UPSTREAM_ZH_META[key] || { displayNameZh: entry.repo, roleZh: entry.role || '' };
+  const zhMeta = resolveUpstreamZhMeta(key, entry);
 
   return {
     key,
@@ -690,8 +755,16 @@ export function renderMarkdownReport(report) {
       lines.push('', `#### ${r.repo} (\`${r.impactLevel}\`, ahead ${r.aheadBy})`);
       if (r.license && /GPL/i.test(r.license)) {
         lines.push(`> ⚠️ **Clean-Room 隔离红线（${r.license}）**：仅参考 UX 创意与交互构思，严禁复制或移植任何代码到本 MIT 仓库！`);
-      } else if (r.adoptionBoundary) {
-        lines.push(`> 边界：${r.adoptionBoundary}`);
+      } else {
+        if (r.license === 'Apache-2.0') {
+          lines.push('> 📜 **Apache-2.0 协议合规提醒**：优先以 Clean-Room 方式参考协议与思路；若确需复用任何 Apache-2.0 代码片段，必须保留原版权声明并同步登记 `THIRD_PARTY_NOTICES.md`。');
+        }
+        if (r.role === 'cua-reference' || r.role === 'browser-cua-reference' || r.key === 'macCodexCua') {
+          const boundaryText = r.adoptionBoundary || '仅以 Clean-Room 纯 Node.js 方式参考机制设计。';
+          lines.push(`> 🛡️ **CUA 安全与 Clean-Room 边界**：${boundaryText}（硬性红线：严禁引入任何预编译二进制文件、原生驱动或开启遥测！）`);
+        } else if (r.adoptionBoundary) {
+          lines.push(`> 边界：${r.adoptionBoundary}`);
+        }
       }
       if (r.watchedHits.length) {
         lines.push(`- 命中关键路径：${r.watchedHits.map((f) => `\`${f}\``).join(', ')}`);
@@ -1111,7 +1184,7 @@ export async function applyPrismSelfUpdate({
     const wsl = typeof isWsl === 'boolean' ? isWsl : detectIsWslHost(platform);
     const useWinInstaller = platform === 'win32' || wsl;
     const execFn = runExecFile || (async (file, args, opts) => {
-      const res = await execFileAsync(file, args, opts);
+      const res = await execFileAsync(file, args, { windowsHide: true, ...opts });
       return { stdout: res.stdout || '', stderr: res.stderr || '' };
     });
 
