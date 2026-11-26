@@ -1587,6 +1587,38 @@
       font-weight: 600;
     }
 
+    .quota-fam-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 2px;
+    }
+
+    .quota-fam-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 10.5px;
+      font-variant-numeric: tabular-nums;
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+      color: var(--color-text-secondary, var(--p-text-secondary));
+    }
+
+    .quota-fam-chip strong {
+      color: var(--color-text-primary, var(--p-text));
+      font-weight: 600;
+    }
+
+    .quota-fam-sync {
+      font-size: 10px;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      margin-left: auto;
+    }
+
     .radar-item {
       border-top: 1px solid var(--color-border-secondary, var(--p-border));
       padding-top: 7px;
@@ -2106,6 +2138,7 @@
       const appInstanceId = `pf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
       const processedIntentIds = new Set();
       let focusFlashTimer = 0;
+      const RESTORABLE_TABS = ['browse', 'artifacts', 'pins', 'search'];
       let navigationIntent = {
         tab: 'browse',
         source: 'default', // 'default' | 'tool-result' | 'user' | 'external-switch'
@@ -2178,7 +2211,7 @@
           priority: 100,
           expiresAt: Date.now() + 10000
         };
-        switchTab(tab, { persist: true, fromExternal: true });
+        switchTab(tab, { persist: false, fromExternal: true });
         if (focus) {
           focusActiveTabRegion(tab, !alreadyHandled);
         }
@@ -2986,7 +3019,7 @@
           appState.prefs = {
             pinnedPaths: Array.isArray(res.state.pinnedPaths) ? res.state.pinnedPaths : [],
             lastPath: res.state.lastPath || appState.prefs.lastPath,
-            lastTab: ['browse', 'artifacts', 'pins', 'search', 'accounts'].includes(res.state.lastTab) ? res.state.lastTab : appState.prefs.lastTab,
+            lastTab: RESTORABLE_TABS.includes(res.state.lastTab) ? res.state.lastTab : 'browse',
             showHidden: Boolean(res.state.showHidden),
             doubleClickAction: res.state.doubleClickAction === 'open_tab' ? 'open_tab' : 'reveal',
             allowLanSmb: Boolean(res.state.allowLanSmb)
@@ -3200,7 +3233,7 @@
         if (!fromExternal && persist) {
           navigationIntent = { tab, source: 'user', priority: 80, expiresAt: 0 };
         }
-        if (persist && appState.prefs.lastTab !== tab) {
+        if (persist && RESTORABLE_TABS.includes(tab) && appState.prefs.lastTab !== tab) {
           appState.prefs.lastTab = tab;
           if (appState.initialized) {
             callServerTool('update_state', { lastTab: tab }).catch(() => {});
@@ -3966,7 +3999,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.5.1，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.5.2，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -4122,13 +4155,35 @@
               const eff = a.effectiveQuota;
               const q5Html = eff ? barRow('5h', eff.effective5hPct, eff.reset5hPassed, eff.reset5hAt) : '';
               const q7Html = eff ? barRow('7d', eff.effective7dPct, eff.reset7dPassed, eff.reset7dAt) : '';
-              const famBits = [];
-              if (eff?.families?.gemini) famBits.push(`Gemini 5h:${eff.families.gemini.pct5h ?? '-'}% / 7d:${eff.families.gemini.pct7d ?? '-'}%`);
-              if (eff?.families?.claude) famBits.push(`Claude 5h:${eff.families.claude.pct5h ?? '-'}% / 7d:${eff.families.claude.pct7d ?? '-'}%`);
+              const famChips = [];
+              if (eff?.families?.gemini) {
+                const g = eff.families.gemini;
+                const gBits = [];
+                if (g.pct5h !== undefined) gBits.push(`5h ${g.pct5h}%`);
+                if (g.pct7d !== undefined) gBits.push(`7d ${g.pct7d}%`);
+                if (gBits.length) famChips.push(`<span class="quota-fam-chip"><strong>Gemini</strong> ${escapeHtml(gBits.join(' · '))}</span>`);
+              }
+              if (eff?.families?.claude) {
+                const c = eff.families.claude;
+                const cBits = [];
+                if (c.pct5h !== undefined) cBits.push(`5h ${c.pct5h}%`);
+                if (c.pct7d !== undefined) cBits.push(`7d ${c.pct7d}%`);
+                if (cBits.length) famChips.push(`<span class="quota-fam-chip"><strong>Claude/GPT</strong> ${escapeHtml(cBits.join(' · '))}</span>`);
+              }
+              const obsIso = eff?.observedAt || eff?.updatedAt || '';
+              const obsTime = obsIso ? (() => {
+                const dt = new Date(obsIso);
+                return Number.isFinite(dt.getTime())
+                  ? `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`
+                  : '';
+              })() : '';
+              const syncTag = obsTime
+                ? `<span class="quota-fam-sync">${eff?.source === 'anti-claude-cache' ? '实时缓存' : '已同步'} ${escapeHtml(obsTime)}</span>`
+                : '';
               const tierBadge = eff?.tierName ? `<span class="pill">${escapeHtml(eff.tierName)}</span>` : '';
               const quotaBlock = (q5Html || q7Html)
-                ? `<div class="quota-bars">${q5Html}${q7Html}${famBits.length ? `<div class="relay-sub" style="font-size:10.5px;">${escapeHtml(famBits.join(' ｜ '))}</div>` : ''}</div>`
-                : `<p class="relay-sub">${a.isCurrentActive ? '正在同步当前在线额度（若宿主未加载 Anti-Claude 额度缓存，可点「录入额度」手动补充）' : '切过去登录一次即自动记录实时额度与秒级重置倒计时（也可点左下角手动录入）'}</p>`;
+                ? `<div class="quota-bars">${q5Html}${q7Html}${(famChips.length || syncTag) ? `<div class="quota-fam-row">${famChips.join('')}${syncTag}</div>` : ''}</div>`
+                : `<p class="relay-sub">${a.isCurrentActive ? '暂未读到本机实时额度缓存（点右上 ↻ 刷新，或点左下角「录入额度」手动补充）' : '切过去登录一次即自动记录实时额度与秒级重置倒计时（也可点左下角手动录入）'}</p>`;
               const isEditingQuota = st.editingQuotaId === a.id;
               const editorHtml = isEditingQuota
                 ? `<div class="quota-editor" data-quota-editor="${escapeHtml(a.id)}">` +
@@ -4309,7 +4364,7 @@
           appState.prefs = {
             pinnedPaths: Array.isArray(sc.state.pinnedPaths) ? sc.state.pinnedPaths : [],
             lastPath: sc.state.lastPath || '',
-            lastTab: ['browse', 'artifacts', 'pins', 'search', 'accounts'].includes(sc.state.lastTab) ? sc.state.lastTab : 'browse',
+            lastTab: RESTORABLE_TABS.includes(sc.state.lastTab) ? sc.state.lastTab : 'browse',
             showHidden: Boolean(sc.state.showHidden),
             doubleClickAction: sc.state.doubleClickAction === 'open_tab' ? 'open_tab' : 'reveal',
             allowLanSmb: Boolean(sc.state.allowLanSmb)
@@ -5350,7 +5405,7 @@
           const stateRes = await callServerTool('get_state', {});
           if (appState.hasToolResult) return;
           applyStateResult(stateRes);
-          if (!bridgeSwitchApplied && !isExternalNavLocked() && appState.prefs.lastTab && appState.prefs.lastTab !== appState.activeTab) {
+          if (!bridgeSwitchApplied && !isExternalNavLocked() && RESTORABLE_TABS.includes(appState.prefs.lastTab) && appState.prefs.lastTab !== appState.activeTab) {
             switchTab(appState.prefs.lastTab, { persist: false });
           }
           await navigateToDir(appState.prefs.lastPath || appState.homeDir || '', '');
@@ -5366,7 +5421,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.5.1' },
+            appInfo: { name: 'prism-files', version: '0.5.2' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};

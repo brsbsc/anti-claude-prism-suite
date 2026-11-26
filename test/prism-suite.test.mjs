@@ -32,7 +32,7 @@ import {
   resolveWslInteropEnv,
   cleanPowerShellError
 } from '../plugin/server/account-vault.mjs';
-import { createAccountManager, parseQuotaText, computeEffectiveQuota } from '../plugin/server/account-manager.mjs';
+import { createAccountManager, parseQuotaText, computeEffectiveQuota, readLocalAntigravityQuotaCache } from '../plugin/server/account-manager.mjs';
 import { createClientRelauncher } from '../plugin/server/relaunch-client.mjs';
 import { createHandoffMemoryStore, redactMemoryText } from '../plugin/server/handoff-memory.mjs';
 import {
@@ -1164,17 +1164,80 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.equal(extractCredentialEmail(fakeCredStore.get('gemini:antigravity')), 'main@example.com');
     assert.equal(extractCredentialEmail(fakeCredStore.get(`prism-suite:account:${liveAuto.autoCapturedActive.id}`)), 'fresh@example.com');
 
-    // 3. lastTab state persistence in prism-files MCP server
+    // 3. lastTab state persistence in prism-files MCP server (accounts is button-scoped, never hijacks normal opens)
     const srv = createPrismFilesServer({ dataDir: path.join(tmp, 'srv-data'), defaultRoot: tmp, accountStateDir: stateDir, accountManager: mgr });
+    await srv.handleToolCall('update_state', { lastTab: 'pins' });
+    const reopenedPins = await srv.handleToolCall('open_prism_files', {});
+    assert.equal(reopenedPins.structuredContent.tab, 'pins', 'open_prism_files without explicit tab should restore regular lastTab');
     await srv.handleToolCall('update_state', { lastTab: 'accounts' });
-    const reopened = await srv.handleToolCall('open_prism_files', {});
-    assert.equal(reopened.structuredContent.tab, 'accounts', 'open_prism_files without explicit tab should restore lastTab');
-    const explicitTab = await srv.handleToolCall('open_prism_files', { tab: 'browse' });
-    assert.equal(explicitTab.structuredContent.tab, 'browse', 'Explicit tab argument overrides lastTab');
+    const reopenedNotAccounts = await srv.handleToolCall('open_prism_files', {});
+    assert.equal(reopenedNotAccounts.structuredContent.tab, 'pins', 'accounts must not overwrite regular lastTab default');
+    const explicitAccounts = await srv.handleToolCall('open_prism_files', { tab: 'accounts' });
+    assert.equal(explicitAccounts.structuredContent.tab, 'accounts', 'Explicit tab=accounts still opens accounts tab');
 
-    // 4. Static contract checks for bridge ping/pong/ack, account capsule, all switch entries, keyboard flow, line-range quote, in-place Win installer, and v0.5.0 release consistency
+    // 4. Read-only Antigravity Local Storage leveldb quota cache hydration (strict email match, zero cross-account leak)
+    const fakeLevelDb = path.join(tmp, 'leveldb');
+    fs.mkdirSync(fakeLevelDb, { recursive: true });
+    const nowTs = Date.now();
+    const reset5Sec = Math.floor((nowTs + 2.5 * 3600000) / 1000);
+    const reset7Sec = Math.floor((nowTs + 96 * 3600000) / 1000);
+    const fakeMainSnap = {
+      accountKey: 'main@example.com|g1-pro-tier|Google AI Pro',
+      tierName: 'Google AI Pro',
+      ts: nowTs + 5000,
+      groups: [
+        {
+          displayName: 'Gemini Models',
+          buckets: [
+            { window: 'weekly', remainingFraction: 0.089, resetTime: { seconds: String(reset7Sec) } },
+            { window: '5h', remainingFraction: 0.445, resetTime: { seconds: String(reset5Sec) } }
+          ]
+        },
+        {
+          displayName: 'Claude and GPT models',
+          buckets: [
+            { window: 'weekly', remainingFraction: 0.968, resetTime: { seconds: String(reset7Sec) } },
+            { window: '5h', remainingFraction: 1 }
+          ]
+        }
+      ]
+    };
+    const fakeOtherSnap = {
+      accountKey: 'stranger@example.com|g1-pro-tier|Free',
+      tierName: 'Free',
+      ts: nowTs + 6000,
+      groups: [{ displayName: 'Gemini Models', buckets: [{ window: '5h', remainingFraction: 0.01 }] }]
+    };
+    fs.writeFileSync(
+      path.join(fakeLevelDb, '000039.log'),
+      Buffer.concat([
+        Buffer.from('\x00\x01_https://host\x00\x01ag_claude_ux_quota_cache_v1\x01', 'latin1'),
+        Buffer.from(JSON.stringify(fakeMainSnap), 'latin1'),
+        Buffer.from('\x00\x01ag_claude_ux_quota_cache_v1\x01', 'latin1'),
+        Buffer.from(JSON.stringify(fakeOtherSnap), 'latin1')
+      ])
+    );
+    const scanned = readLocalAntigravityQuotaCache({ localStorageDir: fakeLevelDb });
+    assert.equal(scanned.byEmail.has('main@example.com'), true);
+    assert.equal(scanned.byEmail.get('main@example.com').window5hPct, 44.5);
+    assert.equal(scanned.byEmail.get('main@example.com').window7dPct, 8.9);
+    assert.equal(scanned.byEmail.get('main@example.com').families.claude.pct7d, 96.8);
+
+    const mgrWithCache = createAccountManager({ stateDir, vault, localStorageDir: fakeLevelDb });
+    const stHydrated = mgrWithCache.getStatus({ forceRefresh: true });
+    const mainAcc = stHydrated.accounts.find((a) => a.email === 'main@example.com');
+    const freshAcc = stHydrated.accounts.find((a) => a.email === 'fresh@example.com');
+    assert.equal(mainAcc.effectiveQuota.effective5hPct, 44.5);
+    assert.equal(mainAcc.effectiveQuota.effective7dPct, 8.9);
+    assert.equal(mainAcc.effectiveQuota.tierName, 'Google AI Pro');
+    assert.equal(mainAcc.effectiveQuota.families.gemini.pct5h, 44.5);
+    assert.equal(mainAcc.effectiveQuota.families.claude.pct5h, 100);
+    assert.equal(freshAcc.effectiveQuota, null, 'Unmatched email snapshot must never bleed into another account');
+
+    // 5. Static contract checks for persistent module registry, button-scoped focus, bridge ping/pong/ack, and v0.5.2 release consistency
     const jsSrc = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite.js'), 'utf8');
     const fxSrc = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite-fx.js'), 'utf8');
+    const wfSrc = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite-workflow.js'), 'utf8');
     const cssSrc = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite.css'), 'utf8');
     const appHtml = fs.readFileSync(path.join(REPO, 'plugin', 'ui', 'app.html'), 'utf8');
     const inlineHtml = fs.readFileSync(path.join(REPO, 'plugin', 'ui', 'inline.html'), 'utf8');
@@ -1182,13 +1245,17 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.5.1');
-    assert.equal(pluginJson.version, '0.5.1');
+    assert.equal(pkgJson.version, '0.5.2');
+    assert.equal(pluginJson.version, '0.5.2');
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.5\.1'/);
+    assert.match(jsSrc, /SUITE_VERSION = '0\.5\.2'/);
+    assert.match(jsSrc, /window\.__agPrismModules/);
+    assert.match(jsSrc, /clearPendingWorkbenchNav/);
+    assert.match(fxSrc, /registerPrismModule\('fx', initFxModule\)/);
+    assert.match(wfSrc, /registerPrismModule\('workflow', initWorkflowModule\)/);
     assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
     assert.match(jsSrc, /readAntiClaudeQuotaCache/);
-    assert.match(inlineHtml, /version: '0\.5\.1'/);
+    assert.match(inlineHtml, /version: '0\.5\.2'/);
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1199,6 +1266,8 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(fxSrc, /ag-ps-nudge-btn-switch/);
     assert.match(fxSrc, /bus\.openWorkbench\('accounts'\)/);
     assert.match(cssSrc, /\.ag-ps-account-bar/);
+    assert.match(appHtml, /RESTORABLE_TABS/);
+    assert.match(appHtml, /quota-fam-chip/);
     assert.match(appHtml, /is-compact-controls/);
     assert.match(appHtml, /btn-preview-copy/);
     assert.match(appHtml, /code-ln/);
@@ -1211,7 +1280,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(appHtml, /expectedEmail/);
     assert.match(csSrc, /PruneObsoletePluginEntries/);
     assert.match(csSrc, /CheckDebugPortShortcutStatus/);
-    assert.match(csSrc, /v0\.5\.1/);
+    assert.match(csSrc, /v0\.5\.2/);
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
   } finally {

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.2 - 2026-11-26
+
+- **修复热重载后 `✦ 棱镜` 面板丢失「视觉特效与排版」「效率交互与多语言」设置**：
+  - 根因：Anti-Claude 按文件名 `localeCompare` 顺序加载扩展（`prism-suite-fx.js → prism-suite-workflow.js → prism-suite.js`）；热重载整包注入时，前两个子模块先挂到旧总线，随后 `prism-suite.js` 重建总线并执行旧清理钩子，把刚注册的分组一并注销且无重挂机制；
+  - 修复：[extensions/prism-suite-fx.js](extensions/prism-suite-fx.js)、[extensions/prism-suite-workflow.js](extensions/prism-suite-workflow.js) 与 [extensions/prism-suite.js](extensions/prism-suite.js) 升级为持久化模块注册表 `window.__agPrismModules`（带实例令牌防重复挂载），任何加载/热重载顺序下都会自动把全部 3 个模块完整挂载到最新总线。
+- **服务端直读本机只读 LevelDB 实时额度缓存，彻底解决卡片停在「正在同步」**：
+  - 在 [plugin/server/account-manager.mjs](plugin/server/account-manager.mjs) 新增零依赖、纯只读 `readLocalAntigravityQuotaCache`（按 `mtime+size` 缓存加速），在 `accounts_status` 读取时直接解析 Antigravity `Local Storage/leveldb` 中最新的 `ag_claude_ux_quota_cache_v1` 快照，严格按 `accountKey` 绑定邮箱匹配防串号，彻底绕过 MCP App 沙箱 `iframe` 隔离；
+  - 在 [plugin/ui/app.html](plugin/ui/app.html) 升级账号卡片额度直观展示：红/琥珀/绿双进度条（5h / 7d 剩余与精确重置倒计时）+ 独立 `Gemini` / `Claude/GPT` 分家族额度胶囊与同步时间标签。
+- **账号切换聚焦严格绑定对应按钮（不再劫持常规工作台打开）**：
+  - 仅点击「切号 / 账号接力」关联按钮（`✦ 棱镜 → ⚡ 切号`、低额度提醒 `⚡ 去切号`、设置页返回条 `⚡ 账号接力`）时切换并聚焦「账号接力」且不污染 `lastTab`；
+  - 普通「工作台」入口与侧边栏打开时清理残留跳转意图，并只记忆/恢复常规工作台页签（`目录浏览 / 最近产物 / 收藏夹 / 历史检索`）。
+
 ## 0.5.1 - 2026-11-26
 
 - **全自动精准实时额度同步（免手动填写 · 防串号 · 分模型家族）**：

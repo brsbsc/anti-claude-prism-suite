@@ -13,12 +13,17 @@
 (() => {
   'use strict';
 
-  function attachPrismModule(initFn) {
+  const INSTANCE_TOKEN = Symbol('agPrismWorkflow');
+  if (typeof window.__agPrismWorkflowDispose === 'function') {
+    try { window.__agPrismWorkflowDispose(); } catch {}
+  }
+  window.__agPrismWorkflowToken = INSTANCE_TOKEN;
+
+  function registerPrismModule(id, initFn) {
+    const reg = (window.__agPrismModules = window.__agPrismModules || Object.create(null));
+    reg[id] = initFn;
     if (window.__agPrismBus && window.__agPrismBus.version >= 4) {
-      initFn(window.__agPrismBus);
-    } else {
-      window.__agPrismBusQueue = window.__agPrismBusQueue || [];
-      window.__agPrismBusQueue.push(initFn);
+      try { initFn(window.__agPrismBus); } catch {}
     }
   }
 
@@ -780,6 +785,7 @@
    * Module Initialization via Frozen Bus v4
    * ========================================================================== */
   function initWorkflowModule(bus) {
+    if (window.__agPrismWorkflowToken !== INSTANCE_TOKEN) return;
     if (typeof window.__agPrismWorkflowDispose === 'function') {
       try { window.__agPrismWorkflowDispose(); } catch {}
     }
@@ -2456,5 +2462,5 @@
     }
   }
 
-  attachPrismModule(initWorkflowModule);
+  registerPrismModule('workflow', initWorkflowModule);
 })();

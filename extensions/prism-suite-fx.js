@@ -17,12 +17,11 @@
   }
   window.__agPrismFxToken = INSTANCE_TOKEN;
 
-  function attachPrismModule(initFn) {
+  function registerPrismModule(id, initFn) {
+    const reg = (window.__agPrismModules = window.__agPrismModules || Object.create(null));
+    reg[id] = initFn;
     if (window.__agPrismBus && window.__agPrismBus.version >= 4) {
-      initFn(window.__agPrismBus);
-    } else {
-      window.__agPrismBusQueue = window.__agPrismBusQueue || [];
-      window.__agPrismBusQueue.push(initFn);
+      try { initFn(window.__agPrismBus); } catch {}
     }
   }
 
@@ -147,6 +146,9 @@
 
   function initFxModule(bus) {
     if (window.__agPrismFxToken !== INSTANCE_TOKEN) return;
+    if (typeof window.__agPrismFxDispose === 'function') {
+      try { window.__agPrismFxDispose(); } catch {}
+    }
 
     let disposed = false;
     const ac = new AbortController();
@@ -2840,5 +2842,5 @@
     syncAll('init');
   }
 
-  attachPrismModule(initFxModule);
+  registerPrismModule('fx', initFxModule);
 })();

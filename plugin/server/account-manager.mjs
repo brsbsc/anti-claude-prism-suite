@@ -196,6 +196,8 @@ function classifyQuotaWindow(quota = {}, nowMs = Date.now()) {
     modelFamily: merged.modelFamily ? String(merged.modelFamily).slice(0, 48).toLowerCase() : '',
     tierName: merged.tierName ? String(merged.tierName).trim().slice(0, 24) : '',
     families: normalizeFamilyQuotaMap(merged.families),
+    source: merged.source ? String(merged.source).slice(0, 32) : '',
+    observedAt: normalizeIso(merged.observedAt, 0) || new Date(nowMs).toISOString(),
     updatedAt: new Date(nowMs).toISOString()
   };
 
@@ -262,10 +264,233 @@ function accountSupportsModel(account, activeModel) {
   return list.some((m) => model.includes(m) || m.includes(model));
 }
 
+function resolveAntigravityLocalStorageDirs({ localStorageDir = '', platform = process.platform, homeDir = os.homedir() } = {}) {
+  const dirs = [];
+  const pushUnique = (p) => {
+    if (!p) return;
+    const resolved = path.resolve(p);
+    if (!dirs.includes(resolved)) dirs.push(resolved);
+  };
+  if (localStorageDir) {
+    pushUnique(localStorageDir);
+    return dirs;
+  }
+  if (platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(homeDir, 'AppData', 'Roaming');
+    pushUnique(path.join(appData, 'Antigravity', 'Local Storage', 'leveldb'));
+    return dirs;
+  }
+  if (platform === 'darwin') {
+    pushUnique(path.join(homeDir, 'Library', 'Application Support', 'Antigravity', 'Local Storage', 'leveldb'));
+    return dirs;
+  }
+  // Linux / WSL2: check Windows host AppData first when running in WSL, then native Linux config
+  const winUsersRoot = '/mnt/c/Users';
+  if (fs.existsSync(winUsersRoot)) {
+    const preferredUsers = [];
+    if (process.env.PRISM_WIN_USER) preferredUsers.push(process.env.PRISM_WIN_USER);
+    try {
+      const curUser = os.userInfo().username;
+      if (curUser) preferredUsers.push(curUser);
+    } catch {}
+    preferredUsers.push('Administrator');
+    const skip = new Set(['Public', 'Default', 'Default User', 'All Users']);
+    for (const u of preferredUsers) {
+      if (!u || skip.has(u)) continue;
+      pushUnique(path.join(winUsersRoot, u, 'AppData', 'Roaming', 'Antigravity', 'Local Storage', 'leveldb'));
+    }
+    try {
+      for (const ent of fs.readdirSync(winUsersRoot, { withFileTypes: true })) {
+        if (!ent.isDirectory() || skip.has(ent.name) || ent.name.startsWith('.')) continue;
+        pushUnique(path.join(winUsersRoot, ent.name, 'AppData', 'Roaming', 'Antigravity', 'Local Storage', 'leveldb'));
+      }
+    } catch {}
+  }
+  pushUnique(path.join(homeDir, '.config', 'Antigravity', 'Local Storage', 'leveldb'));
+  return dirs;
+}
+
+function extractBalancedJsonObjectsAfterMarker(str, marker, maxObjChars = 16384) {
+  const results = [];
+  let pos = 0;
+  while (pos < str.length) {
+    const hit = str.indexOf(marker, pos);
+    if (hit === -1) break;
+    pos = hit + marker.length;
+    const searchLimit = Math.min(str.length, pos + 96);
+    const jStart = str.indexOf('{', pos);
+    if (jStart === -1 || jStart > searchLimit) continue;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let end = -1;
+    const endLimit = Math.min(str.length, jStart + maxObjChars);
+    for (let i = jStart; i < endLimit; i++) {
+      const c = str[i];
+      if (esc) { esc = false; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (c === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth === 0) {
+          end = i + 1;
+          break;
+        }
+      }
+    }
+    if (end > jStart) {
+      try {
+        results.push(JSON.parse(str.slice(jStart, end)));
+      } catch {}
+      pos = end;
+    }
+  }
+  return results;
+}
+
+function parseAntiClaudeQuotaSnapshotObject(obj) {
+  if (!obj || typeof obj !== 'object' || !Array.isArray(obj.groups) || obj.groups.length === 0) return null;
+  const ts = Number(obj.ts);
+  const validTs = Number.isFinite(ts) && ts > 1_000_000_000_000 ? ts : Date.now();
+  const rawKey = String(obj.accountKey || '').trim();
+  const keyFirst = rawKey.split('|')[0].trim().toLowerCase();
+  const email = keyFirst.includes('@') && keyFirst.length <= 254 ? keyFirst : '';
+  const tierName = String(obj.tierName || '').trim().slice(0, 24);
+
+  let min5h = null;
+  let min7d = null;
+  let reset5hAt = '';
+  let reset7dAt = '';
+  const families = {};
+
+  for (const g of obj.groups) {
+    if (!g || !Array.isArray(g.buckets)) continue;
+    const gName = String(g.displayName || '').toLowerCase();
+    const famKey = /gemini/i.test(gName) ? 'gemini' : (/claude|gpt/i.test(gName) ? 'claude' : 'other');
+    let g5 = null;
+    let g7 = null;
+    for (const b of g.buckets) {
+      if (!b || typeof b !== 'object') continue;
+      const frac = Number(b.remainingFraction);
+      if (!Number.isFinite(frac)) continue;
+      const pct = Math.max(0, Math.min(100, Math.round(frac * 1000) / 10));
+      const win = `${b.window || ''} ${b.displayName || ''} ${b.description || ''}`.toLowerCase();
+      const secRaw = b.resetTime && b.resetTime.seconds !== undefined ? Number(b.resetTime.seconds) : NaN;
+      const rstIso = Number.isFinite(secRaw) && secRaw > 1_000_000_000 ? new Date(secRaw * 1000).toISOString() : '';
+      if (/5\s*h|5\s*hour|5\s*小时/i.test(win)) {
+        if (g5 === null || pct < g5) g5 = pct;
+        if (min5h === null || pct < min5h) {
+          min5h = pct;
+          if (rstIso) reset5hAt = rstIso;
+        } else if (!reset5hAt && rstIso) {
+          reset5hAt = rstIso;
+        }
+      } else if (/week|7\s*d|周/i.test(win)) {
+        if (g7 === null || pct < g7) g7 = pct;
+        if (min7d === null || pct < min7d) {
+          min7d = pct;
+          if (rstIso) reset7dAt = rstIso;
+        } else if (!reset7dAt && rstIso) {
+          reset7dAt = rstIso;
+        }
+      }
+    }
+    if (g5 !== null || g7 !== null) {
+      const prev = families[famKey] || {};
+      families[famKey] = {
+        ...(prev.pct5h !== undefined ? { pct5h: prev.pct5h } : {}),
+        ...(prev.pct7d !== undefined ? { pct7d: prev.pct7d } : {}),
+        ...(g5 !== null ? { pct5h: prev.pct5h !== undefined ? Math.min(prev.pct5h, g5) : g5 } : {}),
+        ...(g7 !== null ? { pct7d: prev.pct7d !== undefined ? Math.min(prev.pct7d, g7) : g7 } : {})
+      };
+    }
+  }
+
+  if (min5h === null && min7d === null && Object.keys(families).length === 0) return null;
+  return {
+    email,
+    ts: validTs,
+    tierName,
+    window5hPct: min5h,
+    window7dPct: min7d,
+    reset5hAt,
+    reset7dAt,
+    families: Object.keys(families).length ? families : null,
+    observedAt: new Date(validTs).toISOString()
+  };
+}
+
+export function readLocalAntigravityQuotaCache(options = {}) {
+  const candidateDirs = resolveAntigravityLocalStorageDirs(options);
+  const byEmail = new Map();
+  let latest = null;
+  let matchedDir = '';
+  const MAX_SCAN_BYTES = 16 * 1024 * 1024;
+  const MARKER = 'ag_claude_ux_quota_cache_v1';
+
+  for (const dir of candidateDirs) {
+    if (!fs.existsSync(dir)) continue;
+    let files = [];
+    try {
+      files = fs.readdirSync(dir)
+        .filter((f) => /\.(log|ldb)$/i.test(f))
+        .map((f) => {
+          const full = path.join(dir, f);
+          try {
+            const st = fs.statSync(full);
+            return { name: f, full, size: st.size, mtimeMs: st.mtimeMs };
+          } catch {
+            return null;
+          }
+        })
+        .filter((x) => x && x.size > 0 && x.size <= MAX_SCAN_BYTES)
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    } catch {
+      continue;
+    }
+    if (!files.length) continue;
+    matchedDir = dir;
+
+    for (const file of files) {
+      let buf;
+      try {
+        buf = fs.readFileSync(file.full);
+      } catch {
+        continue;
+      }
+      const candidates = [];
+      if (buf.includes(Buffer.from(MARKER, 'latin1'))) {
+        candidates.push(...extractBalancedJsonObjectsAfterMarker(buf.toString('latin1'), MARKER));
+      }
+      if (!candidates.length && buf.includes(Buffer.from(MARKER, 'utf16le'))) {
+        candidates.push(...extractBalancedJsonObjectsAfterMarker(buf.toString('utf16le'), MARKER));
+      }
+      for (const rawObj of candidates) {
+        const parsed = parseAntiClaudeQuotaSnapshotObject(rawObj);
+        if (!parsed) continue;
+        if (!latest || parsed.ts > latest.ts) latest = parsed;
+        if (parsed.email) {
+          const prev = byEmail.get(parsed.email);
+          if (!prev || parsed.ts > prev.ts) {
+            byEmail.set(parsed.email, parsed);
+          }
+        }
+      }
+    }
+    if (byEmail.size > 0 || latest) break;
+  }
+
+  return { dir: matchedDir, byEmail, latest };
+}
+
 export function createAccountManager(options = {}) {
   const homeDir = path.resolve(options.homeDir || os.homedir());
   const stateDir = path.resolve(options.stateDir || path.join(homeDir, '.gemini', 'antigravity', 'prism-suite'));
   const brainDir = path.resolve(options.brainDir || path.join(homeDir, '.gemini', 'antigravity', 'brain'));
+  const localStorageDir = options.localStorageDir ? path.resolve(options.localStorageDir) : '';
+  const disableLocalQuotaScan = Boolean(options.disableLocalQuotaScan);
   const accountsFile = path.join(stateDir, 'accounts.json');
   const lockFile = path.join(stateDir, 'switch.lock');
   const snapshotFile = path.join(stateDir, 'handoff-snapshot.json');
@@ -279,6 +504,69 @@ export function createAccountManager(options = {}) {
   });
   const handoffMemory = options.handoffMemory || null;
   let lastAccountsMtimeMs = -1;
+  let localQuotaCacheSig = '';
+  let localQuotaCacheResult = null;
+
+  function readLocalQuotaCached(force = false) {
+    if (disableLocalQuotaScan) return { dir: '', byEmail: new Map(), latest: null };
+    try {
+      const dirs = resolveAntigravityLocalStorageDirs({ localStorageDir, platform: options.platform || process.platform, homeDir });
+      const activeDir = dirs.find((d) => fs.existsSync(d)) || '';
+      if (!activeDir) return { dir: '', byEmail: new Map(), latest: null };
+      const sigParts = [];
+      for (const name of fs.readdirSync(activeDir)) {
+        if (!/\.(log|ldb)$/i.test(name)) continue;
+        try {
+          const st = fs.statSync(path.join(activeDir, name));
+          sigParts.push(`${name}:${st.size}:${Math.round(st.mtimeMs)}`);
+        } catch {}
+      }
+      const sig = `${activeDir}|${sigParts.sort().join(',')}`;
+      if (!force && localQuotaCacheResult && sig === localQuotaCacheSig) {
+        return localQuotaCacheResult;
+      }
+      const res = readLocalAntigravityQuotaCache({ localStorageDir: activeDir, platform: options.platform || process.platform, homeDir });
+      localQuotaCacheSig = sig;
+      localQuotaCacheResult = res;
+      return res;
+    } catch {
+      return { dir: '', byEmail: new Map(), latest: null };
+    }
+  }
+
+  function hydrateAccountsFromLocalQuotaCache(state, { force = false } = {}) {
+    if (!state || !Array.isArray(state.accounts) || state.accounts.length === 0) return false;
+    const scanned = readLocalQuotaCached(force);
+    if (!scanned || !scanned.byEmail || scanned.byEmail.size === 0) return false;
+    let dirty = false;
+    for (let i = 0; i < state.accounts.length; i++) {
+      const acc = state.accounts[i];
+      const em = String(acc.email || '').trim().toLowerCase();
+      if (!em) continue;
+      const snap = scanned.byEmail.get(em);
+      if (!snap) continue;
+      const prev = acc.lastQuota || null;
+      const prevObservedMs = prev ? Date.parse(prev.observedAt || prev.updatedAt || '') : 0;
+      const shouldApply = !prev || !Number.isFinite(prevObservedMs) || snap.ts > prevObservedMs + 500;
+      if (!shouldApply) continue;
+      const nextQuota = classifyQuotaWindow({
+        window5hPct: snap.window5hPct,
+        window7dPct: snap.window7dPct,
+        reset5hAt: snap.reset5hAt,
+        reset7dAt: snap.reset7dAt,
+        tierName: snap.tierName || prev?.tierName || '',
+        families: snap.families || prev?.families || null,
+        observedAt: snap.observedAt,
+        source: 'anti-claude-cache'
+      }, snap.ts);
+      state.accounts[i] = { ...acc, lastQuota: nextQuota };
+      dirty = true;
+    }
+    if (dirty) {
+      try { saveState(state); } catch {}
+    }
+    return dirty;
+  }
 
   function loadState() {
     const base = defaultAccountState(stateDir);
@@ -456,6 +744,7 @@ export function createAccountManager(options = {}) {
   function getStatus({ activeModel = '', quotaHints = null, forceRefresh = false } = {}) {
     const state = loadState();
     const force = Boolean(forceRefresh);
+    hydrateAccountsFromLocalQuotaCache(state, { force });
     const vaultProbe = vault.probe({ force });
     let activeCred = { exists: false, email: '', hashPrefix: '', byteLength: 0, hasUserScope: false };
     let activeError = '';

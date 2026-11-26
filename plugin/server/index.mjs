@@ -38,7 +38,7 @@ const PLUGIN_ROOT = path.resolve(__dirname, '..');
 export const APP_URI = 'ui://prism-files/app.html';
 export const INLINE_URI = 'ui://prism-files/inline.html';
 export const APP_MIME_TYPE = 'text/html;profile=mcp-app';
-const SERVER_INFO = { name: 'prism-files', version: '0.5.1' };
+const SERVER_INFO = { name: 'prism-files', version: '0.5.2' };
 const MAX_TEXT_PREVIEW_BYTES = 256 * 1024;
 const MAX_IMAGE_PREVIEW_BYTES = 4 * 1024 * 1024;
 const MAX_SAVE_BYTES = 512 * 1024;
@@ -1534,6 +1534,7 @@ export function createPrismFilesServer({
   }
 
   const VALID_TABS = new Set(['browse', 'artifacts', 'pins', 'search', 'accounts']);
+  const RESTORABLE_TABS = new Set(['browse', 'artifacts', 'pins', 'search']);
 
   function loadState() {
     const defaults = {
@@ -1551,7 +1552,7 @@ export function createPrismFilesServer({
         return {
           pinnedPaths: Array.isArray(parsed.pinnedPaths) ? parsed.pinnedPaths.filter((p) => typeof p === 'string').slice(0, 30) : [],
           lastPath: typeof parsed.lastPath === 'string' && parsed.lastPath ? parsed.lastPath : defaults.lastPath,
-          lastTab: VALID_TABS.has(parsed.lastTab) ? parsed.lastTab : 'browse',
+          lastTab: RESTORABLE_TABS.has(parsed.lastTab) ? parsed.lastTab : 'browse',
           showHidden: Boolean(parsed.showHidden),
           doubleClickAction: parsed.doubleClickAction === 'open_tab' ? 'open_tab' : 'reveal',
           allowLanSmb: Boolean(parsed.allowLanSmb)
@@ -1566,7 +1567,7 @@ export function createPrismFilesServer({
     const next = {
       pinnedPaths: Array.isArray(patch?.pinnedPaths) ? patch.pinnedPaths.filter((p) => typeof p === 'string').slice(0, 30) : cur.pinnedPaths,
       lastPath: typeof patch?.lastPath === 'string' && patch.lastPath ? patch.lastPath : cur.lastPath,
-      lastTab: VALID_TABS.has(patch?.lastTab) ? patch.lastTab : cur.lastTab,
+      lastTab: RESTORABLE_TABS.has(patch?.lastTab) ? patch.lastTab : cur.lastTab,
       showHidden: typeof patch?.showHidden === 'boolean' ? patch.showHidden : cur.showHidden,
       doubleClickAction: patch?.doubleClickAction === 'open_tab' || patch?.doubleClickAction === 'reveal' ? patch.doubleClickAction : cur.doubleClickAction,
       allowLanSmb: typeof patch?.allowLanSmb === 'boolean' ? patch.allowLanSmb : cur.allowLanSmb
@@ -2764,7 +2765,7 @@ export function createPrismFilesServer({
       }
 
       const listing = listDirectoryInternal(initDir, state.showHidden, '', { uncPrevalidated: initDirPrevalidated });
-      const tab = VALID_TABS.has(args.tab) ? args.tab : (VALID_TABS.has(state.lastTab) ? state.lastTab : 'browse');
+      const tab = VALID_TABS.has(args.tab) ? args.tab : (RESTORABLE_TABS.has(state.lastTab) ? state.lastTab : 'browse');
       const warning = warnings.join('；');
       const textMsg = warning
         ? `已打开 Prism 工作台（安全提示：${warning}；已回退至安全目录：${listing.dir || initDir}）`

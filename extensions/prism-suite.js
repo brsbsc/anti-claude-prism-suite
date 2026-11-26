@@ -12,7 +12,7 @@
     try { window.__agPrismSuiteDispose(); } catch {}
   }
 
-  const SUITE_VERSION = '0.5.1';
+  const SUITE_VERSION = '0.5.2';
   const REPO_RELEASES_API = 'https://api.github.com/repos/wushuai0802/anti-claude-prism-suite/releases/latest';
   const REPO_RELEASES_URL = 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest';
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';
@@ -2442,6 +2442,13 @@
     }
   }
 
+  function clearPendingWorkbenchNav() {
+    clearBridgeRetryTimers();
+    pendingIntentId = '';
+    pendingWorkbenchTab = '';
+    pendingWorkbenchTabAt = 0;
+  }
+
   function dispatchSwitchTabWithRetry(targetTab) {
     if (!targetTab || !ALLOWED_BRIDGE_TABS.has(targetTab)) return;
     clearBridgeRetryTimers();
@@ -2585,7 +2592,7 @@
       bridgeLastSeenAt = Date.now();
       const liveNow = sanitizeQuotaPayload(getQuotaState()) || (cachedLiveQuota && (cachedLiveQuota.pct5h !== null || cachedLiveQuota.pct7d !== null) ? cachedLiveQuota : null);
       const wantTab =
-        pendingWorkbenchTab && Date.now() - pendingWorkbenchTabAt < 15000 && ALLOWED_BRIDGE_TABS.has(pendingWorkbenchTab)
+        pendingWorkbenchTab && Date.now() - pendingWorkbenchTabAt < 8000 && ALLOWED_BRIDGE_TABS.has(pendingWorkbenchTab)
           ? pendingWorkbenchTab
           : '';
       postBridgeMessage(src, {
@@ -3297,6 +3304,9 @@
     const wantTab = targetTab && ALLOWED_BRIDGE_TABS.has(targetTab) ? targetTab : '';
     if (wantTab) {
       dispatchSwitchTabWithRetry(wantTab);
+    } else {
+      // Opening the workbench from general buttons must not inherit a stale account-switch intent
+      clearPendingWorkbenchNav();
     }
     // 1. Prioritize already-open right-side aux pane tab (skipping left global sidebar)
     const rightTab = findWorkbenchEntry(document, { skipSidebar: true });
@@ -3606,10 +3616,20 @@
     onCleanup
   };
   window.__agPrismBus = prismBus;
+  const attachedInitFns = new Set();
+  if (window.__agPrismModules && typeof window.__agPrismModules === 'object') {
+    for (const initFn of Object.values(window.__agPrismModules)) {
+      if (typeof initFn === 'function' && !attachedInitFns.has(initFn)) {
+        attachedInitFns.add(initFn);
+        try { initFn(prismBus); } catch {}
+      }
+    }
+  }
   if (Array.isArray(window.__agPrismBusQueue)) {
     const queued = window.__agPrismBusQueue.splice(0, window.__agPrismBusQueue.length);
     for (const initFn of queued) {
-      if (typeof initFn === 'function') {
+      if (typeof initFn === 'function' && !attachedInitFns.has(initFn)) {
+        attachedInitFns.add(initFn);
         try { initFn(prismBus); } catch {}
       }
     }
