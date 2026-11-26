@@ -602,7 +602,7 @@ const PRISM_UI_BOOL_KEYS = new Set([
   'borderBeam', 'quotaRing', 'thinkingOrb', 'bubbleTint', 'compactLayout',
   'unreadBadge', 'keepOverviewOpen', 'alwaysOutlineRail', 'switchReturnHelper',
   'switchAutoReturn', 'autoDismissOnboarding', 'quotaHandoffAlert',
-  'imageContextMenu', 'cleanCopy', 'sshPaste', 'inlineEditHelper', 'sessionFork', 'composerFileDrop'
+  'imageContextMenu', 'cleanCopy', 'sshPaste', 'inlineEditHelper', 'sessionFork', 'composerFileDrop', 'wslExplorerRevealFix'
 ]);
 
 export function sanitizePrismUiPrefs(raw) {

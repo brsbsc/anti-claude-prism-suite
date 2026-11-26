@@ -1,7 +1,7 @@
 # Anti-Claude Prism Suite
 
 <p align="left">
-  <img src="https://img.shields.io/badge/version-v0.6.0-2563eb?style=flat-square" alt="Version v0.6.0" />
+  <img src="https://img.shields.io/badge/version-v0.6.1-2563eb?style=flat-square" alt="Version v0.6.1" />
   <img src="https://img.shields.io/badge/edition-All--in--One%20Standalone-059669?style=flat-square" alt="Standalone Edition" />
   <img src="https://img.shields.io/badge/kernel-Anti--Claude%20v3.1.9%20Bundled-7c3aed?style=flat-square" alt="Bundled Anti-Claude v3.1.9" />
   <img src="https://img.shields.io/badge/dependencies-0%20npm%20packages-d97706?style=flat-square" alt="Zero Runtime Dependencies" />
@@ -111,7 +111,7 @@
 
 ```mermaid
 flowchart TB
-  subgraph PKG["Anti-Claude Prism Suite v0.6.0（单包独立完整版 · 零外部 npm 依赖）"]
+  subgraph PKG["Anti-Claude Prism Suite v0.6.1（单包独立完整版 · 零外部 npm 依赖）"]
     K["第 1 层 · 内置增强内核<br/>vendor/anti-claude/ (v3.1.9 + RPC 扩展桥)"]
     E["第 2 层 · 棱镜前端扩展套件<br/>extensions/prism-suite*.{css,js} (6 文件热加载)"]
     P["第 3 层 · Prism 五合一工作台<br/>plugin/ (原生 Antigravity MCP App)"]
@@ -170,6 +170,7 @@ flowchart TB
 8. **高效微交互与 2.35 多语言补全（`prism-suite-workflow`）**
    - **简 / 繁 / 英增量界面词条补全**：完整覆盖 Antigravity `v2.34–2.35.2` 新增的模型范围提示、`/btw`、Skills、Customizations、Agent Marketplace、Plugins Manager、MCP Servers 与 Swarm 面板；
    - **输入框本地文件拖拽/粘贴转 `@路径` 引用**（若原生或内核已处理则自动避让绝不双插）；
+   - **WSL 模式原生「在文件资源管理器中显示」修复**：自动接管并修正 Antigravity 在 WSL 模式下将 `/mnt/<盘符>/...` 误拼为不存在的 `\\wsl.localhost\<distro>\mnt\<盘符>\...` 的原生缺陷，直接唤起 Windows 资源管理器高亮选中 `C:/D:/E:/F:` 盘目标文件；
    - **对话图片右键快捷菜单**（引用到输入框 / 复制 PNG / 下载保存）、**回复净拷（自动剔除折叠思考摘要）**、**SSH 粘贴脱敏提取 `user@host:port`**、**原位编辑补位** 与 **任意轮次分支新会话（Session Fork）**。
 
 ### 三、Prism 五合一工作台（原生 MCP App 插件）

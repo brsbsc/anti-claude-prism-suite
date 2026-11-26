@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1 - 2026-11-26
+
+- **无损接管修复 WSL 模式下原生「在文件资源管理器中显示」无法打开本地盘符（`C:/D:/E:/F:`）的问题**：
+  - **根因**：Antigravity 客户端在 WSL 连接模式下处理 `Show in File Explorer`（`shell:reveal-in-file-picker`）时，`distroToWindowsPath` 将 `/mnt/e/...` 硬拼为 `\\wsl.localhost\<distro>\mnt\e\...`，而 WSL 9P 服务不重复导出 DrvFS 挂载盘符，导致 `shell.showItemInFolder` 静默失效；
+  - **内核侧**（[vendor/anti-claude/core/daemon.mjs](vendor/anti-claude/core/daemon.mjs)）：新增 `resolveHostRevealTarget` 与 `revealInOsFileManager` RPC 通道，支持将 `file:///mnt/<盘符>/...`、`/mnt/<盘符>/...` 及 `\\wsl.localhost\<distro>\mnt\<盘符>\...` 精确还原为原生 Windows 盘符路径（同时兼容纯 Linux `/home/...` 映射至 `\\wsl.localhost\<distro>\...`），严格拦截公网/局域网外部 UNC（防 NTLM 泄露）、NTFS 备用数据流（`:`）与路径穿越，并通过 `windowsVerbatimArguments: true` 执行 `explorer.exe /select,"..."`（完美兼容含空格与逗号路径）；
+  - **前端侧**（[extensions/prism-suite-workflow.js](extensions/prism-suite-workflow.js)）：新增零观察器开销的菜单点击捕获器（可在 `✦ 棱镜` 面板开关 `WSL 资源管理器定位修复`），通过 React Fiber 与活跃预览面板定位目标文件 URI，自动接管 WSL 路径下的「在文件资源管理器中显示」并平滑收起原生下拉菜单。
+- **插件清单清理**：将 [plugin/plugin.json](plugin/plugin.json) 的 `suggested_prompts` 精简为 3 条，消除 Antigravity `language_server` 周期性截断告警日志。
+
 ## 0.6.0 - 2026-11-26
 
 - **一体化内嵌继承 `Anti-Claude v3.1.9` 增强内核（独立完整版，告别二次安装）**：

@@ -1,6 +1,6 @@
 {
   "name": "anti-claude-prism-suite",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Clean-room pluggable extension suite & native MCP App file workbench for Anti-Claude (Google Antigravity): 8 themes, composer border beam & quota ring, ThinkingOrb 3D particle sphere, pixel mascots, outline & session fork, cross-session transcript search, opt-in primary/backup account relay, zero-dep slot handoff memory, selective Upstream Radar, and Windows 1-click .exe installer.",
   "type": "module",
   "license": "MIT",

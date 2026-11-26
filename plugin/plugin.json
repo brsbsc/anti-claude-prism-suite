@@ -1,12 +1,11 @@
 {
   "name": "prism-files",
-  "version": "0.6.0",
-  "description": "Prism 工作台（Anti-Claude Prism Suite v0.6.0 独立完整版）：内置 Anti-Claude v3.1.9 增强内核、目录预览与原位编辑、拖拽引用、最近产物、历史脱敏检索、主备账号安全接力（全模型池短板防误推与切后自动重启）、零依赖槽位交接记忆、一键自更新与精准中文上游更新雷达。",
+  "version": "0.6.1",
+  "description": "Prism 工作台（Anti-Claude Prism Suite v0.6.1 独立完整版）：内置 Anti-Claude v3.1.9 增强内核、目录预览与原位编辑、拖拽引用、WSL 本地盘资源管理器定位修复、历史脱敏检索、主备账号安全接力与一键自更新。",
   "icon": "assets/logo.svg",
   "suggested_prompts": [
     "打开 Prism 工作台浏览当前目录和最近产物",
     "打开 Prism 工作台的账号接力页",
-    "用内联文件卡片展示本目录的关键文件",
-    "列出当前项目的最新槽位交接记忆"
+    "用内联文件卡片展示本目录的关键文件"
   ]
 }

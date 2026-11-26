@@ -55,6 +55,7 @@ import {
   resolveLocalAntigravityTarget
 } from '../plugin/server/relaunch-client.mjs';
 import { createHandoffMemoryStore, redactMemoryText } from '../plugin/server/handoff-memory.mjs';
+import { resolveHostRevealTarget } from '../vendor/anti-claude/core/daemon.mjs';
 import {
   UPSTREAM_SCHEMA_VERSION,
   evaluateRepoUpdate,
@@ -1463,10 +1464,11 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.6.0');
-    assert.equal(pluginJson.version, '0.6.0');
+    assert.equal(pkgJson.version, '0.6.1');
+    assert.equal(pluginJson.version, '0.6.1');
+    assert.ok(Array.isArray(pluginJson.suggested_prompts) && pluginJson.suggested_prompts.length <= 3);
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.6\.0'/);
+    assert.match(jsSrc, /SUITE_VERSION = '0\.6\.1'/);
     assert.match(jsSrc, /COOKIE_PREFS_KEY = 'ag_prism_prefs_v1'/);
     assert.match(jsSrc, /getActiveInputBox/);
     assert.match(jsSrc, /getInputBoxEl: getActiveInputBox/);
@@ -1494,7 +1496,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(wfSrc, /composerFileDrop/);
     assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
     assert.match(jsSrc, /readAntiClaudeQuotaCache/);
-    assert.match(inlineHtml, /version: '0\.6\.0'/);
+    assert.match(inlineHtml, /version: '0\.6\.1'/);
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1526,7 +1528,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(csSrc, /EnsureDebugPortOnUserShortcuts/);
     assert.match(csSrc, /InstallKernel/);
     assert.match(csSrc, /prism-suite-00-prefs\.js/);
-    assert.match(csSrc, /v0\.6\.0/);
+    assert.match(csSrc, /v0\.6\.1/);
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
   } finally {
@@ -1836,4 +1838,133 @@ test('v0.6.0 bundled Anti-Claude v3.1.9 kernel, per-pool quota recommendation ve
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test('v0.6.1 WSL Show in File Explorer host path resolution, security guards, and workflow menu interception', () => {
+  // 1. WSL DrvFS mounts (/mnt/<drive> and file:///mnt/<drive> and Antigravity's broken \\wsl.localhost\Ubuntu\mnt\<drive>)
+  const rPromo = resolveHostRevealTarget(
+    'file:///mnt/e/AIArchive/deliverables/anti-claude-prism-suite-v0.6.0-promo/outputs/anti-claude-prism-suite-v0.6.0-promo.mp4',
+    { platform: 'win32', wslDistro: 'Ubuntu' }
+  );
+  assert.deepEqual(rPromo, {
+    ok: true,
+    path: 'E:\\AIArchive\\deliverables\\anti-claude-prism-suite-v0.6.0-promo\\outputs\\anti-claude-prism-suite-v0.6.0-promo.mp4',
+    kind: 'wsl-drvfs'
+  });
+
+  const rSpacesCommas = resolveHostRevealTarget(
+    'file:///mnt/d/AIWorkspace/ops/WS%20NAS/my%2C%20report.md',
+    { platform: 'win32', wslDistro: 'Ubuntu' }
+  );
+  assert.deepEqual(rSpacesCommas, {
+    ok: true,
+    path: 'D:\\AIWorkspace\\ops\\WS NAS\\my, report.md',
+    kind: 'wsl-drvfs'
+  });
+
+  const rDriveRoot = resolveHostRevealTarget('/mnt/e', { platform: 'win32' });
+  assert.deepEqual(rDriveRoot, { ok: true, path: 'E:\\', kind: 'wsl-drvfs' });
+  assert.deepEqual(
+    resolveHostRevealTarget('file:///E:/', { platform: 'win32' }),
+    { ok: true, path: 'E:\\', kind: 'win-drive' }
+  );
+  assert.equal(
+    resolveHostRevealTarget('E:', { platform: 'win32' }).error,
+    'relative_path_blocked'
+  );
+
+  const rBrokenUnc = resolveHostRevealTarget(
+    '\\\\wsl.localhost\\Ubuntu\\mnt\\e\\AIArchive\\test.mp4',
+    { platform: 'win32' }
+  );
+  assert.deepEqual(rBrokenUnc, { ok: true, path: 'E:\\AIArchive\\test.mp4', kind: 'wsl-drvfs' });
+
+  // 2. Pure WSL Linux POSIX path maps to \\wsl.localhost\<distro>\...
+  const rLinuxHome = resolveHostRevealTarget('/home/demo/project/README.md', {
+    platform: 'win32',
+    wslDistro: 'Ubuntu-24.04'
+  });
+  assert.deepEqual(rLinuxHome, {
+    ok: true,
+    path: '\\\\wsl.localhost\\Ubuntu-24.04\\home\\demo\\project\\README.md',
+    kind: 'wsl-posix'
+  });
+
+  // 3. Security blocks: remote SMB/UNC (NTLM leak), encoded NUL/quotes, traversal, NTFS ADS
+  assert.equal(
+    resolveHostRevealTarget('file://198.51.100.7/share/secret.txt', { platform: 'win32' }).ok,
+    false
+  );
+  assert.equal(
+    resolveHostRevealTarget('\\\\198.51.100.7\\share\\secret.txt', { platform: 'win32' }).error,
+    'remote_unc_blocked'
+  );
+  assert.equal(
+    resolveHostRevealTarget('file:///mnt/e/bad%00name.txt', { platform: 'win32' }).error,
+    'invalid_file_url'
+  );
+  assert.equal(
+    resolveHostRevealTarget('file:///mnt/e/bad%22quote.txt', { platform: 'win32' }).error,
+    'invalid_file_url'
+  );
+  assert.equal(
+    resolveHostRevealTarget('/mnt/e/bad"quote.txt', { platform: 'win32' }).error,
+    'invalid_chars'
+  );
+  assert.equal(
+    resolveHostRevealTarget('/mnt/e/../../etc/passwd', { platform: 'win32' }).error,
+    'traversal_blocked'
+  );
+  assert.equal(
+    resolveHostRevealTarget('/mnt/e/file.txt:Zone.Identifier', { platform: 'win32' }).error,
+    'ads_blocked'
+  );
+  assert.equal(
+    resolveHostRevealTarget('/mnt/e/foo\\..\\bar.txt', { platform: 'win32' }).error,
+    'backslash_in_posix_blocked'
+  );
+  assert.equal(
+    resolveHostRevealTarget('file:///mnt/e/foo\\bar.txt', { platform: 'win32' }).error,
+    'backslash_in_file_url_blocked'
+  );
+  assert.equal(
+    resolveHostRevealTarget('file:///mnt/e/foo/../bar.txt', { platform: 'win32' }).error,
+    'traversal_blocked'
+  );
+  assert.equal(
+    resolveHostRevealTarget('file:///mnt/e/foo%5cbar.txt', { platform: 'win32' }).error,
+    'invalid_file_url'
+  );
+  assert.equal(
+    resolveHostRevealTarget('\\\\wsl.localhost\\bad$distro\\mnt\\e\\a.txt', { platform: 'win32' }).error,
+    'invalid_wsl_distro'
+  );
+  assert.equal(
+    resolveHostRevealTarget('/home/demo/a.txt', { platform: 'win32', wslDistro: 'bad/distro' }).error,
+    'invalid_wsl_distro'
+  );
+  assert.equal(
+    resolveHostRevealTarget('C:\\foo\\..\\bar.txt', { platform: 'win32' }).error,
+    'traversal_blocked'
+  );
+  assert.equal(
+    resolveHostRevealTarget('C:relative.txt', { platform: 'win32' }).error,
+    'relative_path_blocked'
+  );
+  assert.equal(
+    resolveHostRevealTarget('/mnt/e/CON.txt', { platform: 'win32' }).error,
+    'traversal_blocked'
+  );
+  // Cross-platform Linux branch works deterministically even when test runner is Windows
+  assert.deepEqual(
+    resolveHostRevealTarget('/home/demo/dir/', { platform: 'linux' }),
+    { ok: true, path: '/home/demo/dir', kind: 'posix' }
+  );
+
+  // 4. Cross-port UI pref validator preserves wslExplorerRevealFix & workflow source mounts capture listener
+  const sanitized = sanitizePrismUiPrefs({ wslExplorerRevealFix: false, composerFileDrop: true });
+  assert.equal(sanitized.wslExplorerRevealFix, false);
+  const wfSrc = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite-workflow.js'), 'utf8');
+  assert.match(wfSrc, /revealInOsFileManager/);
+  assert.match(wfSrc, /onRevealMenuClickCapture/);
 });

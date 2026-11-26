@@ -2825,22 +2825,314 @@ function pickLocalFolderNative() {
   });
 }
 
-function revealLocalPath(rawPath, { openFolderContents = false } = {}) {
+const WIN_RESERVED_BASENAME_RE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+
+function inferSingleRunningWslDistroFromCache() {
+  const distros = new Set();
+  const collect = (list) => {
+    for (const dir of list || []) {
+      const m = String(dir || '').match(/^\\\\(?:wsl\.localhost|wsl\$)\\([^\\]+)\\/i);
+      if (m && SAFE_WSL_DISTRO_RE.test(m[1])) distros.add(m[1]);
+    }
+  };
+  collect(wslGeminiCache.dirs);
+  if (distros.size === 0) collect(discoverWslGeminiDirs());
+  return distros.size === 1 ? Array.from(distros)[0] : '';
+}
+
+function hasUnsafeWinSegments(segs) {
+  for (const seg of segs) {
+    if (!seg || seg === '.' || seg === '..') return true;
+    const trimmed = seg.replace(/[. ]+$/, '');
+    if (!trimmed || WIN_RESERVED_BASENAME_RE.test(trimmed)) return true;
+  }
+  return false;
+}
+
+export function resolveHostRevealTarget(
+  rawPath,
+  { wslDistro = '', fallbackWslDistro = '', platform = process.platform } = {}
+) {
   if (!rawPath || typeof rawPath !== 'string') return { ok: false, error: 'missing_path' };
-  const abs = path.resolve(rawPath);
-  const st = fs.statSync(abs, { throwIfNoEntry: false });
-  if (!st) return { ok: false, error: 'not_found' };
-  const openInside = openFolderContents && st.isDirectory();
+  let s = rawPath.trim();
+  if (!s || s.length > 4096) return { ok: false, error: 'invalid_path' };
+  if (/[\x00-\x1f\x7f"]/.test(s)) return { ok: false, error: 'invalid_chars' };
+
+  const fromFileUrl = /^file:/i.test(s);
+  if (fromFileUrl) {
+    if (s.includes('\\')) return { ok: false, error: 'backslash_in_file_url_blocked' };
+    if (/%(?:2f|5c|00|22)/i.test(s)) return { ok: false, error: 'invalid_file_url' };
+    const fm = s.match(/^file:\/\/([^/?#]*)(\/[^?#]*)$/i);
+    if (!fm) return { ok: false, error: 'invalid_file_url' };
+    const rawHost = fm[1];
+    const host = rawHost.toLowerCase();
+    const rawUrlPath = fm[2];
+    const rawUrlSegs = rawUrlPath.split('/');
+    const decodedSegs = [];
+    for (let i = 1; i < rawUrlSegs.length; i++) {
+      const encSeg = rawUrlSegs[i];
+      if (!encSeg) continue;
+      let dec = '';
+      try {
+        dec = decodeURIComponent(encSeg);
+      } catch {
+        return { ok: false, error: 'invalid_file_url_encoding' };
+      }
+      if (dec === '.' || dec === '..') return { ok: false, error: 'traversal_blocked' };
+      if (/[\x00-\x1f\x7f"\\/]/.test(dec)) return { ok: false, error: 'invalid_chars' };
+      decodedSegs.push(dec);
+    }
+    const reconstructedPosix = decodedSegs.length ? `/${decodedSegs.join('/')}` : '/';
+    if (host === 'wsl.localhost' || host === 'wsl$') {
+      s = `\\\\${rawHost}${reconstructedPosix.replace(/\//g, '\\')}`;
+    } else if (host && host !== 'localhost') {
+      return { ok: false, error: 'remote_file_url_blocked' };
+    } else if (platform === 'win32' && /^\/[a-zA-Z]:(?:\/|$)/.test(reconstructedPosix)) {
+      const sliced = reconstructedPosix.slice(1);
+      s = sliced.length === 2 ? `${sliced}\\` : sliced;
+    } else {
+      s = reconstructedPosix;
+    }
+  }
+
+  if (/^(?:\\\\|\/\/)[?.](?:[\\/]|$)/.test(s)) {
+    return { ok: false, error: 'device_prefix_blocked' };
+  }
+
+  if (platform === 'win32') {
+    // 1a. POSIX WSL DrvFS mount (/mnt/e/...) — forbid literal backslashes in POSIX input
+    if (s.startsWith('/mnt/') || s === '/mnt') {
+      if (s.includes('\\')) return { ok: false, error: 'backslash_in_posix_blocked' };
+      const mntPosix = s.match(/^\/mnt\/([a-zA-Z])(?:\/(.*))?$/);
+      if (!mntPosix) return { ok: false, error: 'invalid_mnt_path' };
+      const drive = mntPosix[1].toUpperCase();
+      const rawRest = String(mntPosix[2] || '');
+      if (rawRest.includes(':')) return { ok: false, error: 'ads_blocked' };
+      const segs = rawRest.split('/').filter(Boolean);
+      if (hasUnsafeWinSegments(segs)) return { ok: false, error: 'traversal_blocked' };
+      const resolved = segs.length ? `${drive}:\\${segs.join('\\')}` : `${drive}:\\`;
+      return { ok: true, path: resolved, kind: 'wsl-drvfs' };
+    }
+
+    // 1b. Antigravity's broken UNC DrvFS path (\\wsl.localhost\<distro>\mnt\e\...) — validate distro first
+    const mntUnc = s.match(/^(?:\\\\|\/\/)(?:wsl\.localhost|wsl\$)[\\/]([^\\/]+)[\\/]mnt[\\/]([a-zA-Z])(?:[\\/](.*))?$/i);
+    if (mntUnc) {
+      const uncDistro = mntUnc[1];
+      if (!SAFE_WSL_DISTRO_RE.test(uncDistro)) return { ok: false, error: 'invalid_wsl_distro' };
+      const drive = mntUnc[2].toUpperCase();
+      const rawRest = String(mntUnc[3] || '');
+      if (rawRest.includes(':')) return { ok: false, error: 'ads_blocked' };
+      const segs = rawRest.split(/[\\/]+/).filter(Boolean);
+      if (hasUnsafeWinSegments(segs)) return { ok: false, error: 'traversal_blocked' };
+      const resolved = segs.length ? `${drive}:\\${segs.join('\\')}` : `${drive}:\\`;
+      return { ok: true, path: resolved, kind: 'wsl-drvfs' };
+    }
+
+    // 2. Native Windows drive path (strictly rooted C:\... or C:/..., rejecting C:relative and ..)
+    const winDrive = s.match(/^([a-zA-Z]):(?:[\\/](.*))?$/);
+    if (winDrive && (s.length === 2 || s[2] === '\\' || s[2] === '/')) {
+      if (s.length === 2) return { ok: false, error: 'relative_path_blocked' };
+      const drive = winDrive[1].toUpperCase();
+      const rawRest = String(winDrive[2] || '');
+      if (rawRest.includes(':')) return { ok: false, error: 'ads_blocked' };
+      const segs = rawRest.split(/[\\/]+/).filter(Boolean);
+      if (hasUnsafeWinSegments(segs)) return { ok: false, error: 'traversal_blocked' };
+      const resolved = segs.length ? `${drive}:\\${segs.join('\\')}` : `${drive}:\\`;
+      return { ok: true, path: resolved, kind: 'win-drive' };
+    }
+
+    // 3. UNC paths: strictly allow local WSL UNC (\\wsl.localhost\<distro>\... or \\wsl$\<distro>\...), block remote SMB
+    if (s.startsWith('\\\\') || s.startsWith('//')) {
+      const mUnc = s.match(/^(?:\\\\|\/\/)(wsl\.localhost|wsl\$)[\\/]([^\\/]+)(?:[\\/](.*))?$/i);
+      if (!mUnc) return { ok: false, error: 'remote_unc_blocked' };
+      const host = mUnc[1];
+      const distro = mUnc[2];
+      const rest = String(mUnc[3] || '');
+      if (!SAFE_WSL_DISTRO_RE.test(distro)) return { ok: false, error: 'invalid_wsl_distro' };
+      if (rest.includes(':')) return { ok: false, error: 'ads_blocked' };
+      const segs = rest.split(/[\\/]+/).filter(Boolean);
+      if (segs.some((seg) => seg === '.' || seg === '..')) return { ok: false, error: 'traversal_blocked' };
+      const resolved = segs.length ? `\\\\${host}\\${distro}\\${segs.join('\\')}` : `\\\\${host}\\${distro}\\`;
+      return { ok: true, path: resolved, kind: 'wsl-unc' };
+    }
+
+    // 4. Pure WSL POSIX path (/home/user/..., /tmp/...) -> map to \\wsl.localhost\<distro>\...
+    if (s.startsWith('/')) {
+      if (s.includes('\\')) return { ok: false, error: 'backslash_in_posix_blocked' };
+      if (s.includes(':')) return { ok: false, error: 'ads_blocked' };
+      const rawSegs = s.split('/').filter(Boolean);
+      if (rawSegs.some((seg) => seg === '.' || seg === '..')) return { ok: false, error: 'traversal_blocked' };
+      const cleanExplicit = String(wslDistro || '').trim();
+      if (cleanExplicit && !SAFE_WSL_DISTRO_RE.test(cleanExplicit)) {
+        return { ok: false, error: 'invalid_wsl_distro' };
+      }
+      const cleanFallback = String(fallbackWslDistro || '').trim();
+      if (cleanFallback && !SAFE_WSL_DISTRO_RE.test(cleanFallback)) {
+        return { ok: false, error: 'invalid_wsl_distro' };
+      }
+      const distro = cleanExplicit || cleanFallback || inferSingleRunningWslDistroFromCache();
+      if (!distro) return { ok: false, error: 'wsl_distro_unknown' };
+      const resolved = rawSegs.length
+        ? `\\\\wsl.localhost\\${distro}\\${rawSegs.join('\\')}`
+        : `\\\\wsl.localhost\\${distro}\\`;
+      return { ok: true, path: resolved, kind: 'wsl-posix' };
+    }
+
+    return { ok: false, error: 'relative_path_blocked' };
+  }
+
+  if (s.startsWith('\\\\') || s.startsWith('//')) {
+    return { ok: false, error: 'remote_unc_blocked' };
+  }
+  if (s.includes('\\')) {
+    return { ok: false, error: 'backslash_in_posix_blocked' };
+  }
+  if (!path.posix.isAbsolute(s)) {
+    return { ok: false, error: 'relative_path_blocked' };
+  }
+  const posixSegs = s.split('/').filter(Boolean);
+  if (posixSegs.some((seg) => seg === '.' || seg === '..')) {
+    return { ok: false, error: 'traversal_blocked' };
+  }
+  return { ok: true, path: posixSegs.length ? `/${posixSegs.join('/')}` : '/', kind: 'posix' };
+}
+
+function resolveTrustedWindowsExplorerBin() {
+  const sysRoot = String(process.env.SystemRoot || process.env.windir || 'C:\\Windows').trim() || 'C:\\Windows';
+  const candidate = path.win32.join(sysRoot, 'explorer.exe');
+  try {
+    if (fs.existsSync(candidate)) return candidate;
+  } catch {}
+  return 'C:\\Windows\\explorer.exe';
+}
+
+const WIN_INSPECT_REVEAL_PS = [
+  '$ErrorActionPreference = "Stop"',
+  '$t = $env:AG_REVEAL_TARGET',
+  'if ([string]::IsNullOrEmpty($t) -or $t.Length -lt 3) { Write-Output "ERR:invalid_drive_path"; exit 0 }',
+  '$letter = $t.Substring(0, 1)',
+  'try { $dt = [int]([System.IO.DriveInfo]::new($letter)).DriveType } catch { Write-Output "ERR:drive_type_check_failed"; exit 0 }',
+  'if ($dt -eq 1) { Write-Output "ERR:not_found"; exit 0 }',
+  'if ($dt -ne 2 -and $dt -ne 3 -and $dt -ne 6) { Write-Output "ERR:remote_drive_blocked"; exit 0 }',
+  '$root = $letter.ToUpperInvariant() + ":\\"',
+  'try { $ra = [System.IO.File]::GetAttributes($root) } catch { Write-Output "ERR:not_found"; exit 0 }',
+  'if (($ra -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { Write-Output "ERR:reparse_point_blocked"; exit 0 }',
+  '$rest = $t.Substring(3)',
+  '$cur = $root',
+  '$parts = $rest -split "\\\\" | Where-Object { $_ -ne "" }',
+  'foreach ($p in $parts) {',
+  '  $cur = [System.IO.Path]::Combine($cur, $p)',
+  '  try { $a = [System.IO.File]::GetAttributes($cur) } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { Write-Output "ERR:not_found"; exit 0 } catch { Write-Output "ERR:stat_failed"; exit 0 }',
+  '  if (($a -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { Write-Output "ERR:reparse_point_blocked"; exit 0 }',
+  '}',
+  '$finalAttr = [System.IO.File]::GetAttributes($cur)',
+  'if (($finalAttr -band [System.IO.FileAttributes]::Directory) -ne 0) { Write-Output "OK:dir" } else { Write-Output "OK:file" }'
+].join('; ');
+
+async function inspectWindowsLocalDrivePath(absPath) {
+  const sysRoot = String(process.env.SystemRoot || process.env.windir || 'C:\\Windows').trim() || 'C:\\Windows';
+  const psBin = path.win32.join(sysRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  return new Promise((resolve) => {
+    execFile(
+      psBin,
+      ['-NoProfile', '-NonInteractive', '-Command', WIN_INSPECT_REVEAL_PS],
+      {
+        timeout: 4000,
+        windowsHide: true,
+        env: { ...process.env, AG_REVEAL_TARGET: absPath }
+      },
+      (err, stdout) => {
+        if (err) return resolve({ ok: false, error: 'stat_failed:ps_exec_failed' });
+        const line = String(stdout || '').trim().split(/\r?\n/).pop() || '';
+        if (line === 'OK:dir') return resolve({ ok: true, isDir: true });
+        if (line === 'OK:file') return resolve({ ok: true, isDir: false });
+        if (line.startsWith('ERR:')) return resolve({ ok: false, error: line.slice(4) || 'stat_failed' });
+        return resolve({ ok: false, error: 'stat_failed:unexpected_output' });
+      }
+    );
+  });
+}
+
+async function revealLocalPath(rawPath, { openFolderContents = false, wslDistro = '' } = {}) {
+  const resolved = resolveHostRevealTarget(rawPath, { wslDistro });
+  if (!resolved.ok) return resolved;
+  const abs = resolved.path;
+  let isDir = false;
+  if (process.platform === 'win32' && resolved.kind !== 'wsl-unc' && resolved.kind !== 'wsl-posix') {
+    const winCheck = await inspectWindowsLocalDrivePath(abs);
+    if (!winCheck.ok) return { ok: false, error: winCheck.error, path: abs };
+    isDir = winCheck.isDir;
+  } else {
+    try {
+      if (process.platform === 'win32' && (resolved.kind === 'wsl-unc' || resolved.kind === 'wsl-posix')) {
+        const mShare = abs.match(/^(\\\\(?:wsl\.localhost|wsl\$)\\[^\\]+)(?:\\(.*))?$/i);
+        if (!mShare) return { ok: false, error: 'invalid_wsl_unc', path: abs };
+        let cur = `${mShare[1]}\\`;
+        const rootSt = await fs.promises.lstat(cur);
+        isDir = rootSt.isDirectory();
+        const parts = String(mShare[2] || '').split('\\').filter(Boolean);
+        for (const part of parts) {
+          cur = path.win32.join(cur, part);
+          const lst = await fs.promises.lstat(cur);
+          if (lst.isSymbolicLink()) return { ok: false, error: 'reparse_point_blocked', path: cur };
+          isDir = lst.isDirectory();
+        }
+      } else {
+        const parts = abs.split('/').filter(Boolean);
+        let cur = '/';
+        const rootSt = await fs.promises.lstat(cur);
+        isDir = rootSt.isDirectory();
+        for (const part of parts) {
+          cur = path.posix.join(cur, part);
+          const lst = await fs.promises.lstat(cur);
+          if (lst.isSymbolicLink()) return { ok: false, error: 'reparse_point_blocked', path: cur };
+          isDir = lst.isDirectory();
+        }
+      }
+    } catch (err) {
+      const code = err && err.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return { ok: false, error: 'not_found', path: abs };
+      }
+      return { ok: false, error: `stat_failed:${code || 'io_error'}`, path: abs };
+    }
+  }
+
+  const openInside = openFolderContents && isDir;
+  const spawnDetachedCheck = (bin, args, opts = {}) =>
+    new Promise((resolve) => {
+      let settled = false;
+      const done = (val) => {
+        if (settled) return;
+        settled = true;
+        resolve(val);
+      };
+      try {
+        const child = execFile(bin, args, opts, () => {});
+        child.once('error', (err) => done({ ok: false, error: `spawn_failed:${err?.code || 'error'}`, path: abs }));
+        child.once('spawn', () => done({ ok: true, path: abs }));
+      } catch (err) {
+        done({ ok: false, error: `spawn_failed:${err?.code || 'error'}`, path: abs });
+      }
+    });
+
   if (process.platform === 'darwin') {
-    execFile('open', openInside ? [abs] : ['-R', abs], () => {});
-    return { ok: true };
+    return spawnDetachedCheck('open', openInside ? [abs] : ['-R', abs]);
   }
   if (process.platform === 'win32') {
-    execFile('explorer', openInside ? [abs] : [`/select,${abs}`], () => {});
-    return { ok: true };
+    const explorerBin = resolveTrustedWindowsExplorerBin();
+    const isDriveOrShareRoot =
+      /^[A-Za-z]:\\?$/.test(abs) || /^\\\\(?:wsl\.localhost|wsl\$)\\[^\\]+\\?$/i.test(abs);
+    if (openInside || isDriveOrShareRoot) {
+      return spawnDetachedCheck(explorerBin, [abs]);
+    }
+    // Strip any trailing backslash on non-root paths so \" never escapes the closing quote in verbatim mode
+    const cleanSelectPath = abs.replace(/\\+$/, '');
+    return spawnDetachedCheck(explorerBin, [`/select,"${cleanSelectPath}"`], {
+      windowsVerbatimArguments: true
+    });
   }
-  execFile('xdg-open', [openInside ? abs : path.dirname(abs)], () => {});
-  return { ok: true };
+  return spawnDetachedCheck('xdg-open', [openInside ? abs : path.dirname(abs)]);
 }
 
 function formatYamlScalar(raw, alwaysQuote = false) {
@@ -3788,7 +4080,7 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
     }
     if (action === 'openSkillsDir') {
       fs.mkdirSync(GLOBAL_SKILLS_DIR, { recursive: true });
-      return { reqId, result: revealLocalPath(GLOBAL_SKILLS_DIR, { openFolderContents: true }) };
+      return { reqId, result: await revealLocalPath(GLOBAL_SKILLS_DIR, { openFolderContents: true }) };
     }
     if (action === 'createLocalSkill') {
       return { reqId, result: createLocalSkill(payload) };
@@ -3799,7 +4091,7 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
     }
     if (action === 'openAgentsDir') {
       fs.mkdirSync(GLOBAL_AGENTS_DIR, { recursive: true });
-      return { reqId, result: revealLocalPath(GLOBAL_AGENTS_DIR, { openFolderContents: true }) };
+      return { reqId, result: await revealLocalPath(GLOBAL_AGENTS_DIR, { openFolderContents: true }) };
     }
     if (action === 'createLocalAgent') {
       return { reqId, result: createLocalAgent(payload) };
@@ -3821,10 +4113,24 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       const result = await translateThoughtText(payload?.text, payload?.targetLang || 'zh-CN');
       return { reqId, result };
     }
+    if (action === 'revealInOsFileManager') {
+      const rawTarget = typeof payload?.targetPath === 'string' ? payload.targetPath.trim() : '';
+      if (!rawTarget) return { reqId, result: { ok: false, error: 'missing_path' } };
+      return {
+        reqId,
+        result: await revealLocalPath(rawTarget, {
+          openFolderContents: Boolean(payload?.openFolder),
+          wslDistro: typeof payload?.wslDistro === 'string' ? payload.wslDistro : ''
+        })
+      };
+    }
     if (action === 'revealFile') {
       const rawTarget = typeof payload?.targetPath === 'string' ? payload.targetPath.trim() : '';
       if (!rawTarget) return { reqId, result: { ok: false, error: 'missing_path' } };
-      const absTarget = path.resolve(rawTarget);
+      const hostTarget = resolveHostRevealTarget(rawTarget, {
+        wslDistro: typeof payload?.wslDistro === 'string' ? payload.wslDistro : ''
+      });
+      const absTarget = hostTarget.ok ? hostTarget.path : path.resolve(rawTarget);
       const explicitProj = resolveLocalProjectDir(payload?.dirPath);
       const globalAgentsFiles = [
         path.join(HOME, '.gemini', 'AGENTS.md'),
@@ -3853,7 +4159,13 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       if (!authorized) {
         return { reqId, result: { ok: false, error: 'path_outside_project' } };
       }
-      return { reqId, result: revealLocalPath(absTarget, { openFolderContents: Boolean(payload?.openFolder) }) };
+      return {
+        reqId,
+        result: await revealLocalPath(absTarget, {
+          openFolderContents: Boolean(payload?.openFolder),
+          wslDistro: typeof payload?.wslDistro === 'string' ? payload.wslDistro : ''
+        })
+      };
     }
     return { reqId, result: { ok: false, error: `unknown_action:${action}` } };
   } catch (err) {

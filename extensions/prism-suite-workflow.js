@@ -34,6 +34,7 @@
     cleanCopy: true,
     sshPaste: true,
     composerFileDrop: true,
+    wslExplorerRevealFix: true,
     i18nExtraMode: 'off',
     inlineEditHelper: true,
     sessionFork: true
@@ -2594,6 +2595,354 @@
     }
 
     /* ========================================================================
+     * 6B. WSL Native "Show in File Explorer" Menu Fix (Zero-Observer Capture)
+     *     Fixes Antigravity v2.35.x bug where `distroToWindowsPath` turns
+     *     `/mnt/e/...` into non-existent `\\wsl.localhost\Ubuntu\mnt\e\...`.
+     * ======================================================================== */
+    const REVEAL_MENU_LABELS = new Set([
+      'Show in File Explorer',
+      'Reveal in File Explorer',
+      'Reveal in Explorer',
+      'Show in Explorer',
+      'Reveal in Finder',
+      'Show in Finder',
+      'Open Containing Folder',
+      '在文件资源管理器中显示',
+      '在资源管理器中显示',
+      '在访达中显示',
+      '在 Finder 中显示',
+      '打开所在文件夹'
+    ]);
+
+    let cachedWslDistro = '';
+    function refreshWslDistroState() {
+      try {
+        if (window.wsl && typeof window.wsl.getState === 'function') {
+          Promise.resolve(window.wsl.getState())
+            .then((st) => {
+              const d = String((st && (st.distro || st.activeDistro || st.name)) || '').trim();
+              if (d && /^[A-Za-z0-9._-]+$/.test(d)) cachedWslDistro = d;
+            })
+            .catch(() => {});
+        }
+      } catch {}
+    }
+    refreshWslDistroState();
+
+    function detectActiveWslDistro() {
+      if (cachedWslDistro) return cachedWslDistro;
+      try {
+        const m = String(document.title || '').match(/\(WSL:\s*([A-Za-z0-9._-]+)\)/i);
+        if (m && m[1]) return m[1];
+      } catch {}
+      return '';
+    }
+
+    function isNativeRevealMenuItem(itemEl) {
+      if (!itemEl || !(itemEl instanceof Element)) return false;
+      if (
+        itemEl.hasAttribute('data-ag-pm-act') ||
+        itemEl.hasAttribute('data-ag-pd-reveal-file') ||
+        itemEl.hasAttribute('data-ag-pm-reveal-agents') ||
+        itemEl.hasAttribute('data-action') ||
+        itemEl.closest('#ag-ps-img-ctx-menu, #ag-ps-popover')
+      ) {
+        return false;
+      }
+      const rawText = String(itemEl.textContent || '').replace(/\s+/g, ' ').trim();
+      if (REVEAL_MENU_LABELS.has(rawText)) return true;
+      const origMap = window.__ag_orig_text_map;
+      if (origMap && typeof origMap.get === 'function') {
+        try {
+          const walker = document.createTreeWalker(itemEl, NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) {
+            const orig = String(origMap.get(walker.currentNode) || '').trim();
+            if (orig && REVEAL_MENU_LABELS.has(orig)) return true;
+          }
+        } catch {}
+      }
+      return false;
+    }
+
+    function scoreRevealPathCandidate(val, hintMeta) {
+      if (typeof val !== 'string') return null;
+      const s = val.trim();
+      if (s.length < 3 || s.length > 3000 || /[\r\n\0"]/.test(s)) return null;
+      let score = 0;
+      if (/^file:\/\/\/mnt\/[a-zA-Z](?:\/|$)/i.test(s)) {
+        score = 120;
+      } else if (/^\/mnt\/[a-zA-Z](?:\/|$)/.test(s)) {
+        score = 115;
+      } else if (/^(?:\\\\|\/\/)(?:wsl\.localhost|wsl\$)[\\/][^\\/]+[\\/]mnt[\\/](?:[a-zA-Z])(?:[\\/]|$)/i.test(s)) {
+        score = 112;
+      } else if (/^file:\/\/\//i.test(s)) {
+        score = 100;
+      } else if (/^(?:\\\\|\/\/)(?:wsl\.localhost|wsl\$)[\\/]/i.test(s) || /^[a-zA-Z]:[\\/]/.test(s)) {
+        score = 92;
+      } else if (/^\/(?:home|root|tmp|opt|var|srv|etc|usr|workspace)(?:\/|$)/.test(s)) {
+        score = 84;
+      } else {
+        return null;
+      }
+      let decoded = s;
+      try { decoded = decodeURIComponent(s); } catch {}
+      const baseLower = (decoded.split(/[\\/]/).pop() || '').toLowerCase();
+      if (hintMeta && baseLower) {
+        if (hintMeta.exact && baseLower === hintMeta.exact) {
+          score += 70;
+        } else if (
+          (hintMeta.prefix && baseLower.startsWith(hintMeta.prefix)) ||
+          (hintMeta.suffix && baseLower.endsWith(hintMeta.suffix))
+        ) {
+          score += 40;
+        }
+      }
+      return { path: s, score };
+    }
+
+    function collectViewerFilenameHint() {
+      try {
+        const tabs = document.querySelectorAll('[role="tab"][aria-selected="true"], [data-state="active"][role="tab"]');
+        for (let i = tabs.length - 1; i >= 0; i--) {
+          const titleAttr = String(tabs[i].getAttribute('title') || tabs[i].getAttribute('aria-label') || '').trim();
+          if (titleAttr && !titleAttr.includes('…') && !titleAttr.includes('...')) {
+            const fullBase = (titleAttr.split(/[\\/]/).pop() || '').trim().toLowerCase();
+            if (fullBase.length >= 3 && fullBase.includes('.')) {
+              return { exact: fullBase, prefix: '', suffix: '' };
+            }
+          }
+          const raw = String(tabs[i].textContent || '').replace(/[×✕⋮]/g, '').trim();
+          if (!raw) continue;
+          if (raw.includes('…') || raw.includes('...')) {
+            const parts = raw.split(/…|\.{3,}/).map((p) => p.trim().toLowerCase());
+            const prefix = parts[0] && parts[0].length >= 4 ? parts[0] : '';
+            const suffix = parts[parts.length - 1] && parts[parts.length - 1].length >= 4 ? parts[parts.length - 1] : '';
+            if (prefix || suffix) return { exact: '', prefix, suffix };
+          } else if (raw.startsWith('-') && raw.length >= 5) {
+            return { exact: '', prefix: '', suffix: raw.toLowerCase() };
+          } else if (raw.length >= 3 && raw.includes('.')) {
+            return { exact: raw.toLowerCase(), prefix: '', suffix: '' };
+          }
+        }
+      } catch {}
+      return null;
+    }
+
+    function extractRevealTargetResult(startEl) {
+      if (!startEl || !(startEl instanceof Element)) return { status: 'none', path: '' };
+      const hintMeta = collectViewerFilenameHint();
+
+      const walkSingleFiberChain = (domNode) => {
+        if (!domNode) return { status: 'none', path: '' };
+        let cur = domNode;
+        let fiber = null;
+        for (let up = 0; up < 6 && cur && !fiber; up++, cur = cur.parentElement) {
+          try {
+            const fk = Object.keys(cur).find((k) => k.startsWith('__reactFiber$'));
+            if (fk && cur[fk]) fiber = cur[fk];
+          } catch {}
+        }
+        const seenObjs = new WeakSet();
+        let visitedCount = 0;
+        // Stop at the NEAREST component ancestor that holds document URI(s), preserving ambiguity explicitly
+        for (let d = 0; d < 40 && fiber && visitedCount <= 280; d++, fiber = fiber.return) {
+          const levelHits = new Map();
+          const scanLevelVal = (val, objDepth) => {
+            if (val == null || objDepth > 3 || visitedCount > 280) return;
+            if (typeof val === 'string') {
+              const scored = scoreRevealPathCandidate(val, hintMeta);
+              if (scored) {
+                const prev = levelHits.get(scored.path);
+                if (prev === undefined || scored.score > prev) levelHits.set(scored.path, scored.score);
+              }
+              return;
+            }
+            if (typeof val !== 'object') return;
+            if (val instanceof Node || val instanceof Window) return;
+            if (seenObjs.has(val)) return;
+            seenObjs.add(val);
+            visitedCount++;
+            if (Array.isArray(val)) {
+              const len = Math.min(val.length, 16);
+              for (let i = 0; i < len; i++) scanLevelVal(val[i], objDepth + 1);
+              return;
+            }
+            let keys;
+            try { keys = Object.keys(val); } catch { return; }
+            const kLen = Math.min(keys.length, 24);
+            for (let i = 0; i < kLen; i++) {
+              const k = keys[i];
+              if (k === 'children' || k === '_owner' || k === '_store' || k.startsWith('__react')) continue;
+              let child;
+              try { child = val[k]; } catch { continue; }
+              scanLevelVal(child, objDepth + 1);
+            }
+          };
+
+          if (fiber.memoizedProps) scanLevelVal(fiber.memoizedProps, 0);
+          let hook = fiber.memoizedState;
+          for (let h = 0; h < 20 && hook && typeof hook === 'object'; h++, hook = hook.next) {
+            if ('memoizedState' in hook) scanLevelVal(hook.memoizedState, 0);
+          }
+
+          if (levelHits.size === 1) {
+            return { status: 'found', path: Array.from(levelHits.keys())[0] };
+          }
+          if (levelHits.size > 1) {
+            const sorted = Array.from(levelHits.entries()).sort((a, b) => b[1] - a[1]);
+            if (sorted[0][1] >= sorted[1][1] + 25) {
+              return { status: 'found', path: sorted[0][0] };
+            }
+            return { status: 'ambiguous', path: '' };
+          }
+        }
+        return { status: 'none', path: '' };
+      };
+
+      const direct = walkSingleFiberChain(startEl);
+      if (direct.status === 'found') return direct;
+      // Never fall back to document-wide tabs or cached targets if the menu's own fiber chain is ambiguous
+      if (direct.status === 'ambiguous') return direct;
+
+      try {
+        const activeTabs = document.querySelectorAll('[role="tab"][aria-selected="true"], [data-state="active"][role="tab"]');
+        if (activeTabs.length === 1) {
+          const onlyTab = activeTabs[0];
+          for (const attr of ['data-filepath', 'data-file-path', 'data-uri', 'title']) {
+            const av = onlyTab.getAttribute && onlyTab.getAttribute(attr);
+            const sc = av ? scoreRevealPathCandidate(av, hintMeta) : null;
+            if (sc) return { status: 'found', path: sc.path };
+          }
+          const tabHit = walkSingleFiberChain(onlyTab);
+          if (tabHit.status === 'found' || tabHit.status === 'ambiguous') return tabHit;
+        }
+        const mediaEls = document.querySelectorAll('[role="tabpanel"]:not([hidden]) video[src], [role="tabpanel"]:not([hidden]) img[src]');
+        if (mediaEls.length === 1) {
+          const src = mediaEls[0].getAttribute('src');
+          const sc = src ? scoreRevealPathCandidate(src, hintMeta) : null;
+          if (sc) return { status: 'found', path: sc.path };
+        }
+      } catch {}
+
+      return { status: 'none', path: '' };
+    }
+
+    function needsWslDaemonReveal(targetPath, wslDistro) {
+      if (!targetPath) return false;
+      if (/^(?:file:\/\/)?\/mnt\/[a-zA-Z](?:\/|$)/i.test(targetPath)) return true;
+      if (/^(?:\\\\|\/\/)(?:wsl\.localhost|wsl\$)[\\/][^\\/]+[\\/]mnt[\\/](?:[a-zA-Z])(?:[\\/]|$)/i.test(targetPath)) {
+        return true;
+      }
+      if (wslDistro && (/^file:\/\/\//i.test(targetPath) || targetPath.startsWith('/'))) {
+        return true;
+      }
+      return false;
+    }
+
+    let pendingRevealMenuTarget = { itemEl: null, path: '', ts: 0 };
+    let lastRevealCommit = { itemEl: null, path: '', ts: 0 };
+
+    function onRevealMenuPointerDownCapture(e) {
+      if (disposed || getPrefs().wslExplorerRevealFix === false) return;
+      if (typeof e.button === 'number' && e.button !== 0) return;
+      if (typeof window.__agProjectCall !== 'function') return;
+      const target = e.target instanceof Element ? e.target : null;
+      if (!target) return;
+      const itemEl = target.closest('[role="menuitem"], [data-radix-collection-item]');
+      if (!itemEl || !isNativeRevealMenuItem(itemEl)) return;
+      const res = extractRevealTargetResult(itemEl);
+      pendingRevealMenuTarget =
+        res.status === 'found' && res.path
+          ? { itemEl, path: res.path, ts: Date.now() }
+          : { itemEl: null, path: '', ts: 0 };
+    }
+
+    function commitWslRevealInterception(e, itemEl) {
+      const now = Date.now();
+      const fresh = extractRevealTargetResult(itemEl);
+      let targetPath = '';
+      if (fresh.status === 'found') {
+        targetPath = fresh.path;
+      } else if (fresh.status === 'none') {
+        targetPath =
+          pendingRevealMenuTarget.itemEl === itemEl && now - pendingRevealMenuTarget.ts < 2500
+            ? pendingRevealMenuTarget.path
+            : '';
+      }
+      pendingRevealMenuTarget = { itemEl: null, path: '', ts: 0 };
+      if (fresh.status === 'ambiguous') return;
+      const wslDistro = detectActiveWslDistro();
+
+      if (!needsWslDaemonReveal(targetPath, wslDistro)) return;
+
+      // Suppress duplicate Enter/Space keydown -> synthesized click on the exact same menu item + target
+      if (
+        lastRevealCommit.itemEl === itemEl &&
+        lastRevealCommit.path === targetPath &&
+        now - lastRevealCommit.ts < 350
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+        return;
+      }
+      lastRevealCommit = { itemEl, path: targetPath, ts: now };
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+
+      try {
+        itemEl.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true })
+        );
+      } catch {}
+
+      window
+        .__agProjectCall('revealInOsFileManager', { targetPath, wslDistro }, 6000)
+        .then((res) => {
+          if (res && res.ok) return;
+          // Only fall back to native API if an older daemon does not implement revealInOsFileManager;
+          // never fall back on policy rejections or RPC timeouts.
+          const errCode = String((res && res.error) || '');
+          if (
+            errCode.startsWith('unknown_action:') &&
+            window.electronNative &&
+            typeof window.electronNative.revealInFilePicker === 'function'
+          ) {
+            try { void window.electronNative.revealInFilePicker(targetPath); } catch {}
+          }
+        })
+        .catch(() => {});
+    }
+
+    function onRevealMenuClickCapture(e) {
+      if (disposed || getPrefs().wslExplorerRevealFix === false) return;
+      if (typeof e.button === 'number' && e.button !== 0) return;
+      if (typeof window.__agProjectCall !== 'function') return;
+      const target = e.target instanceof Element ? e.target : null;
+      if (!target) return;
+      const itemEl = target.closest('[role="menuitem"], [data-radix-collection-item]');
+      if (!itemEl || !isNativeRevealMenuItem(itemEl)) return;
+      commitWslRevealInterception(e, itemEl);
+    }
+
+    function onRevealMenuKeyDownCapture(e) {
+      if (disposed || getPrefs().wslExplorerRevealFix === false) return;
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      if (typeof window.__agProjectCall !== 'function') return;
+      const target = e.target instanceof Element ? e.target : null;
+      if (!target) return;
+      const itemEl = target.closest('[role="menuitem"], [data-radix-collection-item]');
+      if (!itemEl || !isNativeRevealMenuItem(itemEl)) return;
+      commitWslRevealInterception(e, itemEl);
+    }
+
+    document.addEventListener('pointerdown', onRevealMenuPointerDownCapture, { capture: true, signal });
+    document.addEventListener('click', onRevealMenuClickCapture, { capture: true, signal });
+    document.addEventListener('keydown', onRevealMenuKeyDownCapture, { capture: true, signal });
+
+    /* ========================================================================
      * 7. Popover Section Registration (id: 'workflow', order: 20)
      * ======================================================================== */
     if (typeof bus.registerPanelSection === 'function') {
@@ -2633,6 +2982,13 @@
                   <span class="ag-ps-toggle-sub">项目与对话输入框拖放/粘贴文件转 @路径（与原生零冲突）</span>
                 </div>
                 <button type="button" class="ag-ps-switch" data-wf-toggle="composerFileDrop" data-on="${p.composerFileDrop !== false ? '1' : '0'}" aria-label="输入框拖入/粘贴本地文件"></button>
+              </div>
+              <div class="ag-ps-toggle-row">
+                <div class="ag-ps-toggle-label">
+                  <span>WSL 资源管理器定位修复</span>
+                  <span class="ag-ps-toggle-sub">修复 WSL 模式下原生「在文件资源管理器中显示」无法打开本地盘符</span>
+                </div>
+                <button type="button" class="ag-ps-switch" data-wf-toggle="wslExplorerRevealFix" data-on="${p.wslExplorerRevealFix !== false ? '1' : '0'}" aria-label="WSL 资源管理器定位修复"></button>
               </div>
               <div class="ag-ps-toggle-row">
                 <div class="ag-ps-toggle-label">

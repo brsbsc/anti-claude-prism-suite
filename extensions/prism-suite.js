@@ -12,7 +12,7 @@
     try { window.__agPrismSuiteDispose(); } catch {}
   }
 
-  const SUITE_VERSION = '0.6.0';
+  const SUITE_VERSION = '0.6.1';
   const REPO_RELEASES_API = 'https://api.github.com/repos/wushuai0802/anti-claude-prism-suite/releases/latest';
   const REPO_RELEASES_URL = 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest';
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';
@@ -90,7 +90,8 @@
     i18nExtraMode: enumValidator(['off', 'zh-CN', 'zh-TW', 'en']),
     inlineEditHelper: boolValidator,
     sessionFork: boolValidator,
-    composerFileDrop: boolValidator
+    composerFileDrop: boolValidator,
+    wslExplorerRevealFix: boolValidator
   });
 
   const MIN_USER_TS = 1_700_000_000_000;
