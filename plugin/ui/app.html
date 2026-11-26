@@ -1658,6 +1658,172 @@
       margin-left: auto;
     }
 
+    .relay-section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 2px 2px 0;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      letter-spacing: 0.02em;
+      user-select: none;
+    }
+
+    .relay-section-head-left {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .online-pulse-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: #10b981;
+      box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.22);
+      display: inline-block;
+      flex-shrink: 0;
+    }
+
+    .relay-card.is-online.is-hero-active {
+      padding: 11px 12px;
+      gap: 8px;
+      border-width: 1.5px;
+      border-color: color-mix(in srgb, var(--color-accent, var(--p-accent)) 52%, transparent);
+      box-shadow: 3px 0 0 0 var(--color-accent, var(--p-accent)) inset,
+                  0 4px 14px rgba(37, 99, 235, 0.07);
+    }
+
+    .relay-card.is-standby-compact {
+      padding: 7px 10px;
+      gap: 5px;
+    }
+
+    .relay-handle-sub {
+      font-size: 11px;
+      font-weight: 400;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      font-family: var(--font-mono, var(--p-font-mono));
+    }
+
+    .pill-muted {
+      background: transparent;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      border-color: var(--color-border-secondary, var(--p-border));
+    }
+
+    .pill-recommend {
+      background: var(--p-accent-soft);
+      color: var(--color-accent, var(--p-accent));
+      border-color: rgba(37, 99, 235, 0.28);
+      font-weight: 600;
+    }
+
+    .hero-pool-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .hero-pool-box {
+      padding: 6px 8px;
+      border-radius: 7px;
+      background: color-mix(in srgb, var(--color-background-secondary, var(--p-bg-subtle)) 68%, transparent);
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .hero-pool-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--color-text-primary, var(--p-text));
+    }
+
+    .hero-pool-full {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 7px;
+      background: color-mix(in srgb, var(--color-background-secondary, var(--p-bg-subtle)) 52%, transparent);
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+      font-size: 11px;
+    }
+
+    .hero-pool-full-right {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      color: #059669;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .hero-email-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: 10.5px;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+    }
+
+    .hero-email-foot code {
+      font-family: var(--font-mono, var(--p-font-mono));
+    }
+
+    .quota-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+    .quota-dot.is-ok { background: #10b981; }
+    .quota-dot.is-warn { background: #f59e0b; }
+    .quota-dot.is-danger { background: #ef4444; }
+
+    .quota-fam-chip.is-danger {
+      border-color: rgba(239, 68, 68, 0.32);
+      background: rgba(239, 68, 68, 0.06);
+    }
+
+    .quota-fam-chip.is-warn {
+      border-color: rgba(245, 158, 11, 0.32);
+      background: rgba(245, 158, 11, 0.06);
+    }
+
+    .icon-more-btn {
+      padding: 4px 6px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+    }
+
+    .icon-more-btn.is-open {
+      background: var(--color-background-tertiary, var(--p-bg-active));
+      color: var(--color-text-primary, var(--p-text));
+      border-color: var(--p-border-strong);
+    }
+
+    .relay-more-drawer {
+      margin-top: 2px;
+      padding-top: 6px;
+      border-top: 1px dashed var(--color-border-secondary, var(--p-border));
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
     .radar-item {
       border-top: 1px solid var(--color-border-secondary, var(--p-border));
       padding-top: 7px;
@@ -1917,7 +2083,10 @@
         <section id="panel-accounts" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-accounts" tabindex="-1">
           <div class="subbar">
             <span id="accounts-vault-label" class="subbar-info">主备多账号安全接力（默认关闭）</span>
-            <span id="accounts-active-pill" class="pill">未检测</span>
+            <div style="display:inline-flex;align-items:center;gap:5px;flex-shrink:0;">
+              <span id="accounts-active-pill" class="pill" hidden>未检测</span>
+              <button type="button" id="btn-accounts-sort" class="ctrl-btn" title="切换账号列表排序方式：在线置顶分组 / 主号固定置顶">排序:在线置顶</button>
+            </div>
           </div>
           <div id="accounts-wrap" class="list-scroll relay-scroll">
             <div class="empty-state">正在加载账号接力与上游雷达状态…</div>
@@ -2026,6 +2195,15 @@
           lastSwitchResult: null,
           memories: [],
           editingQuotaId: '',
+          editingAliasId: '',
+          expandedMoreIds: {},
+          sortMode: (() => {
+            try {
+              return localStorage.getItem('ag_prism_acc_sort_mode') === 'primary-first' ? 'primary-first' : 'active-first';
+            } catch {
+              return 'active-first';
+            }
+          })(),
           selfUpdateChecking: false,
           selfUpdateApplying: false,
           selfUpdateConfirmRepair: false,
@@ -4070,11 +4248,29 @@
       function renderAccounts() {
         const st = appState.accounts;
         const d = st.data;
+        const sortBtnEl = document.getElementById('btn-accounts-sort');
+        if (sortBtnEl) {
+          const isPrimaryFirst = st.sortMode === 'primary-first';
+          sortBtnEl.textContent = isPrimaryFirst ? '排序:主号置顶' : '排序:在线置顶';
+          sortBtnEl.hidden = !d || !d.enabled || !Array.isArray(d.accounts) || d.accounts.length < 2;
+        }
         if (d) {
-          accountsVaultLabel.textContent = `凭据库: ${d.vault?.backend || '-'} (${d.vault?.ok ? '就绪' : '待检'})`;
+          const accList = Array.isArray(d.accounts) ? d.accounts : [];
+          const priCount = accList.filter((x) => x.role === 'primary').length;
+          const bakCount = Math.max(0, accList.length - priCount);
+          const countSummary = accList.length ? ` · 共 ${accList.length} 号（${priCount} 主 ${bakCount} 备）` : '';
+          accountsVaultLabel.textContent = `凭据库: ${d.vault?.backend || '-'} (${d.vault?.ok ? '就绪' : '待检'})${countSummary}`;
           const act = d.activeCredential;
-          accountsActivePill.textContent = act?.exists ? (act.email || '已登录(未含邮箱)') : '未检测到活跃凭据';
-          accountsActivePill.className = `pill ${act?.exists ? 'pill-ok' : 'pill-warn'}`;
+          if (!act?.exists) {
+            accountsActivePill.hidden = false;
+            accountsActivePill.textContent = '未检测到活跃凭据';
+            accountsActivePill.className = 'pill pill-warn';
+          } else {
+            // Avoid repeating the active email in the subbar when the online Hero card already displays it
+            accountsActivePill.hidden = Boolean(accList.some((x) => x.isCurrentActive));
+            accountsActivePill.textContent = act.email || '已登录';
+            accountsActivePill.className = 'pill pill-ok';
+          }
         }
 
         if (st.loading && !d) {
@@ -4086,7 +4282,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.5.8，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.5.9，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -4214,49 +4410,120 @@
               const days = Math.floor(hrs / 24);
               return `${days}d${hrs % 24 ? (hrs % 24) + 'h' : ''} 后重置`;
             };
+
+            const resolveIdentity = (a) => {
+              const rawAlias = String(a.alias || '').trim();
+              const email = String(a.email || '').trim();
+              const handle = email.includes('@') ? email.split('@')[0] : email;
+              const isDefaultAlias =
+                !rawAlias ||
+                rawAlias.toLowerCase() === email.toLowerCase() ||
+                /^(?:主账号|主号|primary|备用账号|备用|backup)$/i.test(rawAlias);
+              return {
+                title: isDefaultAlias ? (handle || rawAlias || '未命名账号') : rawAlias,
+                handleSub: (!isDefaultAlias && handle) ? handle : '',
+                email
+              };
+            };
+
+            const formatTierLabel = (rawTier, compact = false) => {
+              const raw = String(rawTier || '').trim();
+              if (!raw) return '';
+              if (/^(?:antigravity\s+)?starter(?:\s+quota)?$/i.test(raw)) return 'Starter';
+              if (compact) {
+                if (/ultra/i.test(raw)) return 'Ultra';
+                if (/\bpro\b/i.test(raw)) return 'Pro';
+              }
+              return raw;
+            };
+
+            const toCleanPct = (v) => {
+              if (v === undefined || v === null || typeof v === 'boolean') return null;
+              if (typeof v === 'string' && v.trim() === '') return null;
+              const num = Number(v);
+              return Number.isFinite(num) ? Math.max(0, Math.min(100, num)) : null;
+            };
+
             const barRow = (label, pct, passed, resetIso) => {
-              if (pct === null || pct === undefined) return '';
-              const n = Math.max(0, Math.min(100, Number(pct)));
+              const n = toCleanPct(pct);
+              if (n === null) return '';
               const cls = n >= 50 ? 'is-ok' : n >= 20 ? 'is-warn' : 'is-danger';
+              const eta = fmtQuotaEta(resetIso);
               const meta = passed
-                ? '<span class="pill pill-ok">预计已满血 100%</span>'
-                : `<span>${n}%${fmtQuotaEta(resetIso) ? ' · ' + escapeHtml(fmtQuotaEta(resetIso)) : ''}</span>`;
+                ? '<span class="pill pill-ok">已回血 100%</span>'
+                : `<span>${n}%${eta ? ' · ' + escapeHtml(eta) : ''}</span>`;
               return (
                 `<div class="quota-bar-row">` +
-                  `<strong>${label}</strong>` +
+                  `<strong>${escapeHtml(label)}</strong>` +
                   `<div class="quota-track"><div class="quota-fill ${cls}" style="width:${n}%"></div></div>` +
                   meta +
                 `</div>`
               );
             };
-            const autoRelaunchPref = d.autoRelaunchAfterSwitch !== false;
-            const switchCtaText = autoRelaunchPref ? '⚡ 切换并重启' : '⏱ 5s 倒计时切号';
-            for (const a of accs) {
-              const roleBadge = a.role === 'primary'
-                ? '<span class="pill pill-gold">★ 主账号</span>'
-                : '<span class="pill">备用</span>';
-              const activeBadge = a.isCurrentActive ? '<span class="pill pill-ok">● 当前在线</span>' : '';
+
+            const renderCompactPoolChip = (poolName, p5, pass5, rst5, p7, pass7, rst7) => {
+              const n5 = toCleanPct(p5);
+              const n7 = toCleanPct(p7);
+              const has5 = n5 !== null;
+              const has7 = n7 !== null;
+              if (!has5 && !has7) return '';
+              const nums = [n5, n7].filter((v) => v !== null);
+              const minN = nums.length ? Math.min(...nums) : 100;
+              const tone = minN >= 50 ? 'is-ok' : minN >= 20 ? 'is-warn' : 'is-danger';
+
+              let summaryText = '';
+              if (has5 && has7 && n5 >= 99.95 && n7 >= 99.95 && !pass5 && !pass7) {
+                summaryText = '100%';
+              } else {
+                const bits = [];
+                if (has5) bits.push(`5h ${n5}%`);
+                if (has7) bits.push(`7d ${n7}%`);
+                summaryText = bits.join(' · ');
+              }
+
+              const tipParts = [];
+              if (has5) {
+                const eta5 = fmtQuotaEta(rst5);
+                tipParts.push(`5h: ${n5}%${pass5 ? '（过点预计已满血）' : (eta5 ? `（${eta5}）` : '')}`);
+              }
+              if (has7) {
+                const eta7 = fmtQuotaEta(rst7);
+                tipParts.push(`7d: ${n7}%${pass7 ? '（过点预计已满血）' : (eta7 ? `（${eta7}）` : '')}`);
+              }
+              return (
+                `<span class="quota-fam-chip ${tone}" title="${escapeHtml(`${poolName} · ${tipParts.join(' ｜ ')}`)}">` +
+                  `<span class="quota-dot ${tone}" aria-hidden="true"></span>` +
+                  `<strong>${escapeHtml(poolName)}</strong> ${escapeHtml(summaryText)}` +
+                `</span>`
+              );
+            };
+
+            const computeStandbyScore = (a) => {
+              const isRec = rec?.recommended?.accountId && rec.recommended.accountId === a.id;
+              const eff = a.effectiveQuota;
+              const q7 = eff?.effective7dPct;
+              const q5 = eff?.effective5hPct;
+              const minQ = Math.min(
+                q7 === null || q7 === undefined ? 85 : Number(q7),
+                q5 === null || q5 === undefined ? 85 : Number(q5)
+              );
+              const healthyPrimary = a.role === 'primary' && minQ >= 20 ? 300 : (a.role === 'primary' ? 40 : 0);
+              return (isRec ? 500 : 0) + healthyPrimary + minQ;
+            };
+
+            const renderAccountCard = (a) => {
+              const ident = resolveIdentity(a);
+              const isOnline = Boolean(a.isCurrentActive);
+              const isRec = !isOnline && Boolean(rec?.recommended?.accountId && rec.recommended.accountId === a.id);
+              const eff = a.effectiveQuota;
+              const rawTier = String(eff?.tierName || '').trim();
+              const tierLabel = formatTierLabel(rawTier, !isOnline);
+              const tierBadge = tierLabel ? `<span class="pill" title="${escapeHtml(rawTier)}">${escapeHtml(tierLabel)}</span>` : '';
               const backupBadge = a.vaultHasBackup ? '' : '<span class="pill pill-danger">缺备份</span>';
               const toggleRole = a.role === 'primary' ? 'backup' : 'primary';
               const toggleRoleText = a.role === 'primary' ? '改备用' : '设为主号';
-              const eff = a.effectiveQuota;
-              const q5Html = eff ? barRow('5h', eff.effective5hPct, eff.reset5hPassed, eff.reset5hAt) : '';
-              const q7Html = eff ? barRow('7d', eff.effective7dPct, eff.reset7dPassed, eff.reset7dAt) : '';
-              const famChips = [];
-              if (eff?.families?.gemini) {
-                const g = eff.families.gemini;
-                const gBits = [];
-                if (g.pct5h !== undefined) gBits.push(`5h ${g.pct5h}%`);
-                if (g.pct7d !== undefined) gBits.push(`7d ${g.pct7d}%`);
-                if (gBits.length) famChips.push(`<span class="quota-fam-chip"><strong>Gemini</strong> ${escapeHtml(gBits.join(' · '))}</span>`);
-              }
-              if (eff?.families?.claude) {
-                const c = eff.families.claude;
-                const cBits = [];
-                if (c.pct5h !== undefined) cBits.push(`5h ${c.pct5h}%`);
-                if (c.pct7d !== undefined) cBits.push(`7d ${c.pct7d}%`);
-                if (cBits.length) famChips.push(`<span class="quota-fam-chip"><strong>Claude/GPT</strong> ${escapeHtml(cBits.join(' · '))}</span>`);
-              }
+              const moreOpen = Boolean(st.expandedMoreIds?.[a.id] || st.editingQuotaId === a.id || st.editingAliasId === a.id);
+
               const obsIso = eff?.observedAt || eff?.updatedAt || '';
               const obsTime = obsIso ? (() => {
                 const dt = new Date(obsIso);
@@ -4264,15 +4531,7 @@
                   ? `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`
                   : '';
               })() : '';
-              const syncTag = obsTime
-                ? `<span class="quota-fam-sync">${eff?.source === 'anti-claude-cache' ? '实时缓存' : '已同步'} ${escapeHtml(obsTime)}</span>`
-                : '';
-              const rawTier = String(eff?.tierName || '').trim();
-              const shortTier = /^(?:antigravity\s+)?starter(?:\s+quota)?$/i.test(rawTier) ? 'Starter' : rawTier;
-              const tierBadge = shortTier ? `<span class="pill" title="${escapeHtml(rawTier)}">${escapeHtml(shortTier)}</span>` : '';
-              const quotaBlock = (q5Html || q7Html)
-                ? `<div class="quota-bars">${q5Html}${q7Html}${(famChips.length || syncTag) ? `<div class="quota-fam-row">${famChips.join('')}${syncTag}</div>` : ''}</div>`
-                : `<p class="relay-sub">${a.isCurrentActive ? (quotaWaitRetryTimer ? '等待客户端首次拉取该账号实时额度，将自动刷新（也可点右上 ↻ 立即刷新）' : '暂未读到本机实时额度缓存（点右上 ↻ 刷新，或点左下角「录入额度」手动补充）') : '切过去登录一次即自动记录实时额度与秒级重置倒计时（也可点左下角手动录入）'}</p>`;
+
               const isEditingQuota = st.editingQuotaId === a.id;
               const editorHtml = isEditingQuota
                 ? `<div class="quota-editor" data-quota-editor="${escapeHtml(a.id)}">` +
@@ -4288,27 +4547,183 @@
                     `</div>` +
                   `</div>`
                 : '';
-              parts.push(
-                `<article class="relay-card${a.isCurrentActive ? ' is-online' : ' is-account-slot'}">` +
+
+              const isEditingAlias = st.editingAliasId === a.id;
+              const aliasEditorHtml = isEditingAlias
+                ? `<div class="relay-form-row">` +
+                    `<input type="text" class="text-input" style="max-width:168px;" id="ae-alias-${escapeHtml(a.id)}" placeholder="输入备注名（留空恢复默认）" value="${escapeHtml(ident.handleSub ? a.alias : '')}" />` +
+                    `<button type="button" class="mini-btn is-primary" data-acc-action="save-alias" data-id="${escapeHtml(a.id)}">保存备注</button>` +
+                    `<button type="button" class="mini-btn" data-acc-action="cancel-alias">取消</button>` +
+                  `</div>`
+                : '';
+
+              const moreDrawerHtml = moreOpen
+                ? `<div class="relay-more-drawer">` +
+                    `<div class="relay-sub" style="display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;">` +
+                      `<span><code>${escapeHtml(a.email)}</code> · 指纹 <code>${escapeHtml(a.credHash || '-')}</code> · 最近 ${escapeHtml((a.lastUsedAt || '').slice(0, 16).replace('T', ' ') || '-')}</span>` +
+                      `<button type="button" class="mini-btn" data-acc-action="copy-email" data-email="${escapeHtml(a.email)}">复制邮箱</button>` +
+                    `</div>` +
+                    aliasEditorHtml +
+                    editorHtml +
+                    `<div class="relay-card-foot">` +
+                      `<div class="relay-foot-left">` +
+                        `<button type="button" class="mini-btn" data-acc-action="edit-alias" data-id="${escapeHtml(a.id)}">改备注</button>` +
+                        (!isOnline ? `<button type="button" class="mini-btn" data-acc-action="dryrun" data-id="${escapeHtml(a.id)}">预演</button>` : '') +
+                        `<button type="button" class="mini-btn" data-acc-action="edit-quota" data-id="${escapeHtml(a.id)}">录入额度</button>` +
+                        `<button type="button" class="mini-btn" data-acc-action="setrole" data-id="${escapeHtml(a.id)}" data-role="${toggleRole}">${toggleRoleText}</button>` +
+                      `</div>` +
+                      `<button type="button" class="mini-btn is-danger-subtle" data-acc-action="delete" data-id="${escapeHtml(a.id)}">删备份</button>` +
+                    `</div>` +
+                  `</div>`
+                : '';
+
+              const autoRelaunchPref = d.autoRelaunchAfterSwitch !== false;
+              const switchCtaText = autoRelaunchPref ? '⚡ 切换并重启' : '⏱ 5s 切号';
+
+              if (isOnline) {
+                const roleBadge = a.role === 'primary'
+                  ? '<span class="pill pill-gold">★ 主号</span>'
+                  : '<span class="pill pill-muted">备用</span>';
+                const syncBadge = obsTime
+                  ? `<span class="quota-fam-sync">${eff?.source === 'anti-claude-cache' ? '实时' : '同步'} ${escapeHtml(obsTime)}</span>`
+                  : '';
+
+                let heroQuotaHtml = '';
+                const fams = eff?.families;
+                if (fams && (fams.gemini || fams.claude)) {
+                  const poolBlocks = [];
+                  for (const [fKey, fTitle] of [['gemini', 'Gemini'], ['claude', 'Claude / GPT']]) {
+                    const f = fams[fKey];
+                    if (!f) continue;
+                    const f5 = toCleanPct(f.pct5h);
+                    const f7 = toCleanPct(f.pct7d);
+                    const fullUnused =
+                      f5 !== null && f7 !== null &&
+                      f5 >= 99.95 && f7 >= 99.95 &&
+                      !f.reset5hPassed && !f.reset7dPassed;
+                    if (fullUnused) {
+                      poolBlocks.push(
+                        `<div class="hero-pool-full">` +
+                          `<strong style="color:var(--color-text-primary, var(--p-text));">${fTitle}</strong>` +
+                          `<span class="hero-pool-full-right"><span class="quota-dot is-ok"></span>5h 100% · 7d 100% 满血可用</span>` +
+                        `</div>`
+                      );
+                    } else {
+                      const b5 = barRow('5h', f.pct5h, f.reset5hPassed, f.reset5hAt || eff.reset5hAt);
+                      const b7 = barRow('7d', f.pct7d, f.reset7dPassed, f.reset7dAt || eff.reset7dAt);
+                      if (b5 || b7) {
+                        poolBlocks.push(
+                          `<div class="hero-pool-box">` +
+                            `<div class="hero-pool-title"><span>${fTitle}</span></div>` +
+                            b5 + b7 +
+                          `</div>`
+                        );
+                      }
+                    }
+                  }
+                  heroQuotaHtml = `<div class="hero-pool-stack">${poolBlocks.join('')}</div>`;
+                } else if (eff && (eff.effective5hPct !== null || eff.effective7dPct !== null)) {
+                  const q5Html = barRow('5h', eff.effective5hPct, eff.reset5hPassed, eff.reset5hAt);
+                  const q7Html = barRow('7d', eff.effective7dPct, eff.reset7dPassed, eff.reset7dAt);
+                  heroQuotaHtml = `<div class="quota-bars">${q5Html}${q7Html}</div>`;
+                } else {
+                  heroQuotaHtml = `<p class="relay-sub">${quotaWaitRetryTimer ? '等待客户端首次拉取该账号实时额度，将自动刷新（也可点右上 ↻ 立即刷新）' : '暂未读到本机实时额度缓存（点右上 ↻ 刷新，或点右上 ⋯ 手动录入）'}</p>`;
+                }
+
+                return (
+                  `<article class="relay-card is-online is-hero-active">` +
+                    `<div class="relay-card-head">` +
+                      `<div class="search-card-meta">` +
+                        `<span class="pill pill-ok"><span class="online-pulse-dot" style="margin-right:4px;"></span>正在使用</span>` +
+                        roleBadge + tierBadge + backupBadge +
+                        `<span class="relay-title" title="${escapeHtml(a.email)}">${escapeHtml(ident.title)}</span>` +
+                        (ident.handleSub ? `<span class="relay-handle-sub">${escapeHtml(ident.handleSub)}</span>` : '') +
+                      `</div>` +
+                      `<div class="search-card-actions">` +
+                        syncBadge +
+                        `<button type="button" class="mini-btn icon-more-btn${moreOpen ? ' is-open' : ''}" data-acc-action="toggle-more" data-id="${escapeHtml(a.id)}" title="展开账号详情与管理项" aria-label="更多操作">⋯</button>` +
+                      `</div>` +
+                    `</div>` +
+                    heroQuotaHtml +
+                    (!moreOpen ? `<div class="hero-email-foot"><code>${escapeHtml(a.email)}</code></div>` : '') +
+                    moreDrawerHtml +
+                  `</article>`
+                );
+              }
+
+              // Compact Standby Decision Card (unused account)
+              const standbyRoleBadge = a.role === 'primary'
+                ? '<span class="pill pill-gold">★ 主号</span>'
+                : '<span class="pill pill-muted">备</span>';
+              const recBadge = isRec ? '<span class="pill pill-recommend" title="综合可用额度与角色最优先推荐">推荐</span>' : '';
+
+              const compactChips = [];
+              const fams = eff?.families;
+              if (fams && (fams.gemini || fams.claude)) {
+                if (fams.gemini) {
+                  const chip = renderCompactPoolChip('Gemini', fams.gemini.pct5h, fams.gemini.reset5hPassed, fams.gemini.reset5hAt || eff.reset5hAt, fams.gemini.pct7d, fams.gemini.reset7dPassed, fams.gemini.reset7dAt || eff.reset7dAt);
+                  if (chip) compactChips.push(chip);
+                }
+                if (fams.claude) {
+                  const chip = renderCompactPoolChip('Claude/GPT', fams.claude.pct5h, fams.claude.reset5hPassed, fams.claude.reset5hAt || eff.reset5hAt, fams.claude.pct7d, fams.claude.reset7dPassed, fams.claude.reset7dAt || eff.reset7dAt);
+                  if (chip) compactChips.push(chip);
+                }
+              } else if (eff && (eff.effective5hPct !== null || eff.effective7dPct !== null)) {
+                const chip = renderCompactPoolChip('可用额度', eff.effective5hPct, eff.reset5hPassed, eff.reset5hAt, eff.effective7dPct, eff.reset7dPassed, eff.reset7dAt);
+                if (chip) compactChips.push(chip);
+              }
+
+              const compactQuotaRow = compactChips.length
+                ? `<div class="quota-fam-row">${compactChips.join('')}${obsTime ? `<span class="quota-fam-sync" title="上次额度同步时间">${escapeHtml(obsTime)}</span>` : ''}</div>`
+                : `<p class="relay-sub" style="font-size:11px;">切过去登录一次即自动记录额度（点 ⋯ 可手动补充）</p>`;
+
+              return (
+                `<article class="relay-card is-account-slot is-standby-compact">` +
                   `<div class="relay-card-head">` +
-                    `<div class="search-card-meta">${roleBadge}${activeBadge}${tierBadge}${backupBadge}<span class="relay-title">${escapeHtml(a.alias || a.email)}</span></div>` +
+                    `<div class="search-card-meta">` +
+                      standbyRoleBadge +
+                      `<span class="relay-title" title="${escapeHtml(a.email)}">${escapeHtml(ident.title)}</span>` +
+                      (ident.handleSub ? `<span class="relay-handle-sub">${escapeHtml(ident.handleSub)}</span>` : '') +
+                      tierBadge + recBadge + backupBadge +
+                    `</div>` +
                     `<div class="search-card-actions">` +
-                      (!a.isCurrentActive ? `<button type="button" class="mini-btn is-primary" data-acc-action="countdown" data-id="${escapeHtml(a.id)}">${switchCtaText}</button>` : '') +
+                      `<button type="button" class="mini-btn is-primary" data-acc-action="countdown" data-id="${escapeHtml(a.id)}" data-display-name="${escapeHtml(ident.title)}">${switchCtaText}</button>` +
+                      `<button type="button" class="mini-btn icon-more-btn${moreOpen ? ' is-open' : ''}" data-acc-action="toggle-more" data-id="${escapeHtml(a.id)}" title="展开管理操作与详情" aria-label="更多操作">⋯</button>` +
                     `</div>` +
                   `</div>` +
-                  quotaBlock +
-                  editorHtml +
-                  `<p class="relay-sub"><code>${escapeHtml(a.email)}</code> · 指纹 <code>${escapeHtml(a.credHash || '-')}</code> · 最近使用 ${escapeHtml((a.lastUsedAt || '').slice(0, 16).replace('T', ' '))}</p>` +
-                  `<div class="relay-card-foot">` +
-                    `<div class="relay-foot-left">` +
-                      (!a.isCurrentActive ? `<button type="button" class="mini-btn" data-acc-action="dryrun" data-id="${escapeHtml(a.id)}">预演</button>` : '') +
-                      `<button type="button" class="mini-btn" data-acc-action="edit-quota" data-id="${escapeHtml(a.id)}">录入额度</button>` +
-                      `<button type="button" class="mini-btn" data-acc-action="setrole" data-id="${escapeHtml(a.id)}" data-role="${toggleRole}">${toggleRoleText}</button>` +
-                    `</div>` +
-                    `<button type="button" class="mini-btn is-danger-subtle" data-acc-action="delete" data-id="${escapeHtml(a.id)}">删备份</button>` +
-                  `</div>` +
+                  compactQuotaRow +
+                  moreDrawerHtml +
                 `</article>`
               );
+            };
+
+            if (st.sortMode === 'primary-first') {
+              const ordered = [...accs].sort((a, b) => {
+                if ((a.role === 'primary') !== (b.role === 'primary')) return a.role === 'primary' ? -1 : 1;
+                return (Number(a.priority) || 50) - (Number(b.priority) || 50);
+              });
+              for (const a of ordered) {
+                parts.push(renderAccountCard(a));
+              }
+            } else {
+              const activeList = accs.filter((a) => a.isCurrentActive);
+              const standbyList = accs.filter((a) => !a.isCurrentActive).sort((a, b) => computeStandbyScore(b) - computeStandbyScore(a));
+              for (const a of activeList) {
+                parts.push(renderAccountCard(a));
+              }
+              if (standbyList.length) {
+                if (activeList.length) {
+                  parts.push(
+                    `<div class="relay-section-head">` +
+                      `<span class="relay-section-head-left">待切换账号 (${standbyList.length})</span>` +
+                      `<span style="font-weight:400;font-size:10.5px;">悬停胶囊看重置时间 · 点 ⋯ 管理</span>` +
+                    `</div>`
+                  );
+                }
+                for (const a of standbyList) {
+                  parts.push(renderAccountCard(a));
+                }
+              }
             }
           }
 
@@ -4485,7 +4900,7 @@
               ? `<span class="pill pill-warn">新版本 ${escapeHtml(suInfo.latestTag)}</span>`
               : st.radarLoading
                 ? '<span class="pill">检查中</span>'
-                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.5.8</span>');
+                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.5.9</span>');
         const radarOpen = Boolean(st.openSections?.radar || st.radarLoading || rad || st.selfUpdateChecking || st.selfUpdateApplying || suInfo || suRes);
         parts.push(
           `<details class="relay-accordion" data-sec="radar" ${radarOpen ? 'open' : ''}>` +
@@ -4709,6 +5124,17 @@
         }
       });
 
+      const btnAccountsSort = document.getElementById('btn-accounts-sort');
+      if (btnAccountsSort) {
+        btnAccountsSort.addEventListener('click', () => {
+          const next = appState.accounts.sortMode === 'primary-first' ? 'active-first' : 'primary-first';
+          appState.accounts.sortMode = next;
+          try { localStorage.setItem('ag_prism_acc_sort_mode', next); } catch {}
+          renderAccounts();
+          showToast(next === 'primary-first' ? '已切换为主号固定置顶排序' : '已切换为正在使用置顶分组');
+        });
+      }
+
       // Accounts Relay & Upstream Radar Event Delegation
       accountsWrap.addEventListener('toggle', (event) => {
         const det = event.target;
@@ -4719,6 +5145,28 @@
           }
         }
       }, true);
+
+      const safeCssEscape = (raw) => {
+        const s = String(raw ?? '');
+        return (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
+          ? CSS.escape(s)
+          : s.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+      };
+
+      accountsWrap.addEventListener('keydown', (event) => {
+        if (event.isComposing || event.keyCode === 229) return;
+        const t = event.target;
+        if (!t || typeof t.id !== 'string' || !t.id.startsWith('ae-alias-')) return;
+        const id = t.id.slice('ae-alias-'.length);
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          accountsWrap.querySelector(`button[data-acc-action="save-alias"][data-id="${safeCssEscape(id)}"]`)?.click();
+        } else if (event.key === 'Escape') {
+          event.preventDefault();
+          appState.accounts.editingAliasId = '';
+          renderAccounts();
+        }
+      });
 
       accountsWrap.addEventListener('change', (event) => {
         if (event.target && event.target.id === 'acc-cd-snap' && appState.accounts.countdown) {
@@ -4784,7 +5232,49 @@
           } else if (act === 'countdown') {
             const id = btn.dataset.id;
             const acc = (appState.accounts.data?.accounts || []).find((a) => a.id === id);
-            startSwitchCountdown(acc);
+            if (acc) {
+              const display = btn.dataset.displayName || acc.alias || acc.email;
+              startSwitchCountdown({ ...acc, alias: display });
+            }
+          } else if (act === 'toggle-more') {
+            const id = btn.dataset.id;
+            if (id) {
+              const nextOpen = !appState.accounts.expandedMoreIds[id];
+              appState.accounts.expandedMoreIds[id] = nextOpen;
+              if (!nextOpen) {
+                if (appState.accounts.editingQuotaId === id) appState.accounts.editingQuotaId = '';
+                if (appState.accounts.editingAliasId === id) appState.accounts.editingAliasId = '';
+              }
+              renderAccounts();
+            }
+          } else if (act === 'copy-email') {
+            const email = btn.dataset.email || '';
+            if (email) {
+              const ok = await copyTextSafe(email);
+              showToast(ok ? `已复制邮箱 ${email}` : '复制失败', !ok);
+            }
+          } else if (act === 'edit-alias') {
+            const id = btn.dataset.id || '';
+            appState.accounts.editingAliasId = appState.accounts.editingAliasId === id ? '' : id;
+            if (id) appState.accounts.expandedMoreIds[id] = true;
+            renderAccounts();
+            if (appState.accounts.editingAliasId) {
+              document.getElementById(`ae-alias-${id}`)?.focus();
+            }
+          } else if (act === 'cancel-alias') {
+            appState.accounts.editingAliasId = '';
+            renderAccounts();
+          } else if (act === 'save-alias') {
+            const id = btn.dataset.id;
+            const nextAlias = document.getElementById(`ae-alias-${id}`)?.value?.trim() ?? '';
+            const res = await callServerTool('accounts_update', { accountId: id, alias: nextAlias });
+            if (res.ok) {
+              appState.accounts.editingAliasId = '';
+              showToast(nextAlias ? `已更新备注为「${nextAlias}」` : '已恢复默认名称显示');
+              await loadAccountsTab({ forceRefresh: false });
+            } else {
+              showToast(res.error || '修改备注失败', true);
+            }
           } else if (act === 'cd-pause' && appState.accounts.countdown) {
             const cd = appState.accounts.countdown;
             if (!cd.paused) {
@@ -4881,7 +5371,7 @@
             appState.accounts.selfUpdateChecking = false;
             appState.accounts.selfUpdateInfo = info;
             renderAccounts();
-            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.5.8'}`);
+            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.5.9'}`);
           } else if (act === 'self-update-repair-ask') {
             appState.accounts.selfUpdateConfirmRepair = true;
             renderAccounts();
@@ -5609,7 +6099,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.5.8' },
+            appInfo: { name: 'prism-files', version: '0.5.9' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};

@@ -1,7 +1,7 @@
 {
   "name": "prism-files",
-  "version": "0.5.8",
-  "description": "Prism 工作台（Anti-Claude Prism Suite v0.5.8）：目录预览与原位编辑、最近产物、历史脱敏检索、打开方式、主备账号半自动接力（默认关闭，支持本机只读实时额度自动读取与切后自动重启）、零依赖槽位交接记忆、一键自更新与中文上游更新雷达。",
+  "version": "0.5.9",
+  "description": "Prism 工作台（Anti-Claude Prism Suite v0.5.9）：目录预览与原位编辑、最近产物、历史脱敏检索、打开方式、主备账号半自动接力（默认关闭，支持本机只读实时额度自动读取与切后自动重启）、零依赖槽位交接记忆、一键自更新与中文上游更新雷达。",
   "icon": "assets/logo.svg",
   "suggested_prompts": [
     "打开 Prism 工作台浏览当前目录和最近产物",

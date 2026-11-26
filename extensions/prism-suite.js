@@ -12,7 +12,7 @@
     try { window.__agPrismSuiteDispose(); } catch {}
   }
 
-  const SUITE_VERSION = '0.5.8';
+  const SUITE_VERSION = '0.5.9';
   const REPO_RELEASES_API = 'https://api.github.com/repos/wushuai0802/anti-claude-prism-suite/releases/latest';
   const REPO_RELEASES_URL = 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest';
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';
@@ -2482,8 +2482,7 @@
         const dn = String(g.displayName || '').trim();
         let famKey = 'other';
         if (/gemini/i.test(dn)) famKey = 'gemini';
-        else if (/claude/i.test(dn)) famKey = 'claude';
-        else if (/gpt/i.test(dn)) famKey = 'gpt';
+        else if (/claude|gpt/i.test(dn)) famKey = 'claude';
 
         let g5 = null;
         let g7 = null;
@@ -2524,8 +2523,18 @@
           parsedGroups.push({ famKey, g5, g7, r5, r7 });
           if (famKey !== 'other') {
             const cur = families[famKey] || {};
-            if (g5 !== null && (cur.pct5h === undefined || g5 < cur.pct5h)) cur.pct5h = g5;
-            if (g7 !== null && (cur.pct7d === undefined || g7 < cur.pct7d)) cur.pct7d = g7;
+            if (g5 !== null && (cur.pct5h === undefined || g5 < cur.pct5h)) {
+              cur.pct5h = g5;
+              if (r5) cur.reset5hAt = r5;
+            } else if (!cur.reset5hAt && r5) {
+              cur.reset5hAt = r5;
+            }
+            if (g7 !== null && (cur.pct7d === undefined || g7 < cur.pct7d)) {
+              cur.pct7d = g7;
+              if (r7) cur.reset7dAt = r7;
+            } else if (!cur.reset7dAt && r7) {
+              cur.reset7dAt = r7;
+            }
             families[famKey] = cur;
           }
         }

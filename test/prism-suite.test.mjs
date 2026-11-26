@@ -591,13 +591,43 @@ test('v0.5.0 isolated account relay enforces email verification, ownership prese
     assert.equal(parsedQ.window7dPct, 4);
     assert.ok(parsedQ.reset5hAt);
 
-    // Offline primary whose 7d reset timestamp is already in the past projects back to 100%
+    // Offline primary whose 7d reset timestamp is already in the past projects back to 100% (including per-family buckets!)
     mgr.updateAccount(capPrimary.account.id, {
-      quota: { window7dPct: 2, window5hPct: 10, reset7dAt: new Date(nowRef - 60000).toISOString(), reset5hAt: new Date(nowRef - 60000).toISOString() }
+      quota: {
+        window7dPct: 2,
+        window5hPct: 10,
+        reset7dAt: new Date(nowRef - 60000).toISOString(),
+        reset5hAt: new Date(nowRef + 3600000).toISOString(),
+        families: {
+          gemini: {
+            pct5h: 15.7,
+            pct7d: 2.8,
+            reset5hAt: new Date(nowRef - 60000).toISOString(),
+            reset7dAt: new Date(nowRef + 86400000).toISOString()
+          },
+          claude: {
+            pct5h: 100,
+            pct7d: 96.8
+          }
+        }
+      }
     });
     const effPrimary = computeEffectiveQuota(mgr.getStatus().accounts.find((a) => a.id === capPrimary.account.id).lastQuota, nowRef);
     assert.equal(effPrimary.effective7dPct, 100);
     assert.equal(effPrimary.reset7dPassed, true);
+    assert.equal(effPrimary.families.gemini.pct5h, 100, 'Expired family 5h window must project to 100%');
+    assert.equal(effPrimary.families.gemini.reset5hPassed, true);
+    assert.equal(effPrimary.families.gemini.pct7d, 2.8, 'Future family 7d window must preserve actual remaining %');
+
+    // Critically exhausted primary (e.g. 7d = 2.8%) must NOT beat a healthy backup in recommendation
+    mgr.updateAccount(capPrimary.account.id, {
+      quota: { window7dPct: 2.8, window5hPct: 100, reset7dAt: new Date(nowRef + 86400000).toISOString() }
+    });
+    mgr.updateAccount(capBackup.account.id, {
+      quota: { window7dPct: 49.5, window5hPct: 100, reset7dAt: new Date(nowRef + 86400000).toISOString() }
+    });
+    const recWhenPrimaryExhausted = mgr.pickRecommendedTarget({ currentId: 'acc_other_online', activeModel: 'gemini-4' });
+    assert.equal(recWhenPrimaryExhausted.recommended?.accountId, capBackup.account.id, 'Healthy backup must be recommended over exhausted primary');
 
     const syncedQ = mgr.syncActiveAccountQuota({ window5hPct: 88, window7dPct: 92 });
     assert.equal(syncedQ.ok, true);
@@ -1396,10 +1426,10 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.5.8');
-    assert.equal(pluginJson.version, '0.5.8');
+    assert.equal(pkgJson.version, '0.5.9');
+    assert.equal(pluginJson.version, '0.5.9');
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.5\.8'/);
+    assert.match(jsSrc, /SUITE_VERSION = '0\.5\.9'/);
     assert.match(jsSrc, /COOKIE_PREFS_KEY = 'ag_prism_prefs_v1'/);
     assert.match(jsSrc, /getActiveInputBox/);
     assert.match(jsSrc, /getInputBoxEl: getActiveInputBox/);
@@ -1410,13 +1440,19 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(fxSrc, /registerPrismModule\('fx', initFxModule\)/);
     assert.match(fxSrc, /LAST_CONV_COOKIE_KEY = 'ag_prism_last_conv_v1'/);
     assert.match(fxSrc, /quotaDismissScopeKey/);
+    assert.match(fxSrc, /scheduleEnsureOverviewOpen/);
+    assert.match(fxSrc, /collectRightFloatingPanelRects/);
+    assert.match(appHtml, /is-hero-active/);
+    assert.match(appHtml, /is-standby-compact/);
+    assert.match(appHtml, /btn-accounts-sort/);
+    assert.match(appHtml, /save-alias/);
     assert.match(fxSrc, /borderBeamMode/);
     assert.match(fxSrc, /scrollbarW/);
     assert.match(wfSrc, /registerPrismModule\('workflow', initWorkflowModule\)/);
     assert.match(wfSrc, /resolveTurnActionHost/);
     assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
     assert.match(jsSrc, /readAntiClaudeQuotaCache/);
-    assert.match(inlineHtml, /version: '0\.5\.8'/);
+    assert.match(inlineHtml, /version: '0\.5\.9'/);
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1446,7 +1482,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(csSrc, /PruneObsoletePluginEntries/);
     assert.match(csSrc, /CheckDebugPortShortcutStatus/);
     assert.match(csSrc, /prism-suite-00-prefs\.js/);
-    assert.match(csSrc, /v0\.5\.8/);
+    assert.match(csSrc, /v0\.5\.9/);
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
   } finally {

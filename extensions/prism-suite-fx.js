@@ -1410,66 +1410,318 @@
     }
 
     /* ========================================================================
-     * 8. Keep Overview Open Across Conversation Route Switches
+     * 8. Keep Overview Open Across Route Switches & Side-Panel Layout Reflows
      * ======================================================================== */
     const CONV_ROUTE_RE = /^\/c\/[^/]+/;
-    let userWantedOverviewOpen = null;
+    const fxSharedState = (window[Symbol.for('ag.prism.fx.visitState')] = window[Symbol.for('ag.prism.fx.visitState')] || {
+      hasVisitedConvInWindow: false,
+      homeReturnDismissed: false,
+      userWantedOverviewOpen: null
+    });
+    let overviewOpenAtPointerDown = null;
+    let overviewPointerDownAt = 0;
+    let lastManualOverviewToggleAt = 0;
     let autoClickingOverview = false;
     let overviewRestoreTimer = 0;
-    let lastRestoredRoute = '';
+    let overviewFollowupTimer = 0;
+    let railBurstTimers = [];
+    let overviewAutoRestoreClicks = [];
+    let lastObservedLayoutSig = '';
+
+    function getWantedOverviewOpen() {
+      return fxSharedState.userWantedOverviewOpen;
+    }
+
+    function setWantedOverviewOpen(val) {
+      fxSharedState.userWantedOverviewOpen = val;
+    }
 
     function isConversationRoute(pathname) {
       return CONV_ROUTE_RE.test(pathname != null ? pathname : (window.location.pathname || ''));
     }
 
-    function isOverviewOpenNow() {
-      const panel = document.querySelector('[data-testid="overview-panel"]');
-      if (!panel || !panel.isConnected) return false;
-      if (panel.hidden || panel.getAttribute('aria-hidden') === 'true') return false;
-      return panel.offsetWidth > 20;
+    function isElementActuallyVisible(el, minSize = 10) {
+      if (!el || !el.isConnected || el.hidden) return false;
+      const winW = window.innerWidth || 1920;
+      const winH = window.innerHeight || 1080;
+      const r = el.getBoundingClientRect();
+      if (r.width <= minSize || r.height <= minSize) return false;
+      if (r.right <= 0 || r.bottom <= 0 || r.left >= winW || r.top >= winH) return false;
+      let cur = el;
+      for (let depth = 0; cur && cur !== document.documentElement && depth < 7; depth++, cur = cur.parentElement) {
+        if (cur.hidden || cur.hasAttribute('inert')) return false;
+        if (cur.getAttribute('aria-hidden') === 'true' || cur.getAttribute('data-state') === 'closed') return false;
+        try {
+          const cs = window.getComputedStyle(cur);
+          if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.05) {
+            return false;
+          }
+        } catch {}
+      }
+      return true;
     }
 
-    document.addEventListener('click', (e) => {
-      if (disposed || autoClickingOverview || !isConversationRoute()) return;
-      const btn = e.target && e.target.closest && e.target.closest('[data-testid="toggle-overview-panel"]');
-      if (!btn) return;
-      setTimeout(() => {
-        if (!disposed && isConversationRoute()) {
-          userWantedOverviewOpen = isOverviewOpenNow();
+    function getVisibleOverviewPanel() {
+      const panels = document.querySelectorAll('[data-testid="overview-panel"]');
+      if (!panels.length) return null;
+      const vp = safeGetViewportEl();
+      const vpRect = vp ? vp.getBoundingClientRect() : null;
+      let best = null;
+      let bestScore = -Infinity;
+      for (let i = 0; i < panels.length; i++) {
+        const p = panels[i];
+        if (!isElementActuallyVisible(p, 40)) continue;
+        const r = p.getBoundingClientRect();
+        const overlapsVp = !vpRect || vpRect.width <= 0 || (r.right > vpRect.left + 40 && r.left < vpRect.right + 48);
+        const score = (overlapsVp ? 1_000_000 : 0) + r.width * r.height;
+        if (score > bestScore) {
+          bestScore = score;
+          best = p;
         }
-      }, 150);
-    }, { capture: true, signal });
+      }
+      return best;
+    }
 
-    function scheduleKeepOverviewOnRoute() {
-      const prefs = getPrefs();
-      if (!isConversationRoute()) {
-        if (overviewRestoreTimer) {
-          clearTimeout(overviewRestoreTimer);
-          overviewRestoreTimer = 0;
+    function isOverviewOpenNow() {
+      return Boolean(getVisibleOverviewPanel());
+    }
+
+    function findActiveOverviewToggleBtn() {
+      const rawBtns = document.querySelectorAll('[data-testid="toggle-overview-panel"]');
+      if (!rawBtns.length) return null;
+      const btns = [];
+      for (let i = 0; i < rawBtns.length; i++) {
+        if (isElementActuallyVisible(rawBtns[i], 4)) btns.push(rawBtns[i]);
+      }
+      if (!btns.length) return null;
+      if (btns.length === 1) return btns[0];
+
+      const vp = safeGetViewportEl();
+      if (vp && vp.isConnected) {
+        // Walk up starting at active viewport itself to find the nearest pane root owning a single overview toggle
+        let anc = vp;
+        for (let depth = 0; anc && anc !== document.body && depth < 9; depth++, anc = anc.parentElement) {
+          const scoped = btns.filter((b) => anc.contains(b));
+          if (scoped.length === 1) return scoped[0];
+          if (scoped.length > 1) break;
         }
+      }
+
+      const vpRect = vp ? vp.getBoundingClientRect() : null;
+      if (!vpRect || vpRect.width <= 0) return btns[0];
+      let bestBtn = btns[0];
+      let bestDist = Infinity;
+      for (let i = 0; i < btns.length; i++) {
+        const b = btns[i];
+        const r = b.getBoundingClientRect();
+        const cx = r.left + r.width * 0.5;
+        const insidePenalty = (cx >= vpRect.left - 24 && cx <= vpRect.right + 64) ? 0 : 10000;
+        const dist = insidePenalty + Math.abs(cx - vpRect.right);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestBtn = b;
+        }
+      }
+      return bestBtn;
+    }
+
+    function clearOverviewRestoreTimers() {
+      if (overviewRestoreTimer) {
+        clearTimeout(overviewRestoreTimer);
+        overviewRestoreTimer = 0;
+      }
+      if (overviewFollowupTimer) {
+        clearTimeout(overviewFollowupTimer);
+        overviewFollowupTimer = 0;
+      }
+    }
+
+    function clearRailBurstTimers() {
+      for (let i = 0; i < railBurstTimers.length; i++) {
+        clearTimeout(railBurstTimers[i]);
+      }
+      railBurstTimers = [];
+    }
+
+    function scheduleRailRepositionBurst() {
+      clearRailBurstTimers();
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => {
+          if (!disposed && railEl) positionOutlineRail();
+        });
+      }
+      for (const delay of [85, 220]) {
+        railBurstTimers.push(setTimeout(() => {
+          if (!disposed && railEl) positionOutlineRail();
+        }, delay));
+      }
+    }
+
+    function hasTransientOverlayBlockingOverviewRestore() {
+      const candidates = document.querySelectorAll(
+        '[role="menu"], [role="dialog"][aria-modal="true"], #ag-ps-popover[data-open="1"], #ag-claude-model-popover, #ag-claude-quota-popover'
+      );
+      for (let i = 0; i < candidates.length; i++) {
+        if (isElementActuallyVisible(candidates[i], 10)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function tryRestoreOverviewNow() {
+      if (disposed || !isConversationRoute()) return false;
+      const prefs = getPrefs();
+      if (!prefs.keepOverviewOpen || getWantedOverviewOpen() !== true) return false;
+      const nowMs = Date.now();
+      if (nowMs - lastManualOverviewToggleAt < 350) return false;
+      if (isOverviewOpenNow()) {
+        if (railEl) positionOutlineRail();
+        return true;
+      }
+      if (hasTransientOverlayBlockingOverviewRestore()) return false;
+
+      // Bounded sliding-window guard: max 3 auto-clicks within 4.5s, >=200ms apart
+      overviewAutoRestoreClicks = overviewAutoRestoreClicks.filter((ts) => nowMs - ts < 4500);
+      if (overviewAutoRestoreClicks.length >= 3) return false;
+      if (overviewAutoRestoreClicks.length > 0 && nowMs - overviewAutoRestoreClicks[overviewAutoRestoreClicks.length - 1] < 200) {
+        return false;
+      }
+
+      const toggleBtn = findActiveOverviewToggleBtn();
+      if (!toggleBtn) return false;
+
+      overviewAutoRestoreClicks.push(nowMs);
+      const prevFocus = document.activeElement;
+      autoClickingOverview = true;
+      try {
+        toggleBtn.click();
+      } catch {}
+      if (
+        prevFocus &&
+        prevFocus !== document.body &&
+        prevFocus !== document.documentElement &&
+        prevFocus !== toggleBtn &&
+        prevFocus.isConnected &&
+        typeof prevFocus.focus === 'function'
+      ) {
+        try { prevFocus.focus({ preventScroll: true }); } catch {}
+      }
+      setTimeout(() => { autoClickingOverview = false; }, 180);
+      scheduleRailRepositionBurst();
+      return true;
+    }
+
+    function scheduleEnsureOverviewOpen(triggerReason, primaryDelayMs = 110) {
+      if (disposed || !isConversationRoute()) {
+        clearOverviewRestoreTimers();
         return;
       }
-      if (!prefs.keepOverviewOpen || userWantedOverviewOpen !== true) return;
-      const routeKey = window.location.pathname + window.location.search;
-      if (routeKey === lastRestoredRoute) return;
+      const prefs = getPrefs();
+      if (!prefs.keepOverviewOpen || getWantedOverviewOpen() !== true) return;
+      if (Date.now() - lastManualOverviewToggleAt < 350) return;
+
+      if (triggerReason === 'route') {
+        overviewAutoRestoreClicks = [];
+      }
 
       if (overviewRestoreTimer) clearTimeout(overviewRestoreTimer);
       overviewRestoreTimer = setTimeout(() => {
         overviewRestoreTimer = 0;
-        if (disposed || !isConversationRoute() || !getPrefs().keepOverviewOpen || userWantedOverviewOpen !== true) return;
-        if (isOverviewOpenNow()) {
-          lastRestoredRoute = routeKey;
-          return;
-        }
-        const toggleBtn = document.querySelector('[data-testid="toggle-overview-panel"]');
-        if (toggleBtn && toggleBtn.isConnected) {
-          lastRestoredRoute = routeKey;
-          autoClickingOverview = true;
-          try { toggleBtn.click(); } catch {}
-          setTimeout(() => { autoClickingOverview = false; }, 120);
-        }
-      }, 240);
+        if (disposed) return;
+        tryRestoreOverviewNow();
+      }, primaryDelayMs);
+
+      // Secondary check after split-pane / route transition settles
+      if (triggerReason === 'route' || triggerReason === 'layout' || triggerReason === 'panel-click') {
+        if (overviewFollowupTimer) clearTimeout(overviewFollowupTimer);
+        overviewFollowupTimer = setTimeout(() => {
+          overviewFollowupTimer = 0;
+          if (disposed) return;
+          if (!isOverviewOpenNow()) {
+            tryRestoreOverviewNow();
+          } else if (railEl) {
+            positionOutlineRail();
+          }
+        }, Math.max(primaryDelayMs + 150, 260));
+      }
     }
+
+    document.addEventListener('pointerdown', (e) => {
+      if (disposed || autoClickingOverview || !isConversationRoute()) return;
+      const target = e.target;
+      if (!target || typeof target.closest !== 'function') return;
+      const ovToggle = target.closest('[data-testid="toggle-overview-panel"]');
+      if (ovToggle) {
+        overviewOpenAtPointerDown = isOverviewOpenNow();
+        overviewPointerDownAt = Date.now();
+        lastManualOverviewToggleAt = overviewPointerDownAt;
+        clearOverviewRestoreTimers();
+        return;
+      }
+      // If Overview is currently open and user clicks a side-panel / split-tab button outside Overview,
+      // preserve Overview across any split-pane collapse/remount or outside-dismiss
+      if (isOverviewOpenNow() && !target.closest('[data-testid="overview-panel"]')) {
+        if (Date.now() - lastManualOverviewToggleAt > 350) {
+          setWantedOverviewOpen(true);
+        }
+        const ctrl = target.closest('button, [role="button"], [role="tab"]');
+        if (ctrl && !ctrl.closest('[data-testid="autoscroll-viewport"]')) {
+          scheduleEnsureOverviewOpen('panel-click', 90);
+          scheduleRailRepositionBurst();
+        }
+      }
+    }, { capture: true, signal });
+
+    document.addEventListener('pointercancel', () => {
+      overviewOpenAtPointerDown = null;
+      overviewPointerDownAt = 0;
+    }, { capture: true, signal });
+
+    document.addEventListener('click', (e) => {
+      if (disposed || autoClickingOverview) return;
+      const target = e.target;
+      if (!target || typeof target.closest !== 'function') return;
+      if (target.closest('#ag-ps-pill')) {
+        scheduleRailRepositionBurst();
+        return;
+      }
+      if (!isConversationRoute()) return;
+      const btn = target.closest('[data-testid="toggle-overview-panel"]');
+      if (!btn) {
+        overviewOpenAtPointerDown = null;
+        overviewPointerDownAt = 0;
+        return;
+      }
+      const nowClickMs = Date.now();
+      lastManualOverviewToggleAt = nowClickMs;
+      clearOverviewRestoreTimers();
+      const freshPtrState = overviewOpenAtPointerDown !== null && (nowClickMs - overviewPointerDownAt < 1200);
+      const expectedNext = freshPtrState ? !overviewOpenAtPointerDown : !isOverviewOpenNow();
+      setWantedOverviewOpen(expectedNext);
+      overviewOpenAtPointerDown = null;
+      overviewPointerDownAt = 0;
+      scheduleRailRepositionBurst();
+      setTimeout(() => {
+        if (!disposed && isConversationRoute()) {
+          setWantedOverviewOpen(isOverviewOpenNow());
+          if (railEl) positionOutlineRail();
+        }
+      }, 170);
+    }, { capture: true, signal });
+
+    document.addEventListener('keydown', (e) => {
+      if (disposed || e.key !== 'Escape' || !isConversationRoute()) return;
+      if (!isOverviewOpenNow() || hasTransientOverlayBlockingOverviewRestore()) return;
+      lastManualOverviewToggleAt = Date.now();
+      clearOverviewRestoreTimers();
+      setTimeout(() => {
+        if (!disposed && isConversationRoute() && !isOverviewOpenNow()) {
+          setWantedOverviewOpen(false);
+          if (railEl) positionOutlineRail();
+        }
+      }, 150);
+    }, { capture: true, signal });
 
     /* ========================================================================
      * 9. Sidebar Sessions ('default' | '10' | 'all') — Zero Body Observer
@@ -1633,7 +1885,33 @@
     }
 
     let railVpRO = null;
+    let railObservedOv = null;
     let railPosRaf = 0;
+
+    function collectRightFloatingPanelRects(vpRect, bandTop, bandBottom) {
+      const rects = [];
+      const seen = new Set();
+      const pushIfOverlappingRight = (el) => {
+        if (!el || seen.has(el) || !isElementActuallyVisible(el, 40)) return;
+        seen.add(el);
+        const r = el.getBoundingClientRect();
+        if (
+          r.bottom > bandTop &&
+          r.top < bandBottom &&
+          r.left > vpRect.left + 80 &&
+          r.right > vpRect.left + 120 &&
+          r.left < vpRect.right + 40
+        ) {
+          rects.push(r);
+        }
+      };
+      pushIfOverlappingRight(getVisibleOverviewPanel());
+      const floaters = document.querySelectorAll('#ag-ps-popover[data-open="1"], #ag-claude-quota-popover, #ag-claude-model-popover');
+      for (let i = 0; i < floaters.length; i++) {
+        pushIfOverlappingRight(floaters[i]);
+      }
+      return rects;
+    }
 
     function positionOutlineRail() {
       if (!railEl) return;
@@ -1641,17 +1919,39 @@
       if (vp) {
         const rect = vp.getBoundingClientRect();
         if (rect.width > 120) {
-          // Leave clear gutter to the left of both the vertical scrollbar track and any adjacent split-pane divider
+          // Leave clear gutter to the left of scrollbar, split-pane dividers, and any open right-floating panels (e.g. Overview)
           const scrollbarW = Math.max(14, Math.round((vp.offsetWidth || 0) - (vp.clientWidth || 0)));
           const gutter = rect.width < 420 ? 10 : 16;
+          let targetRightX = rect.right - scrollbarW - gutter;
+
+          const winH = window.innerHeight || 800;
+          const railH = Math.max(64, railEl.offsetHeight || 120);
+          const bandTop = winH * 0.5 - railH * 0.5 - 20;
+          const bandBottom = winH * 0.5 + railH * 0.5 + 20;
+          const floatingRects = collectRightFloatingPanelRects(rect, bandTop, bandBottom);
+          for (let i = 0; i < floatingRects.length; i++) {
+            const fr = floatingRects[i];
+            if (fr.left < targetRightX + 24) {
+              targetRightX = Math.min(targetRightX, fr.left - 14);
+            }
+          }
+
+          if (targetRightX - rect.left < 180) {
+            setAttr(railEl, 'data-occluded', '1');
+            hideRailTip();
+            return;
+          }
+
+          setAttr(railEl, 'data-occluded', '');
           const minRight = scrollbarW + gutter;
           const maxRight = Math.max(minRight, Math.round(window.innerWidth - rect.left - 48));
-          const desired = Math.round(window.innerWidth - rect.right + scrollbarW + gutter);
+          const desired = Math.round(window.innerWidth - targetRightX);
           const rightPx = Math.max(minRight, Math.min(maxRight, desired));
           railEl.style.right = `${rightPx}px`;
           return;
         }
       }
+      setAttr(railEl, 'data-occluded', '');
       railEl.style.right = '28px';
     }
 
@@ -1668,6 +1968,7 @@
         try { railVpRO.disconnect(); } catch {}
         railVpRO = null;
       }
+      railObservedOv = null;
       if (railScrollAc) {
         railScrollAc.abort();
         railScrollAc = null;
@@ -1676,7 +1977,14 @@
     }
 
     function attachRailScroll(vp) {
-      if (railScrollVp === vp && railScrollAc) return;
+      const curOv = getVisibleOverviewPanel();
+      if (railScrollVp === vp && railScrollAc) {
+        if (railVpRO && curOv && curOv !== railObservedOv) {
+          railObservedOv = curOv;
+          try { railVpRO.observe(curOv); } catch {}
+        }
+        return;
+      }
       detachRailScroll();
       if (!vp || !vp.isConnected) return;
       railScrollVp = vp;
@@ -1699,6 +2007,10 @@
         railVpRO.observe(vp);
         if (vp.parentElement && vp.parentElement !== document.body) {
           railVpRO.observe(vp.parentElement);
+        }
+        if (curOv) {
+          railObservedOv = curOv;
+          try { railVpRO.observe(curOv); } catch {}
         }
       }
     }
@@ -1829,11 +2141,8 @@
     let returnBarMode = ''; // 'settings' | 'home'
     let returnBarCountdownEl = null;
     let returnBarDismissedForVisit = false;
-    // Persist window-level visit state across Anti-Claude hot-reloads within the same document
-    const fxVisitState = (window[Symbol.for('ag.prism.fx.visitState')] = window[Symbol.for('ag.prism.fx.visitState')] || {
-      hasVisitedConvInWindow: false,
-      homeReturnDismissed: false
-    });
+    // Reuse fxSharedState persisted across Anti-Claude hot-reloads within the same document
+    const fxVisitState = fxSharedState;
     if (VALID_CONV_PATH_RE.test(window.location.pathname || '') && SAFE_CONV_PATH_RE.test(window.location.pathname || '')) {
       fxVisitState.hasVisitedConvInWindow = true;
     }
@@ -2501,13 +2810,34 @@
       applyBubbleTintAndCompact();
       syncSwitchReturnHelper();
 
-      if (reason === 'route') {
-        autoExpandCount = 0;
-        scheduleKeepOverviewOnRoute();
-      } else if (userWantedOverviewOpen === null && isConversationRoute()) {
-        if (document.querySelector('[data-testid="overview-panel"]')) {
-          userWantedOverviewOpen = isOverviewOpenNow();
+      if (isConversationRoute()) {
+        const ovOpen = isOverviewOpenNow();
+        if (ovOpen && nowMs - lastManualOverviewToggleAt > 350) {
+          setWantedOverviewOpen(true);
+        } else if (getWantedOverviewOpen() === null && document.querySelector('[data-testid="overview-panel"]')) {
+          setWantedOverviewOpen(ovOpen);
         }
+
+        const vpEl = safeGetViewportEl();
+        const vpR = vpEl ? vpEl.getBoundingClientRect() : null;
+        const curLayoutSig = vpR && vpR.width > 0
+          ? `${Math.round(vpR.left / 12)}:${Math.round(vpR.width / 12)}`
+          : '';
+
+        if (reason === 'route') {
+          autoExpandCount = 0;
+          lastObservedLayoutSig = curLayoutSig;
+          scheduleEnsureOverviewOpen('route', 210);
+        } else if (curLayoutSig && lastObservedLayoutSig && curLayoutSig !== lastObservedLayoutSig) {
+          lastObservedLayoutSig = curLayoutSig;
+          if (!ovOpen && getWantedOverviewOpen() === true) {
+            scheduleEnsureOverviewOpen('layout', 95);
+          }
+        } else if (curLayoutSig && !lastObservedLayoutSig) {
+          lastObservedLayoutSig = curLayoutSig;
+        }
+      } else {
+        clearOverviewRestoreTimers();
       }
 
       // Avoid non-urgent DOM scans while actively typing unless busy/prefs/route
@@ -2574,6 +2904,9 @@
       if (disposed) return;
       scheduleThrottledMeasure();
       if (railEl) positionOutlineRail();
+      if (isConversationRoute() && getWantedOverviewOpen() === true && !isOverviewOpenNow()) {
+        scheduleEnsureOverviewOpen('layout', 110);
+      }
     }, { passive: true, signal });
 
     // Subscribe to Frozen v4 Bus events
@@ -2723,9 +3056,9 @@
             </div>
 
             <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="多轮对话时在视口右侧常驻纤细圆点目录，悬停预览、点击直达">
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="多轮对话时在视口右侧常驻纤细圆点目录，展开概览或侧边面板时自动左移避让">
                 <span>常驻轮次圆点目录</span>
-                <span class="ag-ps-toggle-sub">2 轮以上自动显现 · 零干扰</span>
+                <span class="ag-ps-toggle-sub">2 轮以上显现 · 面板展开自动避让</span>
               </div>
               <button type="button" class="ag-ps-switch" data-fx-toggle="alwaysOutlineRail" data-on="${p.alwaysOutlineRail ? '1' : '0'}" aria-label="常驻轮次圆点目录"></button>
             </div>
@@ -2739,11 +3072,11 @@
             </div>
 
             <div class="ag-ps-toggle-row">
-              <div class="ag-ps-toggle-label" data-ag-ps-tip="记住你上次展开右侧概览面板的状态，切换会话后自动保持展开">
-                <span>切会话保持概览展开</span>
-                <span class="ag-ps-toggle-sub">避免切换对话反复折叠</span>
+              <div class="ag-ps-toggle-label" data-ag-ps-tip="记住你展开右侧概览面板的状态，切换会话或收起侧边分屏面板时自动保持展开">
+                <span>保持概览面板展开</span>
+                <span class="ag-ps-toggle-sub">切会话 / 收起侧边栏不连带消失</span>
               </div>
-              <button type="button" class="ag-ps-switch" data-fx-toggle="keepOverviewOpen" data-on="${p.keepOverviewOpen ? '1' : '0'}" aria-label="切会话保持概览展开"></button>
+              <button type="button" class="ag-ps-switch" data-fx-toggle="keepOverviewOpen" data-on="${p.keepOverviewOpen ? '1' : '0'}" aria-label="保持概览面板展开"></button>
             </div>
 
             <div class="ag-ps-toggle-row">
@@ -2917,10 +3250,8 @@
         clearTimeout(beamPreviewTimer);
         beamPreviewTimer = 0;
       }
-      if (overviewRestoreTimer) {
-        clearTimeout(overviewRestoreTimer);
-        overviewRestoreTimer = 0;
-      }
+      clearOverviewRestoreTimers();
+      clearRailBurstTimers();
       if (returnNavFallbackTimer) {
         clearTimeout(returnNavFallbackTimer);
         returnNavFallbackTimer = 0;

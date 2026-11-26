@@ -144,20 +144,49 @@ export function parseQuotaText(rawText, nowMs = Date.now()) {
   return out;
 }
 
+function toFinitePctOrNull(v) {
+  if (v === undefined || v === null) return null;
+  if (typeof v === 'string' && v.trim() === '') return null;
+  if (typeof v === 'boolean') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, Math.round(n * 10) / 10));
+}
+
 function normalizeFamilyQuotaMap(families) {
   if (!families || typeof families !== 'object') return null;
   const out = {};
   for (const key of ['gemini', 'claude', 'gpt', 'other']) {
     const item = families[key];
     if (!item || typeof item !== 'object') continue;
-    const rec = {};
-    if (item.pct5h !== undefined && item.pct5h !== null && Number.isFinite(Number(item.pct5h))) {
-      rec.pct5h = Math.max(0, Math.min(100, Math.round(Number(item.pct5h) * 10) / 10));
+    const targetKey = key === 'gpt' ? 'claude' : key;
+    const prev = out[targetKey] || {};
+    const rec = { ...prev };
+    const p5 = toFinitePctOrNull(item.pct5h);
+    if (p5 !== null) {
+      if (rec.pct5h === undefined || p5 < rec.pct5h) {
+        rec.pct5h = p5;
+        if (typeof item.reset5hAt === 'string' && Number.isFinite(Date.parse(item.reset5hAt))) {
+          rec.reset5hAt = new Date(Date.parse(item.reset5hAt)).toISOString();
+        }
+      }
     }
-    if (item.pct7d !== undefined && item.pct7d !== null && Number.isFinite(Number(item.pct7d))) {
-      rec.pct7d = Math.max(0, Math.min(100, Math.round(Number(item.pct7d) * 10) / 10));
+    if (!rec.reset5hAt && typeof item.reset5hAt === 'string' && Number.isFinite(Date.parse(item.reset5hAt))) {
+      rec.reset5hAt = new Date(Date.parse(item.reset5hAt)).toISOString();
     }
-    if (Object.keys(rec).length) out[key] = rec;
+    const p7 = toFinitePctOrNull(item.pct7d);
+    if (p7 !== null) {
+      if (rec.pct7d === undefined || p7 < rec.pct7d) {
+        rec.pct7d = p7;
+        if (typeof item.reset7dAt === 'string' && Number.isFinite(Date.parse(item.reset7dAt))) {
+          rec.reset7dAt = new Date(Date.parse(item.reset7dAt)).toISOString();
+        }
+      }
+    }
+    if (!rec.reset7dAt && typeof item.reset7dAt === 'string' && Number.isFinite(Date.parse(item.reset7dAt))) {
+      rec.reset7dAt = new Date(Date.parse(item.reset7dAt)).toISOString();
+    }
+    if (Object.keys(rec).length) out[targetKey] = rec;
   }
   return Object.keys(out).length ? out : null;
 }
@@ -224,18 +253,65 @@ export function computeEffectiveQuota(lastQuota, nowMs = Date.now()) {
   const r5Ms = Date.parse(lastQuota.reset5hAt || '');
   const r7Ms = Date.parse(lastQuota.reset7dAt || '');
 
+  const rawTop5 = toFinitePctOrNull(lastQuota.window5hPct);
+  const rawTop7 = toFinitePctOrNull(lastQuota.window7dPct);
+
   const reset5hPassed = Number.isFinite(r5Ms)
     ? nowMs >= r5Ms
-    : (Number.isFinite(updatedMs) && lastQuota.window5hPct !== null && nowMs - updatedMs >= FIVE_HOURS_MS);
+    : (Number.isFinite(updatedMs) && rawTop5 !== null && nowMs - updatedMs >= FIVE_HOURS_MS);
   const reset7dPassed = Number.isFinite(r7Ms)
     ? nowMs >= r7Ms
-    : (Number.isFinite(updatedMs) && lastQuota.window7dPct !== null && nowMs - updatedMs >= SEVEN_DAYS_MS);
+    : (Number.isFinite(updatedMs) && rawTop7 !== null && nowMs - updatedMs >= SEVEN_DAYS_MS);
 
-  const effective5hPct = reset5hPassed ? 100 : (lastQuota.window5hPct ?? null);
-  const effective7dPct = reset7dPassed ? 100 : (lastQuota.window7dPct ?? null);
+  const effective5hPct = reset5hPassed ? 100 : rawTop5;
+  const effective7dPct = reset7dPassed ? 100 : rawTop7;
+
+  let effectiveFamilies = null;
+  if (lastQuota.families && typeof lastQuota.families === 'object') {
+    effectiveFamilies = {};
+    for (const [famKey, fam] of Object.entries(lastQuota.families)) {
+      if (!fam || typeof fam !== 'object') continue;
+      const fR5Ms = Date.parse(fam.reset5hAt || '');
+      const fR7Ms = Date.parse(fam.reset7dAt || '');
+      const fam5Passed = Number.isFinite(fR5Ms)
+        ? nowMs >= fR5Ms
+        : (reset5hPassed && !fam.reset5hAt);
+      const fam7Passed = Number.isFinite(fR7Ms)
+        ? nowMs >= fR7Ms
+        : (reset7dPassed && !fam.reset7dAt);
+      const nextFam = { ...fam };
+      const base5 = toFinitePctOrNull(fam.rawPct5h !== undefined ? fam.rawPct5h : fam.pct5h);
+      if (base5 !== null) {
+        nextFam.rawPct5h = base5;
+        nextFam.pct5h = fam5Passed ? 100 : base5;
+        nextFam.reset5hPassed = Boolean(fam5Passed);
+      } else {
+        delete nextFam.pct5h;
+        delete nextFam.rawPct5h;
+        delete nextFam.reset5hPassed;
+      }
+      const base7 = toFinitePctOrNull(fam.rawPct7d !== undefined ? fam.rawPct7d : fam.pct7d);
+      if (base7 !== null) {
+        nextFam.rawPct7d = base7;
+        nextFam.pct7d = fam7Passed ? 100 : base7;
+        nextFam.reset7dPassed = Boolean(fam7Passed);
+      } else {
+        delete nextFam.pct7d;
+        delete nextFam.rawPct7d;
+        delete nextFam.reset7dPassed;
+      }
+      if (!nextFam.reset5hAt && lastQuota.reset5hAt) nextFam.reset5hAt = lastQuota.reset5hAt;
+      if (!nextFam.reset7dAt && lastQuota.reset7dAt) nextFam.reset7dAt = lastQuota.reset7dAt;
+      if (nextFam.pct5h !== undefined || nextFam.pct7d !== undefined) {
+        effectiveFamilies[famKey] = nextFam;
+      }
+    }
+    if (!Object.keys(effectiveFamilies).length) effectiveFamilies = null;
+  }
 
   return {
     ...lastQuota,
+    families: effectiveFamilies,
     effective5hPct,
     effective7dPct,
     reset5hPassed,
@@ -371,6 +447,8 @@ function parseAntiClaudeQuotaSnapshotObject(obj) {
     const famKey = /gemini/i.test(gName) ? 'gemini' : (/claude|gpt/i.test(gName) ? 'claude' : 'other');
     let g5 = null;
     let g7 = null;
+    let g5Reset = '';
+    let g7Reset = '';
     for (const b of g.buckets) {
       if (!b || typeof b !== 'object') continue;
       const frac = Number(b.remainingFraction);
@@ -380,7 +458,12 @@ function parseAntiClaudeQuotaSnapshotObject(obj) {
       const secRaw = b.resetTime && b.resetTime.seconds !== undefined ? Number(b.resetTime.seconds) : NaN;
       const rstIso = Number.isFinite(secRaw) && secRaw > 1_000_000_000 ? new Date(secRaw * 1000).toISOString() : '';
       if (/5\s*h|5\s*hour|5\s*小时/i.test(win)) {
-        if (g5 === null || pct < g5) g5 = pct;
+        if (g5 === null || pct < g5) {
+          g5 = pct;
+          if (rstIso) g5Reset = rstIso;
+        } else if (!g5Reset && rstIso) {
+          g5Reset = rstIso;
+        }
         if (min5h === null || pct < min5h) {
           min5h = pct;
           if (rstIso) reset5hAt = rstIso;
@@ -388,7 +471,12 @@ function parseAntiClaudeQuotaSnapshotObject(obj) {
           reset5hAt = rstIso;
         }
       } else if (/week|7\s*d|周/i.test(win)) {
-        if (g7 === null || pct < g7) g7 = pct;
+        if (g7 === null || pct < g7) {
+          g7 = pct;
+          if (rstIso) g7Reset = rstIso;
+        } else if (!g7Reset && rstIso) {
+          g7Reset = rstIso;
+        }
         if (min7d === null || pct < min7d) {
           min7d = pct;
           if (rstIso) reset7dAt = rstIso;
@@ -399,12 +487,20 @@ function parseAntiClaudeQuotaSnapshotObject(obj) {
     }
     if (g5 !== null || g7 !== null) {
       const prev = families[famKey] || {};
-      families[famKey] = {
-        ...(prev.pct5h !== undefined ? { pct5h: prev.pct5h } : {}),
-        ...(prev.pct7d !== undefined ? { pct7d: prev.pct7d } : {}),
-        ...(g5 !== null ? { pct5h: prev.pct5h !== undefined ? Math.min(prev.pct5h, g5) : g5 } : {}),
-        ...(g7 !== null ? { pct7d: prev.pct7d !== undefined ? Math.min(prev.pct7d, g7) : g7 } : {})
-      };
+      const nextFam = { ...prev };
+      if (g5 !== null && (prev.pct5h === undefined || g5 < prev.pct5h)) {
+        nextFam.pct5h = g5;
+        if (g5Reset) nextFam.reset5hAt = g5Reset;
+      } else if (!nextFam.reset5hAt && g5Reset) {
+        nextFam.reset5hAt = g5Reset;
+      }
+      if (g7 !== null && (prev.pct7d === undefined || g7 < prev.pct7d)) {
+        nextFam.pct7d = g7;
+        if (g7Reset) nextFam.reset7dAt = g7Reset;
+      } else if (!nextFam.reset7dAt && g7Reset) {
+        nextFam.reset7dAt = g7Reset;
+      }
+      families[famKey] = nextFam;
     }
   }
 
@@ -1037,14 +1133,21 @@ export function createAccountManager(options = {}) {
         const eff = computeEffectiveQuota(a.lastQuota);
         const q7 = eff?.effective7dPct;
         const q5 = eff?.effective5hPct;
-        const qScore = (q7 === null || q7 === undefined ? 80 : Number(q7)) + (q5 === null || q5 === undefined ? 20 : Number(q5)) * 0.4;
-        const roleBoost = a.role === 'primary' ? 200 : 0;
+        const q7Num = q7 === null || q7 === undefined ? null : Number(q7);
+        const q5Num = q5 === null || q5 === undefined ? null : Number(q5);
+        const qScore = (q7Num === null ? 80 : q7Num) + (q5Num === null ? 20 : q5Num) * 0.4;
+        const healthyForPrimaryBoost =
+          (q7Num === null || q7Num >= hysteresis) && (q5Num === null || q5Num >= hysteresis);
+        const criticallyLow =
+          (q7Num !== null && q7Num < 10) || (q5Num !== null && q5Num < 10);
+        const roleBoost = a.role === 'primary' && healthyForPrimaryBoost ? 200 : 0;
+        const lowPenalty = criticallyLow ? 300 : 0;
         const compatBoost = compatible ? 1000 : 0;
         const prioPenalty = clampInt(a.priority, 1, 99, 50);
         return {
           account: a,
           compatible,
-          score: compatBoost + roleBoost + qScore - prioPenalty
+          score: compatBoost + roleBoost + qScore - lowPenalty - prioPenalty
         };
       })
       .sort((a, b) => b.score - a.score);
@@ -1255,7 +1358,8 @@ export function createAccountManager(options = {}) {
     }
     const target = { ...state.accounts[idx] };
     if (alias !== undefined) {
-      target.alias = redactMemoryText(String(alias).trim().slice(0, 48)) || target.alias;
+      const cleanedAlias = redactMemoryText(String(alias).trim().slice(0, 48));
+      target.alias = cleanedAlias || ((role || target.role) === 'primary' ? '主账号' : '备用账号');
     }
     if (role === 'primary' || role === 'backup') {
       if (role === 'primary') {

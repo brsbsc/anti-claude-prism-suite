@@ -295,8 +295,13 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
-  transition: opacity 180ms ease, background-color 180ms ease;
+  transition: right 180ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease, background-color 180ms ease;
   opacity: 0.72;
+}
+
+#ag-ps-outline-rail[data-occluded="1"] {
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 #ag-ps-outline-rail::-webkit-scrollbar {
@@ -711,6 +716,7 @@ html[data-ag-ps-compact="1"] :where([data-testid="autoscroll-viewport"] [data-te
   .ag-ps-qring-arc,
   .ag-ps-orb-btn,
   .ag-ps-orb-pill,
+  #ag-ps-outline-rail,
   .ag-ps-rail-dot,
   #ag-ps-rail-tip,
   .ag-ps-return-btn-primary,
