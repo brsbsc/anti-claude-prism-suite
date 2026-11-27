@@ -12,7 +12,7 @@
     try { window.__agPrismSuiteDispose(); } catch {}
   }
 
-  const SUITE_VERSION = '0.7.0';
+  const SUITE_VERSION = '0.8.0';
   const REPO_RELEASES_API = 'https://api.github.com/repos/wushuai0802/anti-claude-prism-suite/releases/latest';
   const REPO_RELEASES_URL = 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/latest';
   const STORAGE_KEY = 'ag_prism_suite_prefs_v1';
@@ -91,7 +91,8 @@
     inlineEditHelper: boolValidator,
     sessionFork: boolValidator,
     composerFileDrop: boolValidator,
-    wslExplorerRevealFix: boolValidator
+    wslExplorerRevealFix: boolValidator,
+    fastWindowRestore: boolValidator
   });
 
   const MIN_USER_TS = 1_700_000_000_000;
@@ -4935,20 +4936,64 @@
     emitBus('tick');
   }
 
+  let restoreWakeRaf1 = 0;
+  let restoreWakeRaf2 = 0;
+  let restoreWakeTimer = 0;
+
+  function cancelPendingRestoreWake() {
+    if (restoreWakeRaf1) {
+      cancelAnimationFrame(restoreWakeRaf1);
+      restoreWakeRaf1 = 0;
+    }
+    if (restoreWakeRaf2) {
+      cancelAnimationFrame(restoreWakeRaf2);
+      restoreWakeRaf2 = 0;
+    }
+    if (restoreWakeTimer) {
+      clearTimeout(restoreWakeTimer);
+      restoreWakeTimer = 0;
+    }
+  }
+
+  function notifyHostVisibility(state) {
+    try {
+      if (typeof window.__agSyncHostVisibility === 'function') {
+        window.__agSyncHostVisibility(state);
+      }
+    } catch {}
+  }
+
   function onVisibilityChange() {
     if (disposed) return;
+    cancelPendingRestoreWake();
     if (document.hidden) {
+      notifyHostVisibility('hidden');
       detachStreamObserver();
       clearInkHighlights();
       stopMascotRoaming(false);
       emitBus('visibility');
     } else {
-      emitBus('visibility');
-      tickAll();
+      notifyHostVisibility('visible');
+      // Yield two animation frames + 140ms so Chromium presents Frame 1 after unminimize with 0ms main-thread block
+      restoreWakeRaf1 = requestAnimationFrame(() => {
+        restoreWakeRaf1 = 0;
+        restoreWakeRaf2 = requestAnimationFrame(() => {
+          restoreWakeRaf2 = 0;
+          restoreWakeTimer = window.setTimeout(() => {
+            restoreWakeTimer = 0;
+            if (disposed || document.hidden) return;
+            emitBus('visibility');
+            tickAll();
+          }, 140);
+        });
+      });
     }
   }
   document.addEventListener('visibilitychange', onVisibilityChange);
-  onCleanup(() => document.removeEventListener('visibilitychange', onVisibilityChange));
+  onCleanup(() => {
+    cancelPendingRestoreWake();
+    document.removeEventListener('visibilitychange', onVisibilityChange);
+  });
 
   /* ---- Publish Versioned Event Bus (window.__agPrismBus v4) ---- */
   const prismBus = {

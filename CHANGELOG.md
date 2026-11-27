@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.8.0 - 2026-11-27
+
+- **窗口最小化恢复「零白屏」三层性能优化（实机热更新生效）**：
+  - **首帧让路与唤醒防踩踏**：重构 [prism-suite.js](extensions/prism-suite.js)、[prism-suite-fx.js](extensions/prism-suite-fx.js)、[runtime.js](vendor/anti-claude/core/runtime.js) 与 [custom.js](vendor/anti-claude/user/custom.js) 的 `visibilitychange / focus / resize` 恢复链路，采用 **双 `requestAnimationFrame` + `140ms` 合并防抖单次唤醒**，消除窗口恢复第 0 帧的重复同步重排阻塞；
+  - **常驻微件去离屏模糊与守护进程隐藏页免打扰**：移除常驻轮次圆点目录与状态胶囊的 `backdrop-filter` 离屏高斯模糊重建开销，并在 [daemon.mjs](vendor/anti-claude/core/daemon.mjs) 增加 `__agSyncHostVisibility` 最小化期间静默跳过非必要 `Runtime.evaluate` 心跳；
+  - **可选快捷方式防后台降频开关**：在顶栏 `✦ 棱镜 → 工作流与效率` 新增可选开关 **`极速窗口恢复（防最小化白屏）`**，按需为 Windows 快捷方式追加或还原 `--disable-renderer-backgrounding`。
+- **新增默认关闭（Default-Off）零上下文损耗的 Windows 原生电脑操控与浏览器受控桥体系（`prism-cua` + `prism-win-cua.exe` + `chrome-cua-bridge`）**：
+  - **双插件按需解耦架构（日常编码 `0` 额外工具 Token）**：主插件 `prism-files` 严格保持 8 个高频模型可见工具不变；桌面与网页受控能力独立拆分为同级插件 `plugin-cua/`（部署至 `~/.gemini/config/plugins/prism-cua`，仅暴露 `cua_status` / `cua_observe` / `cua_act` 三个高内聚工具），默认 `"disabled": true` 不占上下文，需要时通过 `customization://prism-cua` 一键热开启；
+  - **Windows 原生 CUA 宿主与 `0ms` 打字延迟保护（`native/win-cua/PrismWinCua.cs`）**：基于系统自带 `.NET Framework 4.8`（`/target:winexe` 零黑框 GUI 子系统 + Job Object 防孤儿进程 + 构建期 `.sha256` 强校验），支持 Per-Monitor V2 多屏负坐标 `65536` 逐像素映射、置顶显式授权弹窗（首 `450ms` 防盲敲误触）、屏幕顶边无焦点状态胶囊、MTA 线程受限 UIA 采集，以及**硬跳过 `Antigravity.exe` 自身与跳过 `Chrome_WidgetWin_1` 全树 UIA 遍历**以死守 `0ms` 打字延迟；
+  - **Codex 同款单键 `Esc` 动态作用域急刹（平时写代码零抢键）**：仅在 `cua_act` 实际操控键鼠的执行窗口期动态挂载 `RegisterHotKey(VK_ESCAPE)` + 步间 `GetAsyncKeyState` 轮询（动作结束立即释放，不影响日常 `Esc` 使用），按下瞬间 `<10ms` 清空队列、收回本轮授权并自动补发 8 个修饰键抬起信号防按键卡死；支持声明式 `batch_actions`（`1..12` 步、前置/后置断言、载荷指纹绑定的 `Idempotency-Key` 防冲突缓存與增量 Diff）；
+  - **Chrome / Edge 136+ MV3 零空闲开销受控浏览器桥（`extensions/chrome-cua-bridge/`）**：采用确定性公钥固定扩展 ID `lbmibnghmlnidfiihkegicaejaacmkca` 与 `/target:winexe` 无黑框 Native Messaging 中继；**严格仅对用户在扩展弹窗中显式点亮 `ARMED` 的同源标签页生效**，跨源跳转或进入受保护页立即自动撤权，`0` 个授权页时自动断连清零开销；命中密码框拒绝读写，命中 Turnstile / reCAPTCHA / hCaptcha 立即切入 `PAUSED_HANDOFF` 移交人工。
+- **Prism 工作台升级为七合一响应式看板（新增第 7 页签「`电脑操控`」）**：
+  - 在 [plugin/server/index.mjs](plugin/server/index.mjs) 新增 4 个仅前端可见（`visibility: ["app"]`）的管理桥接工具（`cua_bridge_status` / `cua_bridge_revoke` / `cua_bridge_register_nm` / `cua_bridge_open_ext_dir`），支持 `127.0.0.1` → WSL2 宿主机私网网关自动探测，并将 `cua-broker.json` 纳入敏感文件只读隔离名单；
+  - 在 [plugin/ui/app.html](plugin/ui/app.html) 新增 `电脑操控` 双栏宽屏仪表盘（支持 `Alt+7` 与 `lastTab` 记忆、可持久隐藏的 `cuaIntro` 架构说明卡）：左栏提供实时授权状态与租约倒计时、一键急刹收回权限、Chrome/Edge 扩展三步引导卡；右栏实时展示当前 `ARMED` 浏览器标签页与可观测桌面窗口列表。
+- **双插件与单文件安装器全链路同步升级（[install.mjs](install.mjs) / [uninstall.mjs](uninstall.mjs) / [build-win-exe.ps1](scripts/build-win-exe.ps1) / [PrismSuiteInstaller.cs](installer/win/PrismSuiteInstaller.cs)）**：
+  - `node install.mjs` 与 `Anti-Claude-Prism-Suite-Setup.exe` 自动原地保句柄（保留目录 inode）同步部署 `prism-files`、`prism-cua`（含 WSL2 目标环境）及 `~/.gemini/antigravity/prism-suite/chrome-bridge`，卸载时一并干净移除且不影响其他同级插件。
+
+## 0.7.0 - 2026-11-27
+
+- **新增零依赖 SSE 流式「模型会诊中枢（Model Hub）」与双轨快速配置**：
+  - 原生支持 `OpenAI Chat`、`OpenAI Responses` 与 `Anthropic Messages` 流式协议、T1–T4 四级能力梯队编排、拖拽收藏排序、单模型/批量 TTFT 测速、1 跳备用模型自动降级、防 SSRF 公网代搜与出站敏感信息脱敏，并提供 `/v1/models` 自动探测勾选导入与零密钥 AI 代配口令（修改已绑凭据库网关域名时强制重验密钥）。
+- **新增双模 SQLite FTS5 槽位记忆库与 3 项内置协作 Skill**：
+  - 基于 Node `>=22` 内置 `node:sqlite` 实现 WAL + 中英双语 FTS5 交接记忆库與 `catalog:master` 主目录槽位看板（自动识别 WSL `/mnt/*` 9P 挂载盘重定向至原生文件系统防坏库，支持可选远程 Streamable-HTTP Memory 异步桥），并随包内置 `prism-cross-model-council`、`prism-slot-relay`、`prism-upstream-absorb` 三项工程 Skill。
+- **全栈界面清晰度、12 款像素伙伴与 Windows 原生体验打磨**：
+  - 工作台文件类页签支持 `>=820px` 左右主从双栏分屏、图片 `适应 / 1:1 / 像素锐化` 预览、可持久隐藏并随时由顶栏 `? 说明` 恢复的页面指南，以及顶栏/侧边栏双向点击关闭工作台回原对话；
+  - 扩展套件升级 12 款高清像素角色（真实跟随 `running` 子 Agent 入场与挥手退场 + 5 大彩蛋）、渲染层优先的 Windows `Ctrl+/` 快捷键与术语校准、全链路 `windowsHide: true` 无黑框子进程与无首次提交（unborn）Git 仓库兼容。
+
 ## 0.6.1 - 2026-11-26
 
 - **无损接管修复 WSL 模式下原生「在文件资源管理器中显示」无法打开本地盘符（`C:/D:/E:/F:`）的问题**：

@@ -2529,19 +2529,157 @@
       flex-shrink: 0;
     }
 
-    /* Accounts Dashboard Responsive Layout */
-    .accounts-dashboard {
+    /* Accounts & CUA Dashboard Responsive Layout */
+    .accounts-dashboard,
+    .cua-dashboard {
       display: flex;
       flex-direction: column;
       gap: 10px;
     }
 
     .accounts-col-main,
-    .accounts-col-side {
+    .accounts-col-side,
+    .cua-col-main,
+    .cua-col-side {
       display: flex;
       flex-direction: column;
       gap: 10px;
       min-width: 0;
+    }
+
+    .cua-state-hero {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+    }
+
+    .cua-state-hero.is-observe {
+      background: var(--p-accent-soft);
+      border-color: rgba(37, 99, 235, 0.32);
+    }
+
+    .cua-state-hero.is-act {
+      background: var(--p-success-soft);
+      border-color: var(--p-success-border);
+    }
+
+    .cua-state-hero.is-human {
+      background: var(--p-warn-soft);
+      border-color: rgba(217, 119, 6, 0.36);
+    }
+
+    .cua-state-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--color-text-primary, var(--p-text));
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .cua-countdown-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-family: var(--font-mono, var(--p-font-mono));
+      font-size: 11.5px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      background: var(--color-background-primary, var(--p-bg));
+      border: 1px solid var(--color-border-primary, var(--p-border));
+      color: var(--color-text-primary, var(--p-text));
+    }
+
+    .cua-danger-btn {
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      height: 34px;
+      padding: 0 14px;
+      border-radius: 7px;
+      border: 1px solid rgba(220, 38, 38, 0.38);
+      background: var(--p-danger);
+      color: #ffffff;
+      font-family: inherit;
+      font-size: 12.5px;
+      font-weight: 650;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: opacity 140ms cubic-bezier(0.22, 1, 0.36, 1),
+                  transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .cua-danger-btn:hover:not(:disabled) {
+      opacity: 0.92;
+    }
+
+    .cua-danger-btn:active:not(:disabled) {
+      transform: scale(0.98);
+    }
+
+    .cua-danger-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .cua-step-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .cua-step-item {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      padding: 8px 10px;
+      border-radius: 7px;
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+    }
+
+    .cua-step-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .cua-live-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 4px;
+      max-height: 320px;
+      overflow-y: auto;
+      padding-right: 2px;
+    }
+
+    .cua-live-row {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding: 7px 9px;
+      border-radius: 7px;
+      border: 1px solid var(--color-border-secondary, var(--p-border));
+      background: var(--color-background-secondary, var(--p-bg-subtle));
+      min-width: 0;
+    }
+
+    .cua-live-row.is-armed {
+      background: var(--p-success-soft);
+      border-color: var(--p-success-border);
     }
 
     .accounts-standby-grid {
@@ -2587,7 +2725,8 @@
         margin-inline: max(14px, calc((100% - 1320px) / 2));
       }
 
-      .accounts-dashboard {
+      .accounts-dashboard,
+      .cua-dashboard {
         display: grid;
         grid-template-columns: minmax(0, 1.24fr) minmax(340px, 0.94fr);
         gap: 14px;
@@ -2679,7 +2818,7 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .tab-btn, .tab-btn::after, .ctrl-btn, .text-input, .list-row, .row-actions, .mini-btn, .mhub-id-copy, .toast, .filter-pill, .search-card, .preview-drawer, .relay-acc-chevron, .top-progress, .path-breadcrumbs, .crumb-btn {
+      .tab-btn, .tab-btn::after, .ctrl-btn, .cua-danger-btn, .text-input, .list-row, .row-actions, .mini-btn, .mhub-id-copy, .toast, .filter-pill, .search-card, .preview-drawer, .relay-acc-chevron, .top-progress, .path-breadcrumbs, .crumb-btn {
         transition: none !important;
         animation: none !important;
       }
@@ -2699,6 +2838,7 @@
         <button type="button" class="tab-btn" role="tab" id="tab-btn-search" data-tab="search" aria-selected="false" title="历史检索 (Alt+4)">历史检索</button>
         <button type="button" class="tab-btn" role="tab" id="tab-btn-models" data-tab="models" aria-selected="false" title="模型中枢 (Alt+5)">模型中枢</button>
         <button type="button" class="tab-btn" role="tab" id="tab-btn-accounts" data-tab="accounts" aria-selected="false" title="账号接力 (Alt+6)">账号接力</button>
+        <button type="button" class="tab-btn" role="tab" id="tab-btn-cua" data-tab="cua" aria-selected="false" title="电脑操控 (Alt+7)">电脑操控</button>
       </nav>
       <div class="topbar-controls">
         <button type="button" id="btn-smb-toggle" class="ctrl-btn" aria-pressed="false" title="允许局域网 NAS/SMB 路径（默认关闭；开启后仅放行私网/Tailscale/本地 UNC，拒绝公网主机以防 NTLM 泄露）">
@@ -2851,6 +2991,20 @@
           </div>
           <div id="accounts-wrap" class="list-scroll relay-scroll">
             <div class="empty-state">正在加载账号接力与上游雷达状态…</div>
+          </div>
+        </section>
+
+        <!-- Tab 7: 电脑操控 (CUA) -->
+        <section id="panel-cua" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-cua" tabindex="-1">
+          <div class="subbar" style="flex-wrap:wrap;">
+            <span id="cua-summary-label" class="subbar-info">受控桌面与浏览器桥 · 默认关闭零 Token 开销 · 全局 Esc 急刹</span>
+            <div style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;flex-shrink:0;">
+              <span id="cua-broker-pill" class="pill">检测中…</span>
+              <button type="button" id="btn-cua-refresh" class="ctrl-btn" title="刷新守护进程授权状态、已授权标签页与可观测桌面窗口">↻ 刷新状态</button>
+            </div>
+          </div>
+          <div id="cua-wrap" class="list-scroll relay-scroll">
+            <div class="empty-state">切换至「电脑操控」后加载受控桌面与浏览器桥实时状态…</div>
           </div>
         </section>
       </div>
@@ -3030,6 +3184,14 @@
             radar: false
           }
         },
+        cua: {
+          loaded: false,
+          loading: false,
+          acting: false,
+          error: '',
+          data: null,
+          seq: 0
+        },
         homeDir: '',
         brainDir: '',
         platformLabel: 'Windows 资源管理器',
@@ -3101,7 +3263,8 @@
         pins: $('panel-pins'),
         search: $('panel-search'),
         models: $('panel-models'),
-        accounts: $('panel-accounts')
+        accounts: $('panel-accounts'),
+        cua: $('panel-cua')
       };
 
       const btnSmbToggle = $('btn-smb-toggle');
@@ -3160,6 +3323,10 @@
       const accountsVaultLabel = $('accounts-vault-label');
       const accountsActivePill = $('accounts-active-pill');
       const accountsWrap = $('accounts-wrap');
+      const cuaSummaryLabel = $('cua-summary-label');
+      const cuaBrokerPill = $('cua-broker-pill');
+      const btnCuaRefresh = $('btn-cua-refresh');
+      const cuaWrap = $('cua-wrap');
 
       const previewDrawer = $('preview-drawer');
       const previewResizer = $('preview-resizer');
@@ -3206,11 +3373,13 @@
       let focusFlashTimer = 0;
       let quotaWaitRetryTimer = 0;
       let quotaWaitRetryCount = 0;
+      let cuaLeaseTimer = 0;
       const btnFeedbackMap = new WeakMap();
       const activeFeedbackTimers = new Set();
       const FILE_TABS = new Set(['browse', 'artifacts', 'pins']);
       const WIDE_SPLIT_MIN_WIDTH = 820;
-      const RESTORABLE_TABS = ['browse', 'artifacts', 'pins', 'search', 'models'];
+      const VALID_TABS = ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts', 'cua'];
+      const RESTORABLE_TABS = ['browse', 'artifacts', 'pins', 'search', 'models', 'cua'];
       const DISMISSED_GUIDES_LS_KEY = 'ag_prism_dismissed_guides_v1';
       let arrowPreviewTimer = 0;
       let guideSaveInFlight = 0;
@@ -3297,6 +3466,7 @@
       }
 
       function isTabGuideCurrentlyVisible(tab = appState.activeTab) {
+        if (tab === 'cua') return !isGuideDismissed('cuaIntro');
         if (tab === 'models') return !isGuideDismissed('guide:models:v1');
         if (tab === 'accounts') {
           const d = appState.accounts.data;
@@ -3309,6 +3479,10 @@
 
       async function toggleActiveTabGuide() {
         const tab = appState.activeTab;
+        if (tab === 'cua') {
+          await setGuideDismissed('cuaIntro', !isGuideDismissed('cuaIntro'), { silent: true });
+          return;
+        }
         if (tab === 'models') {
           const curHidden = isGuideDismissed('guide:models:v1');
           const nextDismissed = !curHidden;
@@ -3460,7 +3634,7 @@
       }
 
       function navigateFromExternalBridge(tab, { intentId = '', requestId = '', sessionId = '', focus = true, replyWin = null, replyOrigin = '*' } = {}) {
-        if (!['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'].includes(tab)) {
+        if (!VALID_TABS.includes(tab)) {
           postBridgeToMain({ type: 'ack', intentId, requestId, sessionId, ok: false, error: 'invalid-tab' }, replyWin, replyOrigin);
           return;
         }
@@ -3581,6 +3755,7 @@
         if (arrowPreviewTimer) clearTimeout(arrowPreviewTimer);
         if (focusFlashTimer) clearTimeout(focusFlashTimer);
         if (quotaWaitRetryTimer) clearTimeout(quotaWaitRetryTimer);
+        if (cuaLeaseTimer) clearInterval(cuaLeaseTimer);
         if (countdownRaf) cancelAnimationFrame(countdownRaf);
         for (const t of activeFeedbackTimers) clearTimeout(t);
         activeFeedbackTimers.clear();
@@ -4555,7 +4730,7 @@
       }
 
       function switchTab(tab, { persist = false, fromExternal = false } = {}) {
-        if (!['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'].includes(tab)) return;
+        if (!VALID_TABS.includes(tab)) return;
         closeOpenWithMenu();
         appState.activeTab = tab;
         if (!fromExternal && persist) {
@@ -4591,6 +4766,10 @@
           clearTimeout(quotaWaitRetryTimer);
           quotaWaitRetryTimer = 0;
         }
+        if (tab !== 'cua' && cuaLeaseTimer) {
+          clearInterval(cuaLeaseTimer);
+          cuaLeaseTimer = 0;
+        }
         if (tab === 'artifacts' && !appState.artifacts.loaded && !appState.artifacts.loading) {
           loadArtifacts();
         } else if (tab === 'pins' && !appState.pins.loaded && !appState.pins.loading) {
@@ -4602,6 +4781,13 @@
           loadModelsTab();
         } else if (tab === 'accounts' && !appState.accounts.loaded && !appState.accounts.loading) {
           loadAccountsTab({ forceRefresh: false });
+        } else if (tab === 'cua') {
+          if (!appState.cua.loaded && !appState.cua.loading) {
+            loadCuaTab();
+          } else {
+            syncCuaLeaseCountdownTimer();
+            renderCua();
+          }
         }
       }
 
@@ -5266,7 +5452,7 @@
                   `<div class="inspector-kbd-item"><kbd>拖拽文件行</kbd><span>直接拖入对话框附加路径引用</span></div>` +
                   `<div class="inspector-kbd-item"><kbd>Ctrl + L</kbd><span>编辑或粘贴任意本地 / NAS 路径</span></div>` +
                   `<div class="inspector-kbd-item"><kbd>/</kbd><span>0ms 聚焦过滤当前列表</span></div>` +
-                  `<div class="inspector-kbd-item"><kbd>Alt + 1..6</kbd><span>键盘一键切换六大工作台页签</span></div>` +
+                  `<div class="inspector-kbd-item"><kbd>Alt + 1..7</kbd><span>键盘一键切换七大工作台页签</span></div>` +
                 `</div>` +
               `</div>` +
             `</div>`;
@@ -5444,6 +5630,7 @@
         renderSearch();
         renderModels();
         renderAccounts();
+        renderCua();
         renderPreviewDrawer();
       }
 
@@ -6209,7 +6396,7 @@
           accountsWrap.innerHTML = isStaleServer
             ? `<article class="relay-card is-warn">` +
                 `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-acc-action="reload-tab">重新检测</button></div>` +
-                `<p class="relay-sub">界面已更新到 v0.7.0，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
+                `<p class="relay-sub">界面已更新到 v0.8.0，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程。</p>` +
                 `<p class="relay-sub"><strong>生效方法：</strong>在 <strong>Plugins Manager</strong> 中把 <code>prism-files</code> 关闭再重新开启，或直接重启一次 Antigravity 即可恢复。</p>` +
                 `<p class="relay-sub" style="opacity:0.78;">原始信息：<code>${escapeHtml(st.error)}</code></p>` +
               `</article>`
@@ -7012,7 +7199,7 @@
               ? `<span class="pill pill-warn">新版本 ${escapeHtml(suInfo.latestTag)}</span>`
               : st.radarLoading
                 ? '<span class="pill">检查中</span>'
-                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.7.0</span>');
+                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.8.0</span>');
         const radarOpen = Boolean(st.openSections?.radar || st.radarLoading || rad || st.selfUpdateChecking || st.selfUpdateApplying || suInfo || suRes);
         sideParts.push(
           `<details class="relay-accordion" data-sec="radar" ${radarOpen ? 'open' : ''}>` +
@@ -7041,6 +7228,326 @@
           `<div class="accounts-dashboard">` +
             `<div class="accounts-col-main">${mainParts.join('')}</div>` +
             `<div class="accounts-col-side">${sideParts.join('')}</div>` +
+          `</div>`;
+      }
+
+      function formatCuaRemainText(expiresAtMs) {
+        const exp = Number(expiresAtMs) || 0;
+        if (!exp || exp <= Date.now()) return '';
+        const sec = Math.max(0, Math.ceil((exp - Date.now()) / 1000));
+        const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+        const ss = String(sec % 60).padStart(2, '0');
+        return `${mm}:${ss}`;
+      }
+
+      function syncCuaLeaseCountdownTimer() {
+        if (cuaLeaseTimer) {
+          clearInterval(cuaLeaseTimer);
+          cuaLeaseTimer = 0;
+        }
+        const exp = Number(appState.cua.data?.expiresAtMs) || 0;
+        if (appState.activeTab !== 'cua' || exp <= Date.now()) return;
+        cuaLeaseTimer = setInterval(() => {
+          if (appState.activeTab !== 'cua') {
+            clearInterval(cuaLeaseTimer);
+            cuaLeaseTimer = 0;
+            return;
+          }
+          const curExp = Number(appState.cua.data?.expiresAtMs) || 0;
+          const badgeEl = document.getElementById('cua-lease-countdown');
+          if (curExp <= Date.now()) {
+            clearInterval(cuaLeaseTimer);
+            cuaLeaseTimer = 0;
+            loadCuaTab({ silent: true });
+            return;
+          }
+          if (badgeEl) {
+            badgeEl.textContent = `剩余租约 ${formatCuaRemainText(curExp)}`;
+          }
+        }, 1000);
+      }
+
+      async function loadCuaTab({ silent = false } = {}) {
+        const seq = ++appState.cua.seq;
+        if (!silent) {
+          appState.cua.loading = true;
+          appState.cua.error = '';
+          setTopProgress(true);
+          if (!appState.cua.data) renderCua();
+        }
+        try {
+          const st = await callServerTool('cua_bridge_status', {});
+          if (seq !== appState.cua.seq) return;
+          appState.cua.data = st || null;
+          appState.cua.loaded = true;
+          appState.cua.loading = false;
+          if (!silent) setTopProgress(false);
+        } catch (err) {
+          if (seq !== appState.cua.seq) return;
+          appState.cua.loading = false;
+          if (!silent) {
+            setTopProgress(false);
+            appState.cua.error = err?.message || '读取电脑操控守护状态失败';
+          }
+        }
+        syncCuaLeaseCountdownTimer();
+        renderCua();
+      }
+
+      function renderCua() {
+        if (!cuaWrap) return;
+        renderTopbar();
+        const st = appState.cua;
+        const d = st.data;
+
+        if (cuaBrokerPill) {
+          if (st.loading && !d) {
+            cuaBrokerPill.className = 'pill';
+            cuaBrokerPill.textContent = '检测中…';
+          } else if (d?.brokerOnline) {
+            cuaBrokerPill.className = 'pill pill-ok';
+            cuaBrokerPill.textContent = '🟢 守护进程在线';
+          } else {
+            cuaBrokerPill.className = 'pill';
+            cuaBrokerPill.textContent = '⚪ 守护离线';
+          }
+        }
+        if (cuaSummaryLabel && d) {
+          const armedCnt = Array.isArray(d.armedTabs) ? d.armedTabs.length : 0;
+          const winCnt = Array.isArray(d.windows) ? d.windows.length : 0;
+          cuaSummaryLabel.textContent = d.brokerOnline
+            ? `状态：${d.stateLabelZh || '未授权锁定'} · 已授权网页 ${armedCnt} 页 · 可观测窗口 ${winCnt} 个`
+            : '受控桌面与浏览器桥 · 默认关闭零 Token 开销 · 全局 Esc 急刹';
+        }
+
+        if (st.loading && !d) {
+          cuaWrap.innerHTML = '<div class="empty-state">正在读取本地 CUA 守护进程与浏览器受控桥状态…</div>';
+          return;
+        }
+
+        if (st.error && !d) {
+          const isStaleServer = /not found|permission_denied|unknown tool/i.test(st.error);
+          cuaWrap.innerHTML = isStaleServer
+            ? `<article class="relay-card is-warn">` +
+                `<div class="relay-card-head"><span class="relay-title">🔄 后台插件进程仍为旧版本</span><button type="button" class="mini-btn is-primary" data-cua-action="refresh">重新检测</button></div>` +
+                `<p class="relay-sub">界面已更新到 v0.8.0，但当前驻留的 <code>prism-files</code> 插件后台还是热部署前启动的旧进程；请在 Plugins Manager 重载插件或重启一次 Antigravity。</p>` +
+              `</article>`
+            : `<article class="relay-card is-warn">` +
+                `<div class="relay-card-head"><span class="relay-title">读取电脑操控状态失败</span><button type="button" class="mini-btn is-primary" data-cua-action="refresh">重试</button></div>` +
+                `<p class="relay-sub">${escapeHtml(st.error)}</p>` +
+              `</article>`;
+          return;
+        }
+
+        const extId = d?.extensionId || 'lbmibnghmlnidfiihkegicaejaacmkca';
+        const customUri = d?.customizationUri || 'customization://prism-cua';
+        const bridgeDisplay = d?.chromeBridgeDisplayPath || '%USERPROFILE%\\.gemini\\antigravity\\prism-suite\\chrome-bridge';
+        const brokerOnline = Boolean(d?.brokerOnline);
+        const pluginInstalled = Boolean(d?.pluginInstalled);
+        const controlState = d?.controlState || 'locked';
+        const stateLabelZh = d?.stateLabelZh || '未授权锁定';
+        const remainTxt = formatCuaRemainText(d?.expiresAtMs);
+        const armedTabs = Array.isArray(d?.armedTabs) ? d.armedTabs : [];
+        const windows = Array.isArray(d?.windows) ? d.windows : [];
+        const nmRegistered = Boolean(d?.nmHostRegistered);
+        const nmConnected = Boolean(d?.nmConnected || armedTabs.length > 0);
+        const hasHiddenAny = (appState.prefs.dismissedGuides || []).length > 0;
+
+        const guideHtml = !isGuideDismissed('cuaIntro')
+          ? `<div class="guide-banner" data-guide-id="cuaIntro" style="margin-bottom:10px;">` +
+              `<div class="guide-banner-head">` +
+                `<span class="guide-banner-title">🖥️ Prism 电脑操控 (CUA) · 默认关闭零 Token 开销与全局 Esc 急刹机制</span>` +
+                `<div class="guide-banner-actions">` +
+                  (hasHiddenAny ? `<button type="button" class="mini-btn" data-guide-action="restore-all">恢复全部说明</button>` : '') +
+                  `<button type="button" class="mini-btn" data-guide-dismiss="cuaIntro" title="隐藏本说明（随时可点顶栏 ? 说明恢复）">× 不再显示</button>` +
+                `</div>` +
+              `</div>` +
+              `<p><strong>1. 默认关闭（Default-Off）零上下文损耗：</strong>受控操控工具独立封装在同级插件 <code>prism-cua</code> 中并默认关闭，日常编码对话<strong>零额外工具 Token 占用</strong>；需要桌面/网页自动化时，通过 <code>${escapeHtml(customUri)}</code> 按需开启，用完即关。<br />` +
+              `<strong>2. Codex 风格全局 <code>Esc</code> 物理急刹：</strong>AI 执行键鼠或网页操作期间，无需切回聊天框，在系统任意窗口按下物理 <code>Esc</code> 键（或点击下方红色急停按钮），守护进程毫秒级立即终止动作队列并吊销全部租约。<br />` +
+              `<strong>3. 最小化防黑屏与硬红线拦截：</strong>观测最小化窗口时自动无抢焦点恢复渲染画面；密码输入框、银行卡字段及 Turnstile / reCAPTCHA / hCaptcha 人机验证一律硬拦截并转交人工接管。</p>` +
+            `</div>`
+          : '';
+
+        const heroToneClass = controlState === 'act'
+          ? ' is-act'
+          : controlState === 'observe'
+            ? ' is-observe'
+            : controlState === 'human_wait'
+              ? ' is-human'
+              : '';
+        const heroIcon = controlState === 'act'
+          ? '⚡'
+          : controlState === 'observe'
+            ? '👁️'
+            : controlState === 'human_wait'
+              ? '🙋'
+              : '🔒';
+
+        const pluginPill = pluginInstalled
+          ? '<span class="pill pill-ok" title="已安装 ~/.gemini/config/plugins/prism-cua">prism-cua 已部署</span>'
+          : '<span class="pill pill-warn" title="运行安装器或 node install.mjs 即可自动部署 prism-cua">prism-cua 待部署</span>';
+        const brokerStatusPill = brokerOnline
+          ? '<span class="pill pill-ok">Broker 在线</span>'
+          : '<span class="pill">Broker 离线（按需唤醒或待启动守护）</span>';
+
+        const controlCardHtml =
+          `<article class="relay-card">` +
+            `<div class="relay-card-head">` +
+              `<div class="search-card-meta">` +
+                `<span class="relay-title">🛡️ 操控总控与授权状态</span>` +
+                brokerStatusPill +
+                pluginPill +
+              `</div>` +
+              `<button type="button" class="mini-btn" data-cua-action="refresh" ${st.loading ? 'disabled' : ''}>↻ 刷新</button>` +
+            `</div>` +
+            `<div class="cua-state-hero${heroToneClass}">` +
+              `<div style="display:flex;flex-direction:column;gap:3px;min-width:0;">` +
+                `<div class="cua-state-title">` +
+                  `<span aria-hidden="true">${heroIcon}</span>` +
+                  `<span>当前状态：${escapeHtml(stateLabelZh)}</span>` +
+                  (remainTxt ? `<span id="cua-lease-countdown" class="cua-countdown-pill">剩余租约 ${escapeHtml(remainTxt)}</span>` : '') +
+                `</div>` +
+                `<span class="relay-sub">` +
+                  (brokerOnline
+                    ? '支持状态流转：未授权锁定 / 只读观察 / 键鼠操控中 / 等待人工接管（任意时刻按物理 Esc 立即急刹）'
+                    : '当前未检测到活跃 Windows CUA Broker；在 Windows 侧启动内置守护进程或调用 prism-cua 工具时将自动就绪。') +
+                `</span>` +
+              `</div>` +
+              `<button type="button" class="cua-danger-btn" data-cua-action="revoke" ${!brokerOnline || st.acting ? 'disabled' : ''} title="立即中断所有正在执行的键鼠/网页动作，吊销租约并解除已授权标签页">🛑 立即收回全部操控权限</button>` +
+            `</div>` +
+            `<div class="relay-card-head" style="margin-top:4px;padding-top:6px;border-top:1px dashed var(--color-border-secondary, var(--p-border));">` +
+              `<div class="relay-sub" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">` +
+                `<span>按需启用入口：<code>${escapeHtml(customUri)}</code></span>` +
+              `</div>` +
+              `<div class="search-card-actions">` +
+                `<button type="button" class="mini-btn is-primary" data-cua-action="open-plugin-mgr" data-uri="${escapeHtml(customUri)}" title="在 Antigravity 插件管理页定位 prism-cua 按需开关">打开插件开关</button>` +
+                `<button type="button" class="mini-btn" data-cua-action="copy-text" data-text="${escapeHtml(customUri)}">复制地址</button>` +
+              `</div>` +
+            `</div>` +
+          `</article>`;
+
+        const nmStatusPill = nmConnected
+          ? '<span class="pill pill-ok">扩展桥实时已连</span>'
+          : nmRegistered
+            ? '<span class="pill pill-ok">宿主已注册（0页授权零驻留）</span>'
+            : '<span class="pill pill-warn">待一键注册宿主</span>';
+
+        const browserCardHtml =
+          `<article class="relay-card">` +
+            `<div class="relay-card-head">` +
+              `<div class="search-card-meta">` +
+                `<span class="relay-title">🌐 Chrome / Edge 136+ 扩展桥三步配置</span>` +
+                nmStatusPill +
+              `</div>` +
+              `<button type="button" class="mini-btn" data-cua-action="copy-text" data-text="${escapeHtml(extId)}" title="复制固定公钥派生的扩展 ID">复制固定 ID</button>` +
+            `</div>` +
+            `<div class="relay-sub">固定扩展 ID：<code>${escapeHtml(extId)}</code>（无需管理员权限，仅用户点击扩展图标显式 <code>ARMED</code> 的同源标签页可被访问，跨源跳转自动撤权）</div>` +
+            `<div class="cua-step-list">` +
+              `<div class="cua-step-item">` +
+                `<div class="cua-step-head">` +
+                  `<strong>第 1 步 · 注册本机 Native Messaging 宿主</strong>` +
+                  `<button type="button" class="mini-btn is-primary" data-cua-action="register-nm" ${st.acting ? 'disabled' : ''}>1. 一键注册 Native Messaging 宿主</button>` +
+                `</div>` +
+                `<span class="relay-sub">向当前用户注册表写入 <code>com.prism.cua.bridge</code> 宿主清单（同时支持 Chrome 与 Edge，绑定固定 ID <code>${escapeHtml(extId)}</code>）。</span>` +
+              `</div>` +
+              `<div class="cua-step-item">` +
+                `<div class="cua-step-head">` +
+                  `<strong>第 2 步 · 定位已释放的受控桥扩展目录</strong>` +
+                  `<button type="button" class="mini-btn is-primary" data-cua-action="open-ext-dir">2. 打开 chrome-bridge 扩展目录</button>` +
+                `</div>` +
+                `<span class="relay-sub">在资源管理器打开 <code>${escapeHtml(bridgeDisplay)}</code>，备好文件夹路径供浏览器加载。</span>` +
+              `</div>` +
+              `<div class="cua-step-item">` +
+                `<div class="cua-step-head">` +
+                  `<strong>第 3 步 · 在浏览器加载已解压扩展并按页授权</strong>` +
+                  `<div class="search-card-actions">` +
+                    `<button type="button" class="mini-btn is-primary" data-cua-action="copy-text" data-text="chrome://extensions">3. 复制 chrome://extensions 加载已解压扩展</button>` +
+                    `<button type="button" class="mini-btn" data-cua-action="copy-text" data-text="edge://extensions" title="Edge 浏览器扩展页地址">复制 edge://extensions</button>` +
+                  `</div>` +
+                `</div>` +
+                `<span class="relay-sub">粘贴到浏览器地址栏回车 → 开启右上角<strong>「开发者模式」</strong> → 点<strong>「加载已解压的扩展程序」</strong>选中第 2 步打开的 <code>chrome-bridge</code> 目录 → 在需要协助的网页右上角点扩展图标开启 <strong>「授权操控当前标签页 (ARMED)」</strong>。</span>` +
+              `</div>` +
+            `</div>` +
+          `</article>`;
+
+        const armedRowsHtml = armedTabs.length
+          ? `<div class="cua-live-list">` +
+              armedTabs.map((t) => {
+                const origin = t.armedOrigin || t.origin || '';
+                const title = t.title || origin || `标签页 #${t.tabId ?? '-'}`;
+                return (
+                  `<div class="cua-live-row is-armed">` +
+                    `<div class="relay-card-head">` +
+                      `<span class="row-name" style="font-weight:600;" title="${escapeHtml(t.url || origin)}">${escapeHtml(title)}</span>` +
+                      `<div class="search-card-meta">` +
+                        `<span class="pill pill-ok">ARMED</span>` +
+                        (t.tabId ? `<span class="pill">#${escapeHtml(String(t.tabId))}</span>` : '') +
+                      `</div>` +
+                    `</div>` +
+                    `<div class="relay-sub"><code>${escapeHtml(origin || t.url || '-')}</code></div>` +
+                  `</div>`
+                );
+              }).join('') +
+            `</div>`
+          : `<div class="relay-sub" style="padding:8px 2px;">当前 <strong>0</strong> 个已授权标签页（扩展后台处于 0 连接零开销休眠态；在浏览器工具栏点击 Prism 受控桥图标并点「授权操控当前标签页」后会实时显示在此处）。</div>`;
+
+        const winRowsHtml = windows.length
+          ? `<div class="cua-live-list">` +
+              windows.slice(0, 40).map((w) => {
+                const title = w.title || w.name || '(无标题窗口)';
+                const proc = w.processName || w.process || w.exe || '';
+                const hwnd = w.hwnd || w.handle || '';
+                const isMin = Boolean(w.isMinimized || w.minimized);
+                const isFg = Boolean(w.isForeground || w.active || w.focused);
+                const boundsTxt = (w.bounds && Number.isFinite(w.bounds.width))
+                  ? `${w.bounds.width}×${w.bounds.height}`
+                  : (Number.isFinite(w.width) && Number.isFinite(w.height) ? `${w.width}×${w.height}` : '');
+                return (
+                  `<div class="cua-live-row">` +
+                    `<div class="relay-card-head">` +
+                      `<span class="row-name" title="${escapeHtml(title)}">${escapeHtml(title)}</span>` +
+                      `<div class="search-card-meta">` +
+                        (isFg ? '<span class="pill pill-ok">前台</span>' : '') +
+                        (isMin ? '<span class="pill pill-warn" title="观测时自动无抢焦点恢复防黑屏">最小化</span>' : '') +
+                        (proc ? `<span class="pill">${escapeHtml(proc)}</span>` : '') +
+                      `</div>` +
+                    `</div>` +
+                    `<div class="relay-sub">` +
+                      (hwnd ? `句柄 <code>${escapeHtml(String(hwnd))}</code>` : '') +
+                      (w.pid ? `${hwnd ? ' · ' : ''}PID <code>${escapeHtml(String(w.pid))}</code>` : '') +
+                      (boundsTxt ? ` · 尺寸 <code>${escapeHtml(boundsTxt)}</code>` : '') +
+                    `</div>` +
+                  `</div>`
+                );
+              }).join('') +
+            `</div>`
+          : `<div class="relay-sub" style="padding:8px 2px;">${brokerOnline ? '暂未检出可观测的桌面顶层窗口，点右上角「刷新」重新枚举。' : '守护进程离线中；启动后将在此实时列出当前桌面可观测窗口（含最小化窗口状态与尺寸）。'}</div>`;
+
+        const rightColHtml =
+          `<article class="relay-card">` +
+            `<div class="relay-card-head">` +
+              `<div class="search-card-meta">` +
+                `<span class="relay-title">🎯 已授权标签页 (ARMED) &amp; 可观测桌面窗口</span>` +
+              `</div>` +
+              `<button type="button" class="mini-btn is-primary" data-cua-action="refresh" ${st.loading ? 'disabled' : ''}>↻ 刷新列表</button>` +
+            `</div>` +
+            `<div class="relay-section-head" style="margin-top:2px;">` +
+              `<span class="relay-section-head-left">🌐 当前已授权浏览器标签页 (${armedTabs.length})</span>` +
+              `<span style="font-weight:400;font-size:10.5px;">跨源跳转自动撤权</span>` +
+            `</div>` +
+            armedRowsHtml +
+            `<div class="relay-section-head" style="margin-top:8px;">` +
+              `<span class="relay-section-head-left">🪟 可观测桌面窗口实时列表 (${windows.length})</span>` +
+              `<span style="font-weight:400;font-size:10.5px;">最小化窗口观测自动防黑屏</span>` +
+            `</div>` +
+            winRowsHtml +
+          `</article>`;
+
+        cuaWrap.innerHTML =
+          guideHtml +
+          `<div class="cua-dashboard">` +
+            `<div class="cua-col-main">${controlCardHtml}${browserCardHtml}</div>` +
+            `<div class="cua-col-side">${rightColHtml}</div>` +
           `</div>`;
       }
 
@@ -7079,7 +7586,7 @@
         if (typeof sc.warning === 'string' && sc.warning.trim()) {
           showToast(sc.warning.trim(), true);
         }
-        if (sc.tab && ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'].includes(sc.tab) && !isExternalNavLocked()) {
+        if (sc.tab && VALID_TABS.includes(sc.tab) && !isExternalNavLocked()) {
           switchTab(sc.tab);
         }
         if (sc.selectFile) {
@@ -7117,7 +7624,7 @@
             return;
           }
           if (msg.type === 'init-sync') {
-            if (msg.switchTab && ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'].includes(msg.switchTab)) {
+            if (msg.switchTab && VALID_TABS.includes(msg.switchTab)) {
               navigateFromExternalBridge(msg.switchTab, {
                 intentId: String(msg.intentId || ''),
                 requestId: String(msg.requestId || ''),
@@ -7180,7 +7687,7 @@
         } else if (msg.method === 'ui/notifications/tool-input') {
           appState.hasToolInput = true;
           const args = msg.params?.arguments || msg.params || {};
-          if (args.tab && ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'].includes(args.tab)) {
+          if (args.tab && VALID_TABS.includes(args.tab)) {
             switchTab(args.tab);
           }
         } else if (msg.method === 'ui/notifications/tool-result') {
@@ -7327,8 +7834,79 @@
           loadModelsTab();
         } else if (appState.activeTab === 'accounts') {
           loadAccountsTab({ forceRefresh: true });
+        } else if (appState.activeTab === 'cua') {
+          loadCuaTab();
         }
       });
+
+      if (btnCuaRefresh) {
+        btnCuaRefresh.addEventListener('click', () => {
+          loadCuaTab();
+        });
+      }
+
+      if (cuaWrap) {
+        cuaWrap.addEventListener('click', async (event) => {
+          const btn = event.target.closest('button[data-cua-action]');
+          if (!btn) return;
+          const act = btn.dataset.cuaAction;
+          try {
+            if (act === 'refresh') {
+              await loadCuaTab();
+              showToast('已刷新电脑操控守护与窗口列表');
+            } else if (act === 'revoke') {
+              appState.cua.acting = true;
+              renderCua();
+              const res = await callServerTool('cua_bridge_revoke', {});
+              appState.cua.acting = false;
+              showToast(res?.message || res?.error || '已发送收回操控权限指令', !res?.ok);
+              await loadCuaTab({ silent: true });
+            } else if (act === 'register-nm') {
+              appState.cua.acting = true;
+              renderCua();
+              const res = await callServerTool('cua_bridge_register_nm', {});
+              appState.cua.acting = false;
+              if (res?.ok) flashButtonFeedback(btn, '✓ 已注册宿主', 1400);
+              showToast(res?.message || res?.error || '注册完成', !res?.ok);
+              await loadCuaTab({ silent: true });
+            } else if (act === 'open-ext-dir') {
+              const res = await callServerTool('cua_bridge_open_ext_dir', {});
+              if (res?.ok) flashButtonFeedback(btn, '✓ 已打开目录', 1300);
+              showToast(
+                res?.ok
+                  ? '已在资源管理器打开 chrome-bridge 扩展目录'
+                  : (res?.error || '打开扩展目录失败'),
+                !res?.ok
+              );
+            } else if (act === 'copy-text') {
+              const txt = btn.dataset.text || '';
+              if (txt) {
+                const ok = await copyTextSafe(txt);
+                if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
+                showToast(ok ? `已复制 ${txt}` : '复制失败', !ok);
+              }
+            } else if (act === 'open-plugin-mgr') {
+              const uri = btn.dataset.uri || 'customization://prism-cua';
+              let opened = false;
+              try {
+                const r = await sendRequest('ui/open-link', { url: uri }, 6000);
+                if (!r || !r.isError) opened = true;
+              } catch {}
+              if (opened) {
+                showToast(`已请求宿主打开 ${uri}`);
+              } else {
+                const ok = await copyTextSafe(uri);
+                if (ok) flashButtonFeedback(btn, '✓ 已复制地址', 1200);
+                showToast(ok ? `已复制 ${uri}（可在左侧扩展插件管理中按需开关 prism-cua）` : uri);
+              }
+            }
+          } catch (err) {
+            appState.cua.acting = false;
+            renderCua();
+            showToast(err?.message || '电脑操控操作失败', true);
+          }
+        });
+      }
 
       const btnAccountsSort = document.getElementById('btn-accounts-sort');
       if (btnAccountsSort) {
@@ -7662,7 +8240,7 @@
             appState.accounts.selfUpdateChecking = false;
             appState.accounts.selfUpdateInfo = info;
             renderAccounts();
-            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.7.0'}`);
+            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.8.0'}`);
           } else if (act === 'self-update-repair-ask') {
             appState.accounts.selfUpdateConfirmRepair = true;
             renderAccounts();
@@ -9065,8 +9643,8 @@
         return false;
       }
 
-      // Global Shortcuts: Escape, Alt+1..6, /, Ctrl/Cmd+L, Ctrl/Cmd+S, and Keyboard Navigation
-      const ALT_TAB_ORDER = ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'];
+      // Global Shortcuts: Escape, Alt+1..7, /, Ctrl/Cmd+L, Ctrl/Cmd+S, and Keyboard Navigation
+      const ALT_TAB_ORDER = ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts', 'cua'];
       window.addEventListener('keydown', (event) => {
         if (event.isComposing || event.keyCode === 229) return;
         if (event.key === 'Escape') {
@@ -9108,7 +9686,7 @@
         }
 
         if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-          const digitMatch = String(event.code || '').match(/^Digit([1-6])$/) || String(event.key || '').match(/^([1-6])$/);
+          const digitMatch = String(event.code || '').match(/^Digit([1-7])$/) || String(event.key || '').match(/^([1-7])$/);
           if (digitMatch) {
             const tabIdx = Number(digitMatch[1]) - 1;
             const targetTab = ALT_TAB_ORDER[tabIdx];
@@ -9191,7 +9769,7 @@
         try {
           const initRes = await sendRequest('ui/initialize', {
             protocolVersion: '2026-01-26',
-            appInfo: { name: 'prism-files', version: '0.7.0' },
+            appInfo: { name: 'prism-files', version: '0.8.0' },
             appCapabilities: {}
           }, 12000);
           appState.hostCapabilities = initRes?.hostCapabilities || {};

@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prism CUA 浏览器受控桥</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-subtle: #f8fafc;
+      --bg-hover: #f1f5f9;
+      --text: #0f172a;
+      --text-sec: #475569;
+      --text-muted: #64748b;
+      --border: rgba(15, 23, 42, 0.11);
+      --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --arm: #059669;
+      --arm-soft: rgba(5, 150, 105, 0.12);
+      --arm-border: rgba(5, 150, 105, 0.34);
+      --warn: #d97706;
+      --warn-soft: rgba(217, 119, 6, 0.12);
+      --danger: #dc2626;
+      --danger-soft: rgba(220, 38, 38, 0.1);
+      color-scheme: light;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #12151a;
+        --bg-subtle: #181c23;
+        --bg-hover: #212731;
+        --text: #f1f5f9;
+        --text-sec: #cbd5e1;
+        --text-muted: #94a3b8;
+        --border: rgba(248, 250, 252, 0.12);
+        --accent: #3b82f6;
+        --accent-hover: #2563eb;
+        --arm: #10b981;
+        --arm-soft: rgba(16, 185, 129, 0.16);
+        --arm-border: rgba(16, 185, 129, 0.38);
+        --warn: #fbbf24;
+        --warn-soft: rgba(251, 191, 36, 0.16);
+        --danger: #f87171;
+        --danger-soft: rgba(248, 113, 113, 0.15);
+        color-scheme: dark;
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      width: 344px;
+      padding: 12px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+      font-size: 12.5px;
+      line-height: 1.45;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-weight: 650;
+      font-size: 13.5px;
+    }
+
+    .brand-dot {
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      background: linear-gradient(135deg, #2563eb, #059669);
+      color: #fff;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .ver-pill {
+      padding: 1px 6px;
+      border-radius: 999px;
+      font-size: 10.5px;
+      background: var(--bg-subtle);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+    }
+
+    .card {
+      padding: 9px 10px;
+      border-radius: 9px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+
+    .card.is-armed {
+      background: var(--arm-soft);
+      border-color: var(--arm-border);
+    }
+
+    .kv-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .kv-label {
+      font-size: 11.5px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .kv-val {
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .origin-box {
+      padding: 5px 8px;
+      border-radius: 6px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 11.5px;
+      color: var(--text-sec);
+      word-break: break-all;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .status-badge.is-ok {
+      background: var(--arm-soft);
+      color: var(--arm);
+    }
+
+    .status-badge.is-warn {
+      background: var(--warn-soft);
+      color: var(--warn);
+    }
+
+    .status-badge.is-muted {
+      background: var(--bg-hover);
+      color: var(--text-muted);
+    }
+
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .notice {
+      padding: 6px 8px;
+      border-radius: 7px;
+      font-size: 11.5px;
+      background: var(--warn-soft);
+      color: var(--warn);
+      margin-bottom: 9px;
+    }
+
+    .notice[hidden] {
+      display: none !important;
+    }
+
+    .btn-main {
+      appearance: none;
+      width: 100%;
+      height: 36px;
+      border-radius: 8px;
+      border: 0;
+      background: #059669;
+      color: #ffffff;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 650;
+      cursor: pointer;
+      margin-bottom: 7px;
+      transition: background-color 140ms ease, opacity 140ms ease;
+    }
+
+    .btn-main:hover:not(:disabled) {
+      background: #047857;
+    }
+
+    .btn-main.is-disarm {
+      background: var(--danger-soft);
+      color: var(--danger);
+      border: 1px solid rgba(220, 38, 38, 0.35);
+    }
+
+    .btn-main.is-disarm:hover:not(:disabled) {
+      background: rgba(220, 38, 38, 0.18);
+    }
+
+    .btn-main:disabled {
+      opacity: 0.48;
+      cursor: not-allowed;
+    }
+
+    .btn-sub {
+      appearance: none;
+      width: 100%;
+      height: 30px;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      background: var(--bg-subtle);
+      color: var(--text-sec);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background-color 140ms ease, color 140ms ease;
+    }
+
+    .btn-sub:hover:not(:disabled) {
+      background: var(--bg-hover);
+      color: var(--text);
+    }
+
+    .btn-sub:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .foot {
+      margin-top: 9px;
+      font-size: 10.8px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div class="head">
+    <div class="brand">
+      <span class="brand-dot" aria-hidden="true">✦</span>
+      <span>Prism CUA 浏览器受控桥</span>
+    </div>
+    <span class="ver-pill">v0.8.0</span>
+  </div>
+
+  <div id="state-card" class="card">
+    <div class="kv-row">
+      <span class="kv-label">守护进程通道</span>
+      <span id="nm-badge" class="status-badge is-muted"><span class="dot"></span><span>检测中…</span></span>
+    </div>
+    <div class="kv-row">
+      <span class="kv-label">当前页状态</span>
+      <span id="arm-badge" class="status-badge is-muted">未授权隔离</span>
+    </div>
+    <div id="origin-box" class="origin-box">正在读取当前标签页同源域…</div>
+  </div>
+
+  <div id="block-notice" class="notice" hidden></div>
+
+  <button type="button" id="btn-toggle-arm" class="btn-main" disabled>授权操控当前标签页 (ARMED)</button>
+  <button type="button" id="btn-disarm-all" class="btn-sub" disabled>一键解除全部标签页</button>
+
+  <div class="foot">
+    安全边界：仅显式点击授权的标签页可被观测或操作；跨域名跳转自动撤权，0 授权页时后台连接自动断开（0 空闲开销），密码框与人机验证挑战硬拦截。
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

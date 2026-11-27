@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
  * Prism Files MCP App Server (Clean-Room Original, MIT, Zero External Dependencies)
- * Part of Anti-Claude Prism Suite v0.7.0
+ * Part of Anti-Claude Prism Suite v0.8.0
  *
  * Implements MCP stdio JSON-RPC 2.0 + SEP-1865 MCP Apps UI resources:
  *   - Model-visible tools (strictly 8):
  *       1. show_files_inline      -> inline interactive file card in conversation
- *       2. open_prism_files       -> Aux Pane + Global Sidebar 6-in-1 responsive workbench
+ *       2. open_prism_files       -> Aux Pane + Global Sidebar 7-in-1 responsive workbench
  *       3. prism_memory_store     -> dual-mode SQLite FTS5 sanitized slot handoff memory
  *       4. prism_memory_list      -> chronological (newest-first) handoff memory & catalog:master reader
  *       5. prism_memory_search    -> bilingual FTS5 + literal handoff memory search
@@ -17,10 +17,12 @@
  *       - list_directory / read_file_preview / save_file_content / list_recent_artifacts
  *       - reveal_in_explorer / get_state / update_state / list_open_targets / open_with_target / search_transcripts
  *       - model_hub_* (provider/model CRUD, /v1/models discovery, batch import, TTFT probe), accounts_*, handoff_*, check_upstreams
+ *       - cua_bridge_status / cua_bridge_revoke / cua_bridge_register_nm / cua_bridge_open_ext_dir
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import net from 'node:net';
 import dns from 'node:dns';
 import crypto from 'node:crypto';
@@ -43,7 +45,8 @@ const PLUGIN_ROOT = path.resolve(__dirname, '..');
 export const APP_URI = 'ui://prism-files/app.html';
 export const INLINE_URI = 'ui://prism-files/inline.html';
 export const APP_MIME_TYPE = 'text/html;profile=mcp-app';
-const SERVER_INFO = { name: 'prism-files', version: '0.7.0' };
+export const CUA_EXTENSION_ID = 'lbmibnghmlnidfiihkegicaejaacmkca';
+const SERVER_INFO = { name: 'prism-files', version: '0.8.0' };
 const MAX_TEXT_PREVIEW_BYTES = 256 * 1024;
 const MAX_IMAGE_PREVIEW_BYTES = 4 * 1024 * 1024;
 const MAX_SAVE_BYTES = 512 * 1024;
@@ -70,7 +73,7 @@ const IMAGE_MIME_BY_EXT = {
 };
 
 const SENSITIVE_SEGMENTS = new Set(['.ssh', '.gnupg', '.aws', '.codex', '.claude', '.cc-switch']);
-const SENSITIVE_BASENAME_RE = /^(?:\.env(?:\..+)?|\.npmrc|\.pypirc|\.netrc|\.git-credentials|id_rsa(?:\.pub)?|id_ed25519(?:\.pub)?|auth\.json|credentials\.json|cc-switch\.db|prism-profile\.json|handoff-memory\.sqlite(?:-wal|-shm|-journal)?|handoff-catalog\.json|jetski-standalone-oauth-token|credential-user-scope|.*\.(?:pem|key|p12|pfx|kdbx))$/i;
+const SENSITIVE_BASENAME_RE = /^(?:\.env(?:\..+)?|\.npmrc|\.pypirc|\.netrc|\.git-credentials|id_rsa(?:\.pub)?|id_ed25519(?:\.pub)?|auth\.json|credentials\.json|cc-switch\.db|prism-profile\.json|cua-broker\.json|handoff-memory\.sqlite(?:-wal|-shm|-journal)?|handoff-catalog\.json|jetski-standalone-oauth-token|credential-user-scope|.*\.(?:pem|key|p12|pfx|kdbx))$/i;
 const PRISM_PROTECTED_FILES = new Set([
   'accounts.json',
   'switch.lock',
@@ -82,7 +85,8 @@ const PRISM_PROTECTED_FILES = new Set([
   'handoff-catalog.json',
   'handoff-snapshot.json',
   'upstream-cache.json',
-  'prism-profile.json'
+  'prism-profile.json',
+  'cua-broker.json'
 ]);
 
 export function isSensitivePath(targetPath) {
@@ -1490,7 +1494,9 @@ export function createPrismFilesServer({
   upstreamConfigPath = '',
   upstreamFetch = null,
   modelFetch = null,
-  searchLookupFn = null
+  searchLookupFn = null,
+  cuaBrokerPath = '',
+  cuaFetch = null
 } = {}) {
   const stateFile = dataDir ? path.join(path.resolve(dataDir), 'state.json') : '';
   const { home, brainDir } = resolveHomeAndBrain();
@@ -1585,8 +1591,8 @@ export function createPrismFilesServer({
     };
   }
 
-  const VALID_TABS = new Set(['browse', 'artifacts', 'pins', 'search', 'models', 'accounts']);
-  const RESTORABLE_TABS = new Set(['browse', 'artifacts', 'pins', 'search', 'models']);
+  const VALID_TABS = new Set(['browse', 'artifacts', 'pins', 'search', 'models', 'accounts', 'cua']);
+  const RESTORABLE_TABS = new Set(['browse', 'artifacts', 'pins', 'search', 'models', 'cua']);
 
   function loadState() {
     const defaults = {
@@ -2354,6 +2360,299 @@ export function createPrismFilesServer({
     }
   }
 
+  function discoverWslHostIpv4List() {
+    if (!isWsl) return [];
+    const ips = [];
+    const addIp = (raw) => {
+      const s = String(raw || '').trim();
+      if (net.isIPv4(s) && s !== '127.0.0.1' && s !== '0.0.0.0' && isPrivateOrLocalIp(s) && !ips.includes(s)) {
+        ips.push(s);
+      }
+    };
+    try {
+      const routeText = fs.readFileSync('/proc/net/route', 'utf8');
+      for (const line of routeText.split(/\r?\n/).slice(1)) {
+        const cols = line.trim().split(/\s+/);
+        if (cols.length >= 3 && cols[1] === '00000000' && /^[0-9A-Fa-f]{8}$/.test(cols[2])) {
+          const gw = parseInt(cols[2], 16) >>> 0;
+          const ip = `${gw & 0xff}.${(gw >>> 8) & 0xff}.${(gw >>> 16) & 0xff}.${(gw >>> 24) & 0xff}`;
+          addIp(ip);
+        }
+      }
+    } catch {}
+    try {
+      const resolvText = fs.readFileSync('/etc/resolv.conf', 'utf8');
+      for (const line of resolvText.split(/\r?\n/)) {
+        const m = line.match(/^\s*nameserver\s+([^\s#]+)/);
+        if (m) addIp(m[1]);
+      }
+    } catch {}
+    return ips;
+  }
+
+  function resolveCuaBridgeContext() {
+    const wslWinUsers = (isWsl && !isExternalSandboxState) ? getWslWindowsUserDirs() : [];
+
+    // 1. Check whether prism-cua plugin is installed
+    const pluginCuaCandidates = [
+      path.join(path.dirname(PLUGIN_ROOT), 'prism-cua', 'plugin.json')
+    ];
+    if (!isExternalSandboxState) {
+      pluginCuaCandidates.push(path.join(home, '.gemini', 'config', 'plugins', 'prism-cua', 'plugin.json'));
+      for (const u of wslWinUsers) {
+        pluginCuaCandidates.push(path.join(u, '.gemini', 'config', 'plugins', 'prism-cua', 'plugin.json'));
+      }
+    }
+    const foundPluginJson = pluginCuaCandidates.find((p) => {
+      try { return fs.existsSync(p) && fs.statSync(p).isFile(); } catch { return false; }
+    });
+    const pluginInstalled = Boolean(foundPluginJson);
+
+    // 2. Resolve chrome-bridge directory (prefer Windows %USERPROFILE%\.gemini\antigravity\prism-suite\chrome-bridge on WSL)
+    const localBridgeDir = path.join(resolvedAccountStateDir, 'chrome-bridge');
+    let chromeBridgeDir = localBridgeDir;
+    let chromeBridgeWinDisplay = process.platform === 'win32'
+      ? localBridgeDir
+      : '%USERPROFILE%\\.gemini\\antigravity\\prism-suite\\chrome-bridge';
+    if (isWsl && !isExternalSandboxState) {
+      for (const u of wslWinUsers) {
+        const winCand = path.join(u, '.gemini', 'antigravity', 'prism-suite', 'chrome-bridge');
+        if (fs.existsSync(winCand)) {
+          chromeBridgeDir = winCand;
+          chromeBridgeWinDisplay = fallbackLinuxToWindowsPath(winCand);
+          break;
+        }
+      }
+    }
+
+    // 3. Resolve cua-broker.json (freshest existing non-symlink file across prism-suite / anti-claude / WSL Windows user profile)
+    let brokerFile = '';
+    if (cuaBrokerPath) {
+      const explicit = path.resolve(cuaBrokerPath);
+      const st = fs.lstatSync(explicit, { throwIfNoEntry: false });
+      if (st && st.isFile() && !st.isSymbolicLink()) brokerFile = explicit;
+    } else {
+      const brokerCandidates = [path.join(resolvedAccountStateDir, 'cua-broker.json')];
+      if (!isExternalSandboxState) {
+        brokerCandidates.push(path.join(home, '.gemini', 'antigravity', 'anti-claude', 'cua-broker.json'));
+        for (const u of wslWinUsers) {
+          brokerCandidates.push(path.join(u, '.gemini', 'antigravity', 'prism-suite', 'cua-broker.json'));
+          brokerCandidates.push(path.join(u, '.gemini', 'antigravity', 'anti-claude', 'cua-broker.json'));
+        }
+      }
+      let bestMtime = -1;
+      for (const cand of brokerCandidates) {
+        try {
+          const st = fs.lstatSync(cand, { throwIfNoEntry: false });
+          if (st && st.isFile() && !st.isSymbolicLink() && st.mtimeMs >= bestMtime) {
+            bestMtime = st.mtimeMs;
+            brokerFile = cand;
+          }
+        } catch {}
+      }
+    }
+
+    return {
+      pluginInstalled,
+      chromeBridgeDir,
+      chromeBridgeWinDisplay,
+      brokerFile
+    };
+  }
+
+  function buildSafeCuaEndpoints(brokerCfg) {
+    if (!brokerCfg || typeof brokerCfg !== 'object') return [];
+    const rawList = [];
+    const pushRaw = (u) => {
+      if (typeof u === 'string' && u.trim()) rawList.push(u.trim());
+      else if (u && typeof u === 'object' && typeof u.url === 'string' && u.url.trim()) rawList.push(u.url.trim());
+    };
+    if (Array.isArray(brokerCfg.endpoints)) {
+      for (const item of brokerCfg.endpoints) pushRaw(item);
+    }
+    pushRaw(brokerCfg.url);
+    pushRaw(brokerCfg.endpoint);
+    pushRaw(brokerCfg.baseUrl);
+
+    const parsedPort = Number(brokerCfg.port);
+    if (Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535) {
+      rawList.push(`http://127.0.0.1:${parsedPort}/v1/cua`);
+    }
+
+    const loopbackUrls = [];
+    const lanUrls = [];
+    const seen = new Set();
+    const discoveredPorts = new Set();
+
+    const registerCandidate = (rawStr) => {
+      let u;
+      try {
+        u = new URL(rawStr.includes('://') ? rawStr : `http://${rawStr}`);
+      } catch {
+        return;
+      }
+      if (u.protocol !== 'http:') return;
+      const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+      const isLoopback = host === '127.0.0.1' || host === 'localhost' || host === '::1';
+      if (!isLoopback && !isPrivateOrLocalIp(host)) return;
+      if (!u.pathname || u.pathname === '/') {
+        u.pathname = '/v1/cua';
+      }
+      if (u.port) discoveredPorts.add(Number(u.port));
+      const href = u.toString();
+      if (seen.has(href)) return;
+      seen.add(href);
+      if (isLoopback) loopbackUrls.push(href);
+      else lanUrls.push(href);
+    };
+
+    for (const raw of rawList) registerCandidate(raw);
+
+    // Ensure WSL host IP fallback is appended after 127.0.0.1 when running inside WSL2
+    if (isWsl && discoveredPorts.size > 0) {
+      const hostIps = discoverWslHostIpv4List();
+      for (const p of discoveredPorts) {
+        if (!Number.isInteger(p) || p <= 0) continue;
+        for (const ip of hostIps) {
+          registerCandidate(`http://${ip}:${p}/v1/cua`);
+        }
+      }
+    }
+
+    return [...loopbackUrls, ...lanUrls];
+  }
+
+  function postJsonLocalHttp(targetUrl, token, bodyObj, timeoutMs = 2400) {
+    const payloadStr = JSON.stringify(bodyObj);
+    const headers = {
+      'Content-Type': 'application/json',
+      'Content-Length': String(Buffer.byteLength(payloadStr, 'utf8'))
+    };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+      headers['X-Prism-Cua-Token'] = token;
+    }
+
+    if (typeof cuaFetch === 'function') {
+      return Promise.resolve(cuaFetch(targetUrl, { method: 'POST', headers, body: payloadStr }))
+        .then(async (r) => {
+          const txt = typeof r?.text === 'function' ? await r.text() : JSON.stringify(r || {});
+          return { status: Number(r?.status) || 200, data: JSON.parse(txt) };
+        });
+    }
+
+    return new Promise((resolve, reject) => {
+      const u = new URL(targetUrl);
+      let settled = false;
+      const done = (err, val) => {
+        if (settled) return;
+        settled = true;
+        if (err) reject(err);
+        else resolve(val);
+      };
+
+      const req = http.request(
+        {
+          protocol: u.protocol,
+          hostname: u.hostname,
+          port: u.port || 80,
+          path: `${u.pathname}${u.search}`,
+          method: 'POST',
+          headers,
+          timeout: timeoutMs
+        },
+        (res) => {
+          const chunks = [];
+          let totalBytes = 0;
+          res.on('data', (chunk) => {
+            totalBytes += chunk.length;
+            if (totalBytes <= 2 * 1024 * 1024) chunks.push(chunk);
+          });
+          res.on('end', () => {
+            const rawText = Buffer.concat(chunks).toString('utf8');
+            try {
+              const parsed = rawText ? JSON.parse(rawText) : {};
+              done(null, { status: res.statusCode || 200, data: parsed });
+            } catch (err) {
+              done(new Error(`Invalid Broker JSON (${res.statusCode}): ${err.message}`));
+            }
+          });
+        }
+      );
+
+      const timer = setTimeout(() => {
+        try { req.destroy(new Error('Broker HTTP timeout')); } catch {}
+        done(new Error('Broker HTTP timeout'));
+      }, timeoutMs);
+
+      req.on('error', (err) => {
+        clearTimeout(timer);
+        done(err);
+      });
+      req.on('close', () => clearTimeout(timer));
+      req.write(payloadStr);
+      req.end();
+    });
+  }
+
+  async function callCuaBrokerAction(action, payload = {}, { timeoutMs = 2400 } = {}) {
+    const ctx = resolveCuaBridgeContext();
+    if (!ctx.brokerFile) {
+      return { reachable: false, ctx, error: '未检测到运行中的 CUA 守护进程配置 (cua-broker.json)' };
+    }
+    let brokerCfg;
+    try {
+      brokerCfg = JSON.parse(fs.readFileSync(ctx.brokerFile, 'utf8'));
+    } catch {
+      return { reachable: false, ctx, error: 'cua-broker.json 解析失败或正在重写' };
+    }
+    const endpoints = buildSafeCuaEndpoints(brokerCfg);
+    if (!endpoints.length) {
+      return { reachable: false, ctx, error: 'cua-broker.json 未包含有效的本地端点' };
+    }
+    const token = String(brokerCfg.token || brokerCfg.authToken || brokerCfg.secret || '').trim();
+    const bodyObj = payload && Object.keys(payload).length > 0 ? { action, payload } : { action, payload: {} };
+
+    let lastErr = '';
+    for (const ep of endpoints) {
+      try {
+        const res = await postJsonLocalHttp(ep, token, bodyObj, timeoutMs);
+        if (res.status >= 200 && res.status < 500 && res.data && typeof res.data === 'object') {
+          return { reachable: true, ctx, endpoint: ep, status: res.status, data: res.data };
+        }
+        lastErr = `HTTP ${res.status}`;
+      } catch (err) {
+        lastErr = String(err?.message || err);
+      }
+    }
+    return { reachable: false, ctx, error: lastErr || 'CUA 守护进程离线' };
+  }
+
+  function normalizeCuaControlState(rawData) {
+    const raw = String(
+      rawData?.controlState ??
+      rawData?.mode ??
+      rawData?.state ??
+      rawData?.lease?.mode ??
+      ''
+    ).trim().toLowerCase();
+
+    if (
+      rawData?.humanRequired ||
+      rawData?.awaitingHuman ||
+      /^(?:paused_handoff|human_wait|awaiting_human|takeover|paused|captcha)$/.test(raw)
+    ) {
+      return { controlState: 'human_wait', stateLabelZh: '等待人工接管' };
+    }
+    if (/^(?:armed_interactive|act|acting|armed|active|control|input|desktop_act)$/.test(raw)) {
+      return { controlState: 'act', stateLabelZh: '键鼠操控中' };
+    }
+    if (/^(?:armed_readonly|observe|observing|readonly|read_only|observe_only)$/.test(raw)) {
+      return { controlState: 'observe', stateLabelZh: '只读观察' };
+    }
+    return { controlState: 'locked', stateLabelZh: '未授权锁定' };
+  }
+
   function readUiHtml(uri) {
     const envPath = uri === INLINE_URI ? process.env.PRISM_FILES_INLINE_HTML : process.env.PRISM_FILES_APP_HTML;
     const fp = envPath ? path.resolve(envPath) : path.join(PLUGIN_ROOT, 'ui', uri === INLINE_URI ? 'inline.html' : 'app.html');
@@ -2385,12 +2684,12 @@ export function createPrismFilesServer({
     {
       name: 'open_prism_files',
       title: 'Prism 工作台',
-      description: 'Open the Prism workbench in the side pane or sidebar for workspace file tree browsing, live code/Markdown/image preview & safe editing, selection quoting to AI, recent brain artifacts, cross-session transcript search, Model Hub (T1-T4 cross-vendor gateway), opt-in primary/backup account relay, dual-mode SQLite FTS5 handoff memory, and Upstream Radar.',
+      description: 'Open the Prism workbench in the side pane or sidebar for workspace file tree browsing, live code/Markdown/image preview & safe editing, selection quoting to AI, recent brain artifacts, cross-session transcript search, Model Hub (T1-T4 cross-vendor gateway), opt-in primary/backup account relay, dual-mode SQLite FTS5 handoff memory, Upstream Radar, and Computer Control (CUA) dashboard.',
       inputSchema: {
         type: 'object',
         properties: {
           dir: { type: 'string', description: 'Optional initial directory path' },
-          tab: { type: 'string', enum: ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'], description: 'Optional initial tab' },
+          tab: { type: 'string', enum: ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts', 'cua'], description: 'Optional initial tab' },
           selectFile: { type: 'string', description: 'Optional file path to preview immediately' }
         }
       },
@@ -2475,10 +2774,11 @@ export function createPrismFilesServer({
         properties: {
           pinnedPaths: { type: 'array', items: { type: 'string' } },
           lastPath: { type: 'string' },
-          lastTab: { type: 'string', enum: ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'] },
+          lastTab: { type: 'string', enum: ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts', 'cua'] },
           showHidden: { type: 'boolean' },
           doubleClickAction: { type: 'string', enum: ['reveal', 'open_tab'] },
-          allowLanSmb: { type: 'boolean' }
+          allowLanSmb: { type: 'boolean' },
+          dismissedGuides: { type: 'array', items: { type: 'string' } }
         }
       },
       _meta: { ui: { visibility: ['app'] } }
@@ -2956,6 +3256,30 @@ export function createPrismFilesServer({
     {
       name: 'model_hub_reveal_profile',
       description: 'App-only: initialize prism-profile.json (0600) if missing and reveal it in native file manager',
+      inputSchema: { type: 'object', properties: {} },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'cua_bridge_status',
+      description: 'App-only: query local CUA Broker status, armed browser tabs, observable desktop windows, and prism-cua installation state',
+      inputSchema: { type: 'object', properties: {} },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'cua_bridge_revoke',
+      description: 'App-only: immediately revoke all active CUA desktop/browser control leases via Broker',
+      inputSchema: { type: 'object', properties: {} },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'cua_bridge_register_nm',
+      description: 'App-only: register Chrome & Edge Native Messaging host (com.prism.cua.bridge) for fixed Extension ID via Broker',
+      inputSchema: { type: 'object', properties: {} },
+      _meta: { ui: { visibility: ['app'] } }
+    },
+    {
+      name: 'cua_bridge_open_ext_dir',
+      description: 'App-only: reveal deployed chrome-bridge unpacked extension directory in Windows Explorer / OS file manager',
       inputSchema: { type: 'object', properties: {} },
       _meta: { ui: { visibility: ['app'] } }
     }
@@ -3659,6 +3983,150 @@ export function createPrismFilesServer({
       return {
         content: [{ type: 'text', text: res.message || `已更新至 ${res.updatedTo}` }],
         structuredContent: res
+      };
+    }
+
+    if (name === 'cua_bridge_status') {
+      const brokerRes = await callCuaBrokerAction(
+        'status',
+        { includeWindows: true, includeArmedTabs: true, refreshWindows: true },
+        { timeoutMs: 3800 }
+      );
+      const { ctx } = brokerRes;
+      const baseMeta = {
+        ok: true,
+        pluginInstalled: ctx.pluginInstalled,
+        customizationUri: 'customization://prism-cua',
+        extensionId: CUA_EXTENSION_ID,
+        chromeBridgeDir: ctx.chromeBridgeDir,
+        chromeBridgeDisplayPath: ctx.chromeBridgeWinDisplay,
+        chromeBridgeInstalled: fs.existsSync(path.join(ctx.chromeBridgeDir, 'manifest.json')),
+        hostSupported: process.platform === 'win32' || isWsl
+      };
+
+      if (!brokerRes.reachable) {
+        const offline = {
+          ...baseMeta,
+          brokerOnline: false,
+          controlState: 'locked',
+          stateLabelZh: '未授权锁定',
+          remainingSeconds: 0,
+          expiresAtMs: 0,
+          nmHostRegistered: false,
+          nmConnected: false,
+          armedTabs: [],
+          windows: [],
+          offlineReason: brokerRes.error || ''
+        };
+        return {
+          content: [{ type: 'text', text: 'CUA 守护进程未在线' }],
+          structuredContent: offline
+        };
+      }
+
+      const raw = (brokerRes.data && typeof brokerRes.data.result === 'object' && brokerRes.data.result)
+        ? brokerRes.data.result
+        : ((brokerRes.data && typeof brokerRes.data.status === 'object' && brokerRes.data.status) ? brokerRes.data.status : brokerRes.data);
+      const { controlState, stateLabelZh } = normalizeCuaControlState(raw);
+
+      let expiresAtMs = 0;
+      const rawExp = raw?.expiresAtMs ?? raw?.leaseExpiresAtMs ?? raw?.lease?.expiresAtMs ?? raw?.expiresAt ?? raw?.leaseExpiresAt ?? raw?.expiresAtIso ?? raw?.armedUntil;
+      if (typeof rawExp === 'number' && rawExp > 1e11) {
+        expiresAtMs = Math.round(rawExp);
+      } else if (typeof rawExp === 'string' && !Number.isNaN(Date.parse(rawExp))) {
+        expiresAtMs = Date.parse(rawExp);
+      } else if (typeof raw?.remainingMs === 'number' && raw.remainingMs > 0) {
+        expiresAtMs = Date.now() + Math.round(raw.remainingMs);
+      } else if (typeof raw?.remainingSec === 'number' && raw.remainingSec > 0) {
+        expiresAtMs = Date.now() + Math.round(raw.remainingSec * 1000);
+      } else if (typeof raw?.remainingSeconds === 'number' && raw.remainingSeconds > 0) {
+        expiresAtMs = Date.now() + Math.round(raw.remainingSeconds * 1000);
+      }
+      const remainingSeconds = expiresAtMs > Date.now() ? Math.ceil((expiresAtMs - Date.now()) / 1000) : 0;
+
+      const online = {
+        ...raw,
+        ...baseMeta,
+        ok: true,
+        brokerOnline: true,
+        controlState,
+        stateLabelZh,
+        expiresAtMs,
+        remainingSeconds,
+        nmHostRegistered: Boolean(raw?.nmHostRegistered ?? raw?.nativeMessagingRegistered ?? raw?.nmRegistered ?? false),
+        nmConnected: Boolean(raw?.nmConnected ?? raw?.browserBridgeConnected ?? raw?.extensionConnected ?? false),
+        armedTabs: Array.isArray(raw?.armedTabs) ? raw.armedTabs : [],
+        windows: Array.isArray(raw?.windows) ? raw.windows : []
+      };
+      return {
+        content: [{ type: 'text', text: `CUA Broker 在线：${stateLabelZh}` }],
+        structuredContent: online
+      };
+    }
+
+    if (name === 'cua_bridge_revoke') {
+      const brokerRes = await callCuaBrokerAction('revoke', {}, { timeoutMs: 3500 });
+      if (!brokerRes.reachable) {
+        const offlineRes = { ok: false, brokerOnline: false, error: brokerRes.error || 'CUA 守护进程未在线，无需或无法吊销授权' };
+        return { content: [{ type: 'text', text: offlineRes.error }], structuredContent: offlineRes };
+      }
+      const raw = brokerRes.data?.result || brokerRes.data || {};
+      const out = {
+        ...raw,
+        ok: raw.ok !== false,
+        brokerOnline: true,
+        revoked: true,
+        message: raw.message || '已立即吊销全部桌面与浏览器操控授权，并恢复锁定状态'
+      };
+      return { content: [{ type: 'text', text: out.message }], structuredContent: out };
+    }
+
+    if (name === 'cua_bridge_register_nm') {
+      const brokerRes = await callCuaBrokerAction('register_nm_host', { extensionId: CUA_EXTENSION_ID }, { timeoutMs: 6000 });
+      if (!brokerRes.reachable) {
+        const offlineRes = {
+          ok: false,
+          brokerOnline: false,
+          extensionId: CUA_EXTENSION_ID,
+          error: '未连接 Windows CUA 守护进程；请先在 Windows 宿主启动 Antigravity / 内置守护内核后再注册 Native Messaging 宿主'
+        };
+        return { content: [{ type: 'text', text: offlineRes.error }], structuredContent: offlineRes };
+      }
+      const raw = brokerRes.data?.result || brokerRes.data || {};
+      const out = {
+        ...raw,
+        ok: raw.ok !== false,
+        brokerOnline: true,
+        extensionId: CUA_EXTENSION_ID,
+        message: raw.message || `已向当前用户注册表写入 Chrome 与 Edge Native Messaging 宿主 (ID: ${CUA_EXTENSION_ID})`
+      };
+      return { content: [{ type: 'text', text: out.message }], structuredContent: out };
+    }
+
+    if (name === 'cua_bridge_open_ext_dir') {
+      const ctx = resolveCuaBridgeContext();
+      let targetDir = ctx.chromeBridgeDir;
+      if (!fs.existsSync(targetDir)) {
+        const repoFallback = path.resolve(PLUGIN_ROOT, '..', 'extensions', 'chrome-cua-bridge');
+        if (fs.existsSync(path.join(repoFallback, 'manifest.json'))) {
+          targetDir = repoFallback;
+        } else {
+          const miss = {
+            ok: false,
+            path: targetDir,
+            error: `尚未在 ${ctx.chromeBridgeWinDisplay} 发现已部署的 chrome-bridge 目录；请重新运行一次安装器或一键更新完成部署`
+          };
+          return { content: [{ type: 'text', text: miss.error }], structuredContent: miss };
+        }
+      }
+      const rev = await revealInExplorer(targetDir);
+      return {
+        content: [{ type: 'text', text: rev.ok ? `Opened ${targetDir}` : rev.error }],
+        structuredContent: {
+          ...rev,
+          chromeBridgeDir: targetDir,
+          extensionId: CUA_EXTENSION_ID
+        }
       };
     }
 

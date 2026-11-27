@@ -25,6 +25,10 @@ jobs:
         run: |
           node --check install.mjs
           node --check uninstall.mjs
+          node --check plugin/server/index.mjs
+          node --check extensions/chrome-cua-bridge/background.js
+          node --check extensions/chrome-cua-bridge/content-agent.js
+          node --check extensions/chrome-cua-bridge/popup.js
           node -e "const p=require('./package.json'); if(p.dependencies && Object.keys(p.dependencies).length) throw new Error('Must keep zero runtime npm dependencies');"
           npm test
 
@@ -44,18 +48,25 @@ jobs:
           if ($p1.ExitCode -ne 0) { throw "Silent install failed: $($p1.ExitCode)" }
           if (-not (Test-Path (Join-Path $userDir "extensions\prism-suite.js"))) { throw "Missing prism-suite.js" }
           if (-not (Test-Path (Join-Path $userDir "extensions\prism-suite.css"))) { throw "Missing prism-suite.css" }
-          if (-not (Test-Path (Join-Path $pluginsDir "prism-files\plugin.json"))) { throw "Missing plugin.json" }
-          # Verify second in-place update prunes stale leftover files cleanly
+          if (-not (Test-Path (Join-Path $tmp "prism-suite\chrome-bridge\manifest.json"))) { throw "Missing chrome-bridge\manifest.json" }
+          if (-not (Test-Path (Join-Path $pluginsDir "prism-files\plugin.json"))) { throw "Missing prism-files\plugin.json" }
+          if (-not (Test-Path (Join-Path $pluginsDir "prism-cua\plugin.json"))) { throw "Missing prism-cua\plugin.json" }
+          # Verify second in-place update prunes stale leftover files cleanly across both plugins
           $stalePath = Join-Path $pluginsDir "prism-files\obsolete-stale-check.tmp"
+          $staleCuaPath = Join-Path $pluginsDir "prism-cua\obsolete-stale-cua.tmp"
           New-Item -ItemType File -Path $stalePath -Force | Out-Null
+          New-Item -ItemType File -Path $staleCuaPath -Force | Out-Null
           $pUpdate = Start-Process -FilePath $exe -ArgumentList @("--silent-install", "--no-wsl", "--test-user-dir=$userDir", "--test-plugins-dir=$pluginsDir") -Wait -PassThru
           if ($pUpdate.ExitCode -ne 0) { throw "Silent in-place update failed: $($pUpdate.ExitCode)" }
-          if (Test-Path $stalePath) { throw "In-place update failed to prune stale file" }
+          if (Test-Path $stalePath) { throw "In-place update failed to prune stale prism-files file" }
+          if (Test-Path $staleCuaPath) { throw "In-place update failed to prune stale prism-cua file" }
           if (-not (Test-Path (Join-Path $pluginsDir "prism-files\server\relaunch-client.mjs"))) { throw "Missing relaunch-client.mjs after update" }
           $p2 = Start-Process -FilePath $exe -ArgumentList @("--silent-uninstall", "--no-wsl", "--test-user-dir=$userDir", "--test-plugins-dir=$pluginsDir") -Wait -PassThru
           if ($p2.ExitCode -ne 0) { throw "Silent uninstall failed: $($p2.ExitCode)" }
           if (Test-Path (Join-Path $userDir "extensions\prism-suite.js")) { throw "prism-suite.js was not removed" }
+          if (Test-Path (Join-Path $tmp "prism-suite\chrome-bridge")) { throw "chrome-bridge was not removed" }
           if (Test-Path (Join-Path $pluginsDir "prism-files")) { throw "prism-files was not removed" }
+          if (Test-Path (Join-Path $pluginsDir "prism-cua")) { throw "prism-cua was not removed" }
           Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Upload build artifacts
