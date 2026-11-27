@@ -614,7 +614,8 @@ html[data-ag-ps-dark="marine"] body.dark {
   transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
 }
 
-.ag-ps-seg-btn:hover:not([data-selected="1"]) {
+.ag-ps-seg-btn:hover:not([data-selected="1"]),
+.ag-ps-seg-btn:focus-visible {
   color: var(--foreground, #141413);
 }
 

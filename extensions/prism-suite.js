@@ -60,7 +60,7 @@
     mascot: boolValidator,
     mascotCountMode: enumValidator(['fixed', 'agents']),
     mascotMinCount: (v) => (Number.isFinite(Number(v)) ? clampMascotMinCount(v) : undefined),
-    mascotStyle: enumValidator(['trio', 'zoo', 'cyber', 'crab', 'cat', 'penguin', 'fox']),
+    mascotStyle: enumValidator(['trio', 'zoo', 'cyber', 'crab', 'cat', 'penguin', 'fox', 'shiba', 'robot', 'owlet', 'axolotl', 'bunny', 'frog', 'chick', 'slime']),
     mascotRoam: boolValidator,
     mascotVibe: enumValidator(['calm', 'lively']),
     mascotSize: (v) => (Number.isFinite(Number(v)) ? clampMascotSize(v) : undefined),
@@ -255,8 +255,39 @@
   }
 
   let disposed = false;
-  const cleanups = [];
-  const onCleanup = (fn) => cleanups.push(fn);
+  const cleanups = new Set();
+  const onCleanup = (fn) => {
+    if (typeof fn !== 'function') return () => {};
+    cleanups.add(fn);
+    return () => { cleanups.delete(fn); };
+  };
+
+  async function copyText(text) {
+    const str = String(text == null ? '' : text);
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try {
+        await navigator.clipboard.writeText(str);
+        return true;
+      } catch {}
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = str;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      ta.style.top = '-9999px';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return Boolean(ok);
+    } catch {
+      return false;
+    }
+  }
 
   const REDUCED_MOTION = (() => {
     try {
@@ -613,14 +644,9 @@
       showJumpToast('已填入 /btw 支线提问前缀');
       return;
     }
-    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      navigator.clipboard.writeText(snippet).then(
-        () => showJumpToast('已复制 /btw 引用，按 Ctrl+V 粘贴'),
-        () => showJumpToast('未能写入输入框，请手动输入 /btw')
-      );
-    } else {
-      showJumpToast('未能写入输入框，请手动输入 /btw');
-    }
+    copyText(snippet).then((ok) => {
+      showJumpToast(ok ? '已复制 /btw 引用，按 Ctrl+V 粘贴' : '未能写入输入框，请手动输入 /btw');
+    });
   }
 
   function stepTurn(delta) {
@@ -719,7 +745,7 @@
       if (drawer && drawer.getAttribute('data-open') === '1') {
         positionFloatingPanel(drawer, document.getElementById('ag-ps-btn-outline'));
       }
-      syncMascotCompactGuard();
+      syncMascotCompactGuard(true);
     });
   }
   window.addEventListener('resize', onWindowResize, { passive: true });
@@ -1512,6 +1538,9 @@
         makeFixedMascotEntry('fixed:owlet', 'owlet', '博学猫头鹰', busy),
         makeFixedMascotEntry('fixed:axolotl', 'axolotl', '霓虹六角恐龙', busy)
       ];
+    } else if (SPRITE_BY_ID[styleKey]) {
+      const sp = SPRITE_BY_ID[styleKey];
+      fixedItems = [makeFixedMascotEntry(`fixed:${sp.id}`, sp.id, `${sp.name}伙伴`, busy)];
     } else {
       fixedItems = [
         makeFixedMascotEntry('fixed:crab', 'crab', '橘蟹伙伴', busy),
@@ -1963,8 +1992,57 @@
   onCleanup(() => stopMascotRoaming(false));
 
   /* ---- Smart Button-Obstacle Avoidance & Playful Pointer-Dodge for Mascots ---- */
-  function scanDockObstacles(dock) {
+  const OBSTACLE_CONTROL_SELECTOR = 'button, [role="button"], a[href], input:not([type="hidden"]), [role="tab"], [role="radio"]';
+  const OBSTACLE_FLOATING_SELECTOR = '[role="dialog"], [data-testid*="approval"], [data-testid*="question"], [data-testid*="confirm"]';
+  const OBSTACLE_SCAN_TTL_MS = 350;
+  let cachedObstacleDock = null;
+  let cachedObstacleScan = null;
+  let cachedObstacleAt = 0;
+
+  function collectComposerObstacleRoots(dock, hostBox) {
+    const roots = [];
+    const seen = new Set();
+    const pushRoot = (el) => {
+      if (!el || !el.isConnected || el === dock || el === hostBox || seen.has(el)) return;
+      if (el.matches('[data-testid="autoscroll-viewport"], #ag-ps-orb-dock, #ag-ps-popover, #ag-ps-tooltip, #ag-ps-outline')) return;
+      seen.add(el);
+      roots.push(el);
+    };
+
+    // Walk up at most 2 composer wrapper levels (strictly stopping before conversation-view / main / body)
+    // and collect only siblings outside the conversation transcript viewport.
+    let cur = hostBox;
+    for (let depth = 0; depth < 2 && cur && cur.parentElement; depth++) {
+      const parent = cur.parentElement;
+      if (parent === document.body || parent.matches('[data-testid="conversation-view"], main, [role="main"]')) {
+        break;
+      }
+      const siblings = parent.children;
+      for (let i = 0; i < siblings.length; i++) {
+        const sib = siblings[i];
+        if (sib === cur || sib === dock || sib === hostBox) continue;
+        if (sib.matches('[data-testid="autoscroll-viewport"]') || sib.querySelector('[data-testid="autoscroll-viewport"]')) {
+          continue;
+        }
+        pushRoot(sib);
+      }
+      cur = parent;
+    }
+
+    // Also include active floating approval/question dialogs (typically 0..1 nodes)
+    const dialogs = document.querySelectorAll(OBSTACLE_FLOATING_SELECTOR);
+    for (let i = 0; i < dialogs.length; i++) {
+      pushRoot(dialogs[i]);
+    }
+    return roots;
+  }
+
+  function scanDockObstacles(dock, force = false) {
     if (!dock || !dock.isConnected) return { zones: [], crowded: false, sig: '' };
+    const now = Date.now();
+    if (!force && cachedObstacleScan && cachedObstacleDock === dock && now - cachedObstacleAt < OBSTACLE_SCAN_TTL_MS) {
+      return cachedObstacleScan;
+    }
     const dockRect = dock.getBoundingClientRect();
     if (!dockRect.width) return { zones: [], crowded: false, sig: '' };
     const { w, gap } = getMascotDims();
@@ -1972,37 +2050,51 @@
     // Match the actual mascot dock height (adapts automatically from 16px..36px) without probing inside inputBox
     const bandTop = dockRect.top - 6;
     const bandBottom = dockRect.bottom;
-    const searchRoot = dock.closest('[data-testid="conversation-view"], main, [role="main"]') || document.body;
-    if (!searchRoot) return { zones: [], crowded: false, sig: '' };
 
     const rawZones = [];
     const orbZone = measureOrbDockZone(dock, dockRect);
     if (orbZone) {
       rawZones.push([orbZone.zl, orbZone.zr]);
     }
-    const controls = searchRoot.querySelectorAll('button, [role="button"], a[href], input:not([type="hidden"]), [role="tab"], [role="radio"]');
-    for (let i = 0; i < controls.length; i++) {
-      const el = controls[i];
-      if (!el.isConnected || dock.contains(el)) continue;
-      if (hostBox && hostBox.contains(el)) continue;
-      if (el.closest('#ag-ps-popover, #ag-ps-tooltip, #ag-ps-outline, .ag-ps-turn-actions')) continue;
-      if (el.id === 'ag-ps-orb-btn' || el.parentElement?.id === 'ag-ps-orb-dock') continue;
-      // Scrolling chat messages/links inside autoscroll-viewport are NOT composer toolbar obstacles (unless inside a floating approval/question prompt)
-      if (
-        el.closest('[data-testid="autoscroll-viewport"]') &&
-        !el.closest('[role="dialog"], [data-testid*="approval"], [data-testid*="question"], [data-testid*="confirm"]')
-      ) {
-        continue;
+
+    const roots = collectComposerObstacleRoots(dock, hostBox);
+    const seenEls = new Set();
+    for (let rIdx = 0; rIdx < roots.length; rIdx++) {
+      const root = roots[rIdx];
+      const rootRect = root.getBoundingClientRect();
+      if (rootRect.width <= 0 || rootRect.height <= 0) continue;
+      if (rootRect.bottom < bandTop - 16 || rootRect.top > bandBottom + 16) continue;
+      if (rootRect.right < dockRect.left - 16 || rootRect.left > dockRect.right + 16) continue;
+
+      const controls = root.matches(OBSTACLE_CONTROL_SELECTOR)
+        ? [root]
+        : root.querySelectorAll(OBSTACLE_CONTROL_SELECTOR);
+      for (let i = 0; i < controls.length; i++) {
+        const el = controls[i];
+        if (!el.isConnected || seenEls.has(el) || dock.contains(el)) continue;
+        seenEls.add(el);
+        if (hostBox && hostBox.contains(el)) continue;
+        if (el.closest('#ag-ps-orb-dock, #ag-ps-popover, #ag-ps-tooltip, #ag-ps-outline, .ag-ps-turn-actions')) continue;
+        if (el.id === 'ag-ps-orb-btn' || el.parentElement?.id === 'ag-ps-orb-dock') continue;
+        if (el.closest('[data-testid="autoscroll-viewport"]') && !el.closest(OBSTACLE_FLOATING_SELECTOR)) {
+          continue;
+        }
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0 || r.width > 280) continue;
+        if (r.bottom < bandTop || r.top > bandBottom) continue;
+        if (r.right < dockRect.left - 8 || r.left > dockRect.right + 8) continue;
+        const l = Math.max(0, Math.floor(r.left - dockRect.left) - 10);
+        const ri = Math.min(Math.ceil(dockRect.width), Math.ceil(r.right - dockRect.left) + 10);
+        if (ri > l) rawZones.push([l, ri]);
       }
-      const r = el.getBoundingClientRect();
-      if (r.width <= 0 || r.height <= 0 || r.width > 280) continue;
-      if (r.bottom < bandTop || r.top > bandBottom) continue;
-      if (r.right < dockRect.left - 8 || r.left > dockRect.right + 8) continue;
-      const l = Math.max(0, Math.floor(r.left - dockRect.left) - 10);
-      const ri = Math.min(Math.ceil(dockRect.width), Math.ceil(r.right - dockRect.left) + 10);
-      if (ri > l) rawZones.push([l, ri]);
     }
-    if (!rawZones.length) return { zones: [], crowded: false, sig: '' };
+    if (!rawZones.length) {
+      const empty = { zones: [], crowded: false, sig: '' };
+      cachedObstacleDock = dock;
+      cachedObstacleScan = empty;
+      cachedObstacleAt = now;
+      return empty;
+    }
     rawZones.sort((a, b) => a[0] - b[0]);
     const merged = [rawZones[0]];
     for (let i = 1; i < rawZones.length; i++) {
@@ -2031,7 +2123,11 @@
     }
     const crowded = totalBlockedW > dockRect.width * 0.65 || (mascotActors.length > 0 && maxFreeGap < needW);
     const sig = `${crowded ? '1' : '0'}|${merged.map((z) => `${z[0]}:${z[1]}`).join(',')}`;
-    return { zones: merged, crowded, sig };
+    const res = { zones: merged, crowded, sig };
+    cachedObstacleDock = dock;
+    cachedObstacleScan = res;
+    cachedObstacleAt = now;
+    return res;
   }
 
   function getDockObstacleZones(dock) {
@@ -2161,7 +2257,7 @@
       (e) => {
         if (disposed || !mascotActors.length) return;
         const now = Date.now();
-        if (now - lastDodgeCheckAt < 80) return;
+        if (now - lastDodgeCheckAt < 180) return;
         lastDodgeCheckAt = now;
         const dock = document.getElementById('ag-ps-mascot-dock');
         if (!dock || !dock.isConnected || dock.getAttribute('data-yield') === '1') return;
@@ -2482,7 +2578,7 @@
     setStyleVarIfChanged(document.documentElement, '--ag-ps-sprite-h', `${h}px`);
     if (!dock) return;
     if (repositionHome) {
-      parkActorsHome(dock, true, mascotRoamingActive);
+      parkActorsHome(dock, true, mascotRoamingActive, scanDockObstacles(dock, true));
       clampRoamingActorsInBounds(dock);
     }
   }
@@ -2492,7 +2588,7 @@
     setStyleVarIfChanged(document.documentElement, '--ag-ps-sprite-h', null);
   });
 
-  function syncMascotCompactGuard() {
+  function syncMascotCompactGuard(forceObstacleScan = false) {
     const box = getActiveInputBox();
     const dock = document.getElementById('ag-ps-mascot-dock');
     if (!box || !dock) return;
@@ -2505,8 +2601,8 @@
     dock.removeAttribute('data-compact-hide');
     if (w < 480 && mascotRoamingActive) {
       stopMascotRoaming(true);
-    } else if (w > 0 && Math.abs(w - lastTrackWidth) > 2) {
-      parkActorsHome(dock, true, mascotRoamingActive);
+    } else if (w > 0 && (forceObstacleScan || Math.abs(w - lastTrackWidth) > 2)) {
+      parkActorsHome(dock, true, mascotRoamingActive, scanDockObstacles(dock, true));
       clampRoamingActorsInBounds(dock);
     }
   }
@@ -2721,12 +2817,15 @@
     const box = getActiveInputBox();
     let dock = document.getElementById('ag-ps-mascot-dock');
     if (!prefs.mascot || !box) {
+      detachMascotDodgeWatcher();
       stopMascotRoaming(false);
       clearMascotEggTimers();
       clearAllMascotExitTimers(true);
       mascotActors.forEach(clearActorTimers);
       mascotActors = [];
       lastRosterSig = '';
+      cachedObstacleDock = null;
+      cachedObstacleScan = null;
       if (dock) dock.remove();
       return;
     }
@@ -3024,7 +3123,7 @@
       if (disposed || !prefs.mascot) return;
       const dock = document.getElementById('ag-ps-mascot-dock');
       if (!dock || !dock.isConnected) return;
-      const obs = scanDockObstacles(dock);
+      const obs = scanDockObstacles(dock, true);
       lastObstacleSig = obs.sig;
       if (obs.crowded) {
         dock.setAttribute('data-yield', '1');
@@ -3064,19 +3163,28 @@
     mascotActors = [];
     lastRosterSig = '';
     lastObstacleSig = '';
+    cachedObstacleDock = null;
+    cachedObstacleScan = null;
     document.getElementById('ag-ps-mascot-dock')?.remove();
   });
 
   /* ==========================================================================
    * 6. Thought Process Live Chinese Translation
    *    - Waits until generation settles (no repeated RPC every tick while streaming)
-   *    - Cleans up cleanly when thinking block collapses
+   *    - Exponential backoff on failure/skip (10s -> 30s -> 90s, max 3 attempts)
+   *    - Exact per-trigger / per-body box binding (zero sibling cross-talk)
    *    - Per-block "看原文 / 看译文" peek toggle in immersive mode
    * ========================================================================== */
+  const THOUGHT_MAX_CHARS = 9800;
+  const THOUGHT_MAX_FAILS = 3;
+  const THOUGHT_BACKOFF_MS = [10000, 30000, 90000];
   const thoughtInFlight = new WeakSet();
-  const thoughtTextMemo = new WeakMap(); // bodyEl -> { src, zh, ver }
+  const thoughtTextMemo = new WeakMap(); // bodyEl -> { src, zh, ver, failCount, retryAfter, truncated }
   const thoughtPeekOriginal = new WeakSet(); // bodyEl user chose to peek original
   const thoughtBoxByTrigger = new WeakMap(); // triggerBtn -> { box, bodyEl }
+  const thoughtBoxByBody = new WeakMap(); // bodyEl -> box
+  const thoughtTriggerByBody = new WeakMap(); // bodyEl -> triggerBtn
+  const thoughtTriggerByBox = new WeakMap(); // box -> triggerBtn
   let thoughtSeq = 0;
 
   function looksMostlyEnglish(text) {
@@ -3090,46 +3198,118 @@
   function findThoughtBody(triggerBtn) {
     const parent = triggerBtn && triggerBtn.parentElement;
     if (!parent) return null;
+    const directNext = triggerBtn.nextElementSibling;
+    if (
+      directNext &&
+      !directNext.classList.contains('ag-ps-thought-zh') &&
+      directNext.getAttribute('data-testid') !== 'thinking-collapsible-trigger' &&
+      (directNext.textContent || '').trim().length > 0
+    ) {
+      return directNext;
+    }
     for (const ch of Array.from(parent.children)) {
-      if (ch === triggerBtn || ch.classList.contains('ag-ps-thought-zh')) continue;
+      if (
+        ch === triggerBtn ||
+        ch.classList.contains('ag-ps-thought-zh') ||
+        ch.getAttribute('data-testid') === 'thinking-collapsible-trigger'
+      ) {
+        continue;
+      }
       if ((ch.textContent || '').trim().length > 0) return ch;
     }
     const next = parent.nextElementSibling;
-    if (next && !next.classList.contains('ag-ps-thought-zh') && (next.textContent || '').trim().length > 0) {
+    if (
+      next &&
+      !next.classList.contains('ag-ps-thought-zh') &&
+      next.getAttribute('data-testid') !== 'thinking-collapsible-trigger' &&
+      (next.textContent || '').trim().length > 0
+    ) {
       return next;
     }
     return null;
   }
 
   function removeThoughtBoxNear(triggerBtn) {
-    const tracked = triggerBtn ? thoughtBoxByTrigger.get(triggerBtn) : null;
+    if (!triggerBtn) return;
+    const tracked = thoughtBoxByTrigger.get(triggerBtn);
     if (tracked) {
       if (tracked.box && tracked.box.isConnected) tracked.box.remove();
+      if (tracked.box && thoughtTriggerByBox.get(tracked.box) === triggerBtn) {
+        thoughtTriggerByBox.delete(tracked.box);
+      }
       if (tracked.bodyEl) {
         tracked.bodyEl.classList.remove('ag-ps-thought-src-dim', 'ag-ps-thought-src-hidden');
+        if (thoughtBoxByBody.get(tracked.bodyEl) === tracked.box) {
+          thoughtBoxByBody.delete(tracked.bodyEl);
+        }
+        if (thoughtTriggerByBody.get(tracked.bodyEl) === triggerBtn) {
+          thoughtTriggerByBody.delete(tracked.bodyEl);
+        }
       }
       thoughtBoxByTrigger.delete(triggerBtn);
+      return;
     }
-    const parent = triggerBtn && triggerBtn.parentElement;
-    if (!parent) return;
-    parent.querySelectorAll(':scope > .ag-ps-thought-zh').forEach((n) => n.remove());
-    parent.querySelectorAll('.ag-ps-thought-src-dim, .ag-ps-thought-src-hidden').forEach((n) => {
-      n.classList.remove('ag-ps-thought-src-dim', 'ag-ps-thought-src-hidden');
-    });
-    const fallbackBody = findThoughtBody(triggerBtn);
-    if (fallbackBody && fallbackBody.parentElement && fallbackBody.parentElement !== parent) {
-      fallbackBody.parentElement.querySelectorAll(':scope > .ag-ps-thought-zh').forEach((n) => n.remove());
-      fallbackBody.classList.remove('ag-ps-thought-src-dim', 'ag-ps-thought-src-hidden');
+    const next = triggerBtn.nextElementSibling;
+    if (!next || next.getAttribute('data-testid') === 'thinking-collapsible-trigger') return;
+    if (next.classList.contains('ag-ps-thought-zh')) {
+      const owner = thoughtTriggerByBox.get(next);
+      if (!owner || owner === triggerBtn || !owner.isConnected) {
+        next.remove();
+        thoughtTriggerByBox.delete(next);
+      }
+      return;
+    }
+    const bodyOwner = thoughtTriggerByBody.get(next);
+    if (bodyOwner && bodyOwner !== triggerBtn && bodyOwner.isConnected) return;
+    const boundBox = thoughtBoxByBody.get(next);
+    const hasThoughtClass =
+      next.classList.contains('ag-ps-thought-src-dim') ||
+      next.classList.contains('ag-ps-thought-src-hidden');
+    if (boundBox) {
+      const boxOwner = thoughtTriggerByBox.get(boundBox);
+      if (boxOwner && boxOwner !== triggerBtn && boxOwner.isConnected) return;
+      if (boundBox.isConnected) boundBox.remove();
+      thoughtBoxByBody.delete(next);
+      thoughtTriggerByBox.delete(boundBox);
+    }
+    if (hasThoughtClass) {
+      next.classList.remove('ag-ps-thought-src-dim', 'ag-ps-thought-src-hidden');
+      const afterNext = next.nextElementSibling;
+      if (afterNext && afterNext.classList.contains('ag-ps-thought-zh')) {
+        const afterOwner = thoughtTriggerByBox.get(afterNext);
+        if (!afterOwner || afterOwner === triggerBtn || !afterOwner.isConnected) {
+          afterNext.remove();
+          thoughtTriggerByBox.delete(afterNext);
+        }
+      }
     }
   }
 
-  function applyThoughtDisplay(bodyEl, zhText, mode) {
-    if (!bodyEl || !bodyEl.parentElement) return;
-    let box = bodyEl.parentElement.querySelector(':scope > .ag-ps-thought-zh');
+  function applyThoughtDisplay(bodyEl, zhText, mode, triggerBtn = null) {
+    if (!bodyEl || !bodyEl.parentElement) return null;
+    const tracked = triggerBtn ? thoughtBoxByTrigger.get(triggerBtn) : null;
+    let box = (tracked && tracked.bodyEl === bodyEl && tracked.box && tracked.box.isConnected && tracked.box.parentElement === bodyEl.parentElement)
+      ? tracked.box
+      : thoughtBoxByBody.get(bodyEl);
+    if (box && (!box.isConnected || box.parentElement !== bodyEl.parentElement)) {
+      if (box.isConnected) box.remove();
+      box = null;
+    }
+    if (!box && bodyEl.nextElementSibling && bodyEl.nextElementSibling.classList.contains('ag-ps-thought-zh')) {
+      box = bodyEl.nextElementSibling;
+    }
     if (mode === 'off' || !zhText) {
       bodyEl.classList.remove('ag-ps-thought-src-dim', 'ag-ps-thought-src-hidden');
-      if (box) box.remove();
-      return;
+      if (box) {
+        box.remove();
+        if (!triggerBtn || thoughtTriggerByBox.get(box) === triggerBtn) thoughtTriggerByBox.delete(box);
+      }
+      thoughtBoxByBody.delete(bodyEl);
+      if (triggerBtn) {
+        if (thoughtTriggerByBody.get(bodyEl) === triggerBtn) thoughtTriggerByBody.delete(bodyEl);
+        thoughtBoxByTrigger.delete(triggerBtn);
+      }
+      return null;
     }
     const peeking = thoughtPeekOriginal.has(bodyEl);
     if (!box) {
@@ -3143,9 +3323,23 @@
         if (thoughtPeekOriginal.has(bodyEl)) thoughtPeekOriginal.delete(bodyEl);
         else thoughtPeekOriginal.add(bodyEl);
         const memo = thoughtTextMemo.get(bodyEl);
-        applyThoughtDisplay(bodyEl, memo ? memo.zh : zhText, prefs.thoughtMode);
+        applyThoughtDisplay(bodyEl, memo ? memo.zh : zhText, prefs.thoughtMode, triggerBtn);
       });
       bodyEl.parentElement.insertBefore(box, bodyEl.nextSibling);
+    }
+    thoughtBoxByBody.set(bodyEl, box);
+    if (triggerBtn) {
+      if (tracked) {
+        if (tracked.bodyEl && tracked.bodyEl !== bodyEl && thoughtTriggerByBody.get(tracked.bodyEl) === triggerBtn) {
+          thoughtTriggerByBody.delete(tracked.bodyEl);
+        }
+        if (tracked.box && tracked.box !== box && thoughtTriggerByBox.get(tracked.box) === triggerBtn) {
+          thoughtTriggerByBox.delete(tracked.box);
+        }
+      }
+      thoughtBoxByTrigger.set(triggerBtn, { box, bodyEl });
+      thoughtTriggerByBody.set(bodyEl, triggerBtn);
+      thoughtTriggerByBox.set(box, triggerBtn);
     }
     const effectiveImmersive = mode === 'immersive' && !peeking;
     box.setAttribute('data-mode', effectiveImmersive ? 'immersive' : 'bilingual');
@@ -3178,34 +3372,82 @@
     if (!bodyEl || typeof window.__agProjectCall !== 'function') return;
     const mode = prefs.thoughtMode;
     if (mode === 'off') {
-      applyThoughtDisplay(bodyEl, '', 'off');
+      applyThoughtDisplay(bodyEl, '', 'off', triggerBtn);
       return;
     }
     const srcText = extractCleanThoughtText(bodyEl);
     if (!looksMostlyEnglish(srcText)) return;
-    const clipped = srcText.slice(0, 9800);
+    const isTruncated = srcText.length > THOUGHT_MAX_CHARS;
+    const clipped = srcText.slice(0, THOUGHT_MAX_CHARS);
     const memo = thoughtTextMemo.get(bodyEl);
-    if (memo && memo.src === clipped && memo.zh) {
-      const box = applyThoughtDisplay(bodyEl, memo.zh, mode);
-      if (triggerBtn && box) thoughtBoxByTrigger.set(triggerBtn, { box, bodyEl });
+    const sameSrc = Boolean(memo && memo.src === clipped);
+    if (sameSrc && memo.zh) {
+      applyThoughtDisplay(bodyEl, memo.zh, mode, triggerBtn);
       return;
+    }
+    if (sameSrc) {
+      const fails = Number(memo.failCount) || 0;
+      if (fails >= THOUGHT_MAX_FAILS) return;
+      if (memo.retryAfter && Date.now() < memo.retryAfter) return;
     }
     if (thoughtInFlight.has(bodyEl)) return;
     const myVer = ++thoughtSeq;
-    thoughtTextMemo.set(bodyEl, { src: clipped, zh: memo ? memo.zh : '', ver: myVer });
+    const prevFails = sameSrc ? (Number(memo.failCount) || 0) : 0;
+    thoughtTextMemo.set(bodyEl, {
+      src: clipped,
+      zh: sameSrc ? memo.zh : '',
+      ver: myVer,
+      failCount: prevFails,
+      retryAfter: 0,
+      truncated: isTruncated
+    });
     thoughtInFlight.add(bodyEl);
+
+    const recordFailure = () => {
+      const latest = thoughtTextMemo.get(bodyEl);
+      if (!latest || latest.ver !== myVer) return;
+      const nextFails = (Number(latest.failCount) || 0) + 1;
+      const delayMs = THOUGHT_BACKOFF_MS[Math.min(nextFails - 1, THOUGHT_BACKOFF_MS.length - 1)];
+      thoughtTextMemo.set(bodyEl, {
+        src: clipped,
+        zh: latest.zh || '',
+        ver: myVer,
+        failCount: nextFails,
+        retryAfter: nextFails >= THOUGHT_MAX_FAILS ? Infinity : Date.now() + delayMs,
+        truncated: isTruncated
+      });
+    };
+
     Promise.resolve(window.__agProjectCall('translateText', { text: clipped, targetLang: 'zh-CN' }, 12000))
       .then((res) => {
         if (disposed || !bodyEl.isConnected) return;
         const latest = thoughtTextMemo.get(bodyEl);
         if (!latest || latest.ver !== myVer) return; // Discard stale response
         if (res && res.ok && res.translated && !res.skipped) {
-          thoughtTextMemo.set(bodyEl, { src: clipped, zh: res.translated, ver: myVer });
-          const box = applyThoughtDisplay(bodyEl, res.translated, prefs.thoughtMode);
-          if (triggerBtn && box) thoughtBoxByTrigger.set(triggerBtn, { box, bodyEl });
+          const truncatedNotice = '\n\n[内容超过 9800 字符，仅翻译前段，可展开/查看原文阅读完整内容]';
+          const finalZh = (isTruncated || res.truncated) && !String(res.translated).includes('9800')
+            ? `${res.translated}${truncatedNotice}`
+            : String(res.translated);
+          thoughtTextMemo.set(bodyEl, {
+            src: clipped,
+            zh: finalZh,
+            ver: myVer,
+            failCount: 0,
+            retryAfter: 0,
+            truncated: Boolean(isTruncated || res.truncated)
+          });
+          // Only mount translation box if the thinking trigger is still expanded
+          if (triggerBtn && (!triggerBtn.isConnected || triggerBtn.getAttribute('aria-expanded') !== 'true')) {
+            return;
+          }
+          applyThoughtDisplay(bodyEl, finalZh, prefs.thoughtMode, triggerBtn);
+        } else {
+          recordFailure();
         }
       })
-      .catch(() => {})
+      .catch(() => {
+        if (!disposed) recordFailure();
+      })
       .finally(() => {
         thoughtInFlight.delete(bodyEl);
       });
@@ -3223,8 +3465,7 @@
       const bodyEl = findThoughtBody(trig);
       if (!bodyEl) continue;
       if (prefs.thoughtMode === 'off') {
-        applyThoughtDisplay(bodyEl, '', 'off');
-        thoughtBoxByTrigger.delete(trig);
+        applyThoughtDisplay(bodyEl, '', 'off', trig);
         continue;
       }
       // Only defer the actively streaming last thinking block (which has no completed duration yet)
@@ -3233,8 +3474,7 @@
       if (isBusy && i === triggers.length - 1 && !isCompleted) {
         const memo = thoughtTextMemo.get(bodyEl);
         if (memo && memo.zh) {
-          const box = applyThoughtDisplay(bodyEl, memo.zh, prefs.thoughtMode);
-          if (box) thoughtBoxByTrigger.set(trig, { box, bodyEl });
+          applyThoughtDisplay(bodyEl, memo.zh, prefs.thoughtMode, trig);
         }
         continue;
       }
@@ -3449,11 +3689,11 @@
   }
 
   /* ---- Sanitized Workbench Bridge (Main Window <-> Prism Files MCP App iframe) ---- */
-  const ALLOWED_BRIDGE_TABS = new Set(['browse', 'artifacts', 'pins', 'search', 'accounts']);
+  const ALLOWED_BRIDGE_TABS = new Set(['browse', 'artifacts', 'pins', 'search', 'accounts', 'models']);
   const bridgeSessionId = `ps-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   let bridgeTargetWin = null;
+  let bridgeTargetFrameEl = null;
   let bridgeTargetOrigin = '*';
-  let bridgeLastSeenAt = 0;
   let pendingWorkbenchTab = '';
   let pendingWorkbenchTabAt = 0;
   let pendingIntentId = '';
@@ -3461,12 +3701,68 @@
   let lastPushedQuotaSig = '';
   let lastPushedQuotaAt = 0;
 
+  function sanitizeQuotaPayload(q) {
+    if (!q || typeof q !== 'object' || Array.isArray(q)) return null;
+    const normPct = (v) => {
+      if (v === null || v === undefined || v === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n * 10) / 10)) : null;
+    };
+    const pct5h = normPct(q.pct5h);
+    const pct7d = normPct(q.pct7d);
+    let families = null;
+    if (q.families && typeof q.families === 'object' && !Array.isArray(q.families)) {
+      const cleanFam = {};
+      for (const fk of ['gemini', 'claude', 'gpt']) {
+        const src = q.families[fk];
+        if (!src || typeof src !== 'object' || Array.isArray(src)) continue;
+        const rec = {};
+        const f5 = normPct(src.pct5h);
+        const f7 = normPct(src.pct7d);
+        if (f5 !== null) rec.pct5h = f5;
+        if (f7 !== null) rec.pct7d = f7;
+        if (Object.keys(rec).length) cleanFam[fk] = rec;
+      }
+      if (Object.keys(cleanFam).length) families = cleanFam;
+    }
+    if (pct5h === null && pct7d === null && !families) return null;
+    const rawEmail = typeof q.accountEmail === 'string' ? q.accountEmail.trim().toLowerCase() : '';
+    const accountEmail = rawEmail.includes('@') && rawEmail.length <= 254 ? rawEmail : '';
+    const obsMs = Number(q.observedAt);
+    return {
+      pct5h,
+      pct7d,
+      reset5hAt: typeof q.reset5hAt === 'string' ? q.reset5hAt.slice(0, 40) : '',
+      reset7dAt: typeof q.reset7dAt === 'string' ? q.reset7dAt.slice(0, 40) : '',
+      families,
+      accountEmail,
+      tierName: typeof q.tierName === 'string' ? q.tierName.trim().slice(0, 48) : '',
+      observedAt: Number.isFinite(obsMs) && obsMs > 0 ? obsMs : Date.now()
+    };
+  }
+
+  function sanitizeAccountSummary(s) {
+    if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
+    const rawCount = Number(s.accountCount);
+    const accountCount = Number.isFinite(rawCount) ? Math.max(0, Math.min(99, Math.floor(rawCount))) : 0;
+    const rawUpdated = Number(s.updatedAt);
+    return {
+      enabled: Boolean(s.enabled),
+      activeAlias: typeof s.activeAlias === 'string' ? s.activeAlias.trim().slice(0, 32) : '',
+      activeEmail: typeof s.activeEmail === 'string' ? s.activeEmail.trim().slice(0, 64) : '',
+      activeRole: s.activeRole === 'primary' ? 'primary' : (s.activeRole === 'backup' ? 'backup' : ''),
+      accountCount,
+      pendingSwitchEmail: typeof s.pendingSwitchEmail === 'string' ? s.pendingSwitchEmail.trim().slice(0, 64) : '',
+      updatedAt: Number.isFinite(rawUpdated) && rawUpdated > 0 ? rawUpdated : Date.now()
+    };
+  }
+
   let cachedLiveQuota = (() => {
     try {
       const raw = localStorage.getItem(LIVE_QUOTA_STORAGE_KEY);
       if (raw) {
-        const p = JSON.parse(raw);
-        if (p && typeof p === 'object') return p;
+        const clean = sanitizeQuotaPayload(JSON.parse(raw));
+        if (clean) return clean;
       }
     } catch {}
     return { pct5h: null, pct7d: null, reset5hAt: '', reset7dAt: '', observedAt: 0 };
@@ -3476,8 +3772,8 @@
     try {
       const raw = localStorage.getItem(ACCOUNT_SUMMARY_STORAGE_KEY);
       if (raw) {
-        const p = JSON.parse(raw);
-        if (p && typeof p === 'object') return p;
+        const clean = sanitizeAccountSummary(JSON.parse(raw));
+        if (clean) return clean;
       }
     } catch {}
     return null;
@@ -3493,44 +3789,97 @@
     const o = String(origin || '').trim();
     if (!o || o === 'null') return true; // Sandboxed srcdoc MCP App iframe
     if (o === window.location.origin) return true;
-    return /^(?:app|vscode-webview|file):\/\//i.test(o) || /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i.test(o);
+    return /^(?:app|vscode-file|vscode-webview|file):\/\//i.test(o) || /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/i.test(o);
+  }
+
+  function isAllowedBridgeFrameEl(iframeEl) {
+    if (!iframeEl || !iframeEl.isConnected) return false;
+    // Exclude conversation messages, markdown embeds, and content preview iframes
+    if (iframeEl.closest('[data-testid="autoscroll-viewport"], [data-testid*="preview" i], [data-testid="user-message"], [data-testid="assistant-message"], [data-markdown-root]')) {
+      return false;
+    }
+    const rawSrc = String(iframeEl.getAttribute('src') || '').trim();
+    if (rawSrc && /^https?:\/\//i.test(rawSrc)) {
+      if (!/^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$|\?|#)/i.test(rawSrc)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function scoreBridgeFramePriority(iframeEl) {
+    let score = 0;
+    try {
+      if (iframeEl.closest('[data-testid*="aux" i], [data-testid*="side" i], [data-testid*="panel" i], [data-testid*="plugin" i], [data-testid*="mcp" i], aside')) {
+        score += 20;
+      }
+      const hint = `${iframeEl.getAttribute('title') || ''} ${iframeEl.getAttribute('name') || ''} ${iframeEl.getAttribute('data-testid') || ''} ${iframeEl.getAttribute('src') || ''}`;
+      if (/prism|mcp|webview|plugin/i.test(hint)) score += 30;
+      if (iframeEl.hasAttribute('srcdoc')) score += 10;
+    } catch {}
+    return score;
+  }
+
+  function collectCandidateFrames() {
+    const entries = [];
+    const seen = new Set();
+    const pushWin = (w, frameEl, depth = 0) => {
+      if (!w || w === window || seen.has(w)) return;
+      try {
+        if (w.closed) return;
+      } catch {
+        return;
+      }
+      seen.add(w);
+      entries.push({ win: w, frameEl });
+      if (depth >= 2) return;
+      try {
+        const innerCount = w.frames ? w.frames.length : 0;
+        for (let j = 0; j < Math.min(innerCount, 6); j++) {
+          pushWin(w.frames[j], frameEl, depth + 1);
+        }
+      } catch {}
+    };
+    try {
+      const frames = Array.from(document.querySelectorAll('iframe'))
+        .filter(isAllowedBridgeFrameEl)
+        .sort((a, b) => scoreBridgeFramePriority(b) - scoreBridgeFramePriority(a));
+      for (let i = 0; i < frames.length; i++) {
+        pushWin(frames[i].contentWindow, frames[i], 0);
+      }
+    } catch {}
+    return entries;
   }
 
   function collectCandidateFrameWindows() {
-    const wins = [];
-    const seen = new Set();
-    const pushWin = (w) => {
-      if (!w || w === window || seen.has(w)) return;
-      seen.add(w);
-      wins.push(w);
-    };
-    if (bridgeTargetWin) pushWin(bridgeTargetWin);
-    try {
-      const frames = document.querySelectorAll('iframe');
-      for (let i = 0; i < frames.length; i++) {
-        const cw = frames[i].contentWindow;
-        pushWin(cw);
-        // Best-effort 1-level nested frame scan when same-origin
-        try {
-          const innerCount = cw && cw.frames ? cw.frames.length : 0;
-          for (let j = 0; j < Math.min(innerCount, 6); j++) {
-            pushWin(cw.frames[j]);
-          }
-        } catch {}
-      }
-    } catch {}
-    return wins;
+    return collectCandidateFrames().map((e) => e.win);
+  }
+
+  function findCandidateFrameByWindow(win) {
+    if (!win || win === window) return null;
+    const entries = collectCandidateFrames();
+    for (let i = 0; i < entries.length; i++) {
+      if (entries[i].win === win) return entries[i].frameEl;
+    }
+    return null;
   }
 
   function isOwnedIframeWindow(win) {
+    return Boolean(findCandidateFrameByWindow(win));
+  }
+
+  function isBridgeTargetAlive(win, { requireVisible = false } = {}) {
     if (!win || win === window) return false;
-    if (win === bridgeTargetWin) return true;
-    const candidates = collectCandidateFrameWindows();
-    if (candidates.includes(win)) return true;
     try {
-      if (win.parent === window || win.top === window) return true;
-    } catch {}
-    return false;
+      if (win.closed) return false;
+    } catch {
+      return false;
+    }
+    const frameEl = findCandidateFrameByWindow(win);
+    if (!frameEl) return false;
+    if (win === bridgeTargetWin) bridgeTargetFrameEl = frameEl;
+    if (requireVisible && !isElementRendered(frameEl)) return false;
+    return true;
   }
 
   function postBridgeMessage(win, payload, origin = bridgeTargetOrigin) {
@@ -3551,6 +3900,7 @@
     const reqId = `ping-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const wins = collectCandidateFrameWindows();
     for (let i = 0; i < wins.length; i++) {
+      // Never attach accountEmail or quota before bidirectional sessionId authentication completes
       postBridgeMessage(wins[i], { type: 'bridge-ping', requestId: reqId }, '*');
     }
   }
@@ -3573,7 +3923,9 @@
     const sendAttempt = (attempt) => {
       if (disposed || pendingIntentId !== intentId) return;
       const reqId = `${intentId}-r${attempt}`;
-      if (bridgeTargetWin) {
+      const targetAlive = isBridgeTargetAlive(bridgeTargetWin);
+      const targetVisible = targetAlive && isBridgeTargetAlive(bridgeTargetWin, { requireVisible: true });
+      if (targetVisible && attempt < 2) {
         postBridgeMessage(bridgeTargetWin, {
           type: 'switch-tab',
           intentId,
@@ -3581,21 +3933,34 @@
           tab: targetTab,
           focus: true
         }, bridgeTargetOrigin);
+        return;
       }
-      // Also broadcast discovery ping + switch-tab to candidate frames on early/retry attempts so hot-reloaded or nested frames pick it up
-      if (!bridgeTargetWin || attempt === 1 || attempt === 3) {
-        const wins = collectCandidateFrameWindows();
-        for (let i = 0; i < wins.length; i++) {
-          if (wins[i] === bridgeTargetWin) continue;
-          postBridgeMessage(wins[i], { type: 'bridge-ping', requestId: `p-${reqId}` }, '*');
-          postBridgeMessage(wins[i], {
-            type: 'switch-tab',
-            intentId,
-            requestId: reqId,
-            tab: targetTab,
-            focus: true
-          }, '*');
-        }
+      if (!targetAlive) {
+        bridgeTargetWin = null;
+        bridgeTargetFrameEl = null;
+        bridgeTargetOrigin = '*';
+      }
+      // Re-handshake via bridge-ping (no quota/email):
+      // - attempt >= 2 without ack (e.g. same iframe reloaded and reset mainBridgeSessionId)
+      // - or current target is missing/hidden so visible candidate frames can take over via bridge-pong -> init-sync
+      const candidates = collectCandidateFrames();
+      const pingWins = [];
+      const seen = new Set();
+      const enqueueWin = (w) => {
+        if (!w || seen.has(w)) return;
+        seen.add(w);
+        pingWins.push(w);
+      };
+      if (targetVisible) enqueueWin(bridgeTargetWin);
+      for (let i = 0; i < candidates.length; i++) {
+        if (isElementRendered(candidates[i].frameEl)) enqueueWin(candidates[i].win);
+      }
+      if (targetAlive && !targetVisible) enqueueWin(bridgeTargetWin);
+      if (!pingWins.length) {
+        for (let i = 0; i < candidates.length; i++) enqueueWin(candidates[i].win);
+      }
+      for (let i = 0; i < pingWins.length; i++) {
+        postBridgeMessage(pingWins[i], { type: 'bridge-ping', requestId: `p-${reqId}` }, '*');
       }
     };
 
@@ -3608,45 +3973,6 @@
         bridgeRetryTimers.push(setTimeout(() => sendAttempt(idx), delays[idx]));
       }
     }
-  }
-
-  function sanitizeQuotaPayload(q) {
-    if (!q || typeof q !== 'object') return null;
-    const normPct = (v) => {
-      if (v === null || v === undefined || v === '') return null;
-      const n = Number(v);
-      return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n * 10) / 10)) : null;
-    };
-    const pct5h = normPct(q.pct5h);
-    const pct7d = normPct(q.pct7d);
-    let families = null;
-    if (q.families && typeof q.families === 'object') {
-      const cleanFam = {};
-      for (const fk of ['gemini', 'claude', 'gpt']) {
-        const src = q.families[fk];
-        if (!src || typeof src !== 'object') continue;
-        const rec = {};
-        const f5 = normPct(src.pct5h);
-        const f7 = normPct(src.pct7d);
-        if (f5 !== null) rec.pct5h = f5;
-        if (f7 !== null) rec.pct7d = f7;
-        if (Object.keys(rec).length) cleanFam[fk] = rec;
-      }
-      if (Object.keys(cleanFam).length) families = cleanFam;
-    }
-    if (pct5h === null && pct7d === null && !families) return null;
-    const rawEmail = typeof q.accountEmail === 'string' ? q.accountEmail.trim().toLowerCase() : '';
-    const accountEmail = rawEmail.includes('@') && rawEmail.length <= 254 ? rawEmail : '';
-    return {
-      pct5h,
-      pct7d,
-      reset5hAt: typeof q.reset5hAt === 'string' ? q.reset5hAt.slice(0, 40) : '',
-      reset7dAt: typeof q.reset7dAt === 'string' ? q.reset7dAt.slice(0, 40) : '',
-      families,
-      accountEmail,
-      tierName: typeof q.tierName === 'string' ? q.tierName.trim().slice(0, 48) : '',
-      observedAt: Number(q.observedAt) || Date.now()
-    };
   }
 
   function formatShortTierName(rawTier) {
@@ -3696,6 +4022,12 @@
     cachedLiveQuota = live;
     try { localStorage.setItem(LIVE_QUOTA_STORAGE_KEY, JSON.stringify(live)); } catch {}
     syncWorkbenchTooltip();
+    if (!isBridgeTargetAlive(bridgeTargetWin)) {
+      bridgeTargetWin = null;
+      bridgeTargetFrameEl = null;
+      bridgeTargetOrigin = '*';
+      return;
+    }
     const famSig = live.families
       ? Object.entries(live.families).map(([k, v]) => `${k}:${v.pct5h ?? ''}/${v.pct7d ?? ''}`).join(',')
       : '';
@@ -3704,10 +4036,10 @@
     if (!force && sig === lastPushedQuotaSig && now - lastPushedQuotaAt < 60000) return;
     lastPushedQuotaSig = sig;
     lastPushedQuotaAt = now;
-    if (bridgeTargetWin) {
-      if (!postBridgeMessage(bridgeTargetWin, { type: 'quota-sync', quota: live })) {
-        bridgeTargetWin = null;
-      }
+    if (!postBridgeMessage(bridgeTargetWin, { type: 'quota-sync', quota: live })) {
+      bridgeTargetWin = null;
+      bridgeTargetFrameEl = null;
+      bridgeTargetOrigin = '*';
     }
   }
 
@@ -3718,14 +4050,31 @@
     if (!isTrustedBridgeOrigin(event.origin)) return;
     const src = event.source;
     if (!src || src === window) return;
-    if (data.source && data.source !== 'prism-files') return;
+    if (data.source !== 'prism-files') return;
     const replyOrigin = event.origin && event.origin !== 'null' ? event.origin : '*';
 
-    if (data.type === 'ready' || data.type === 'bridge-pong') {
+    if (data.type === 'ready') {
+      const srcFrameEl = findCandidateFrameByWindow(src);
+      if (!srcFrameEl) return;
+      // Reject hijacking only while the locked target iframe is still visible; allow a newly visible frame to challenge if the old one is hidden
+      if (isBridgeTargetAlive(bridgeTargetWin, { requireVisible: true }) && bridgeTargetWin !== src) return;
+      if (isBridgeTargetAlive(bridgeTargetWin) && bridgeTargetWin !== src && !isElementRendered(srcFrameEl)) return;
+      // Challenge candidate iframe with bridge-ping (no quota/email) until bridge-pong echoes bridgeSessionId
+      const reqId = `ready-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      postBridgeMessage(src, { type: 'bridge-ping', requestId: reqId }, replyOrigin);
+      return;
+    }
+
+    if (data.type === 'bridge-pong') {
       if (!isOwnedIframeWindow(src)) return;
+      if (data.sessionId !== bridgeSessionId) return;
+      const srcFrameEl = findCandidateFrameByWindow(src);
+      if (!srcFrameEl) return;
+      if (isBridgeTargetAlive(bridgeTargetWin, { requireVisible: true }) && bridgeTargetWin !== src) return;
+      if (isBridgeTargetAlive(bridgeTargetWin) && bridgeTargetWin !== src && !isElementRendered(srcFrameEl)) return;
       bridgeTargetWin = src;
+      bridgeTargetFrameEl = srcFrameEl;
       bridgeTargetOrigin = replyOrigin;
-      bridgeLastSeenAt = Date.now();
       const liveNow = sanitizeQuotaPayload(getQuotaState()) || (cachedLiveQuota && (cachedLiveQuota.pct5h !== null || cachedLiveQuota.pct7d !== null) ? cachedLiveQuota : null);
       const wantTab =
         pendingWorkbenchTab && Date.now() - pendingWorkbenchTabAt < 8000 && ALLOWED_BRIDGE_TABS.has(pendingWorkbenchTab)
@@ -3742,10 +4091,8 @@
     }
 
     if (data.type === 'ack') {
-      if (!isOwnedIframeWindow(src)) return;
-      bridgeTargetWin = src;
-      bridgeTargetOrigin = replyOrigin;
-      bridgeLastSeenAt = Date.now();
+      if (!isBridgeTargetAlive(bridgeTargetWin) || src !== bridgeTargetWin) return;
+      if (data.sessionId !== bridgeSessionId) return;
       if (data.ok && pendingIntentId && data.intentId === pendingIntentId) {
         pendingIntentId = '';
         pendingWorkbenchTab = '';
@@ -3756,26 +4103,18 @@
     }
 
     if (data.type === 'close-workbench') {
-      if (!isOwnedIframeWindow(src)) return;
+      if (!isBridgeTargetAlive(bridgeTargetWin) || src !== bridgeTargetWin) return;
+      if (data.sessionId !== bridgeSessionId) return;
       toggleOrClosePrismWorkbench();
       return;
     }
 
     if (data.type === 'account-summary' && data.summary && typeof data.summary === 'object') {
-      if (!isOwnedIframeWindow(src)) return;
-      bridgeTargetWin = src;
-      bridgeTargetOrigin = replyOrigin;
-      bridgeLastSeenAt = Date.now();
-      const s = data.summary;
-      cachedAccountSummary = {
-        enabled: Boolean(s.enabled),
-        activeAlias: String(s.activeAlias || '').trim().slice(0, 32),
-        activeEmail: String(s.activeEmail || '').trim().slice(0, 64),
-        activeRole: s.activeRole === 'primary' ? 'primary' : (s.activeRole === 'backup' ? 'backup' : ''),
-        accountCount: Math.max(0, Math.min(99, Number(s.accountCount) || 0)),
-        pendingSwitchEmail: String(s.pendingSwitchEmail || '').trim().slice(0, 64),
-        updatedAt: Date.now()
-      };
+      if (!isBridgeTargetAlive(bridgeTargetWin) || src !== bridgeTargetWin) return;
+      if (data.sessionId !== bridgeSessionId) return;
+      const cleanSummary = sanitizeAccountSummary(data.summary);
+      if (!cleanSummary) return;
+      cachedAccountSummary = cleanSummary;
       try { localStorage.setItem(ACCOUNT_SUMMARY_STORAGE_KEY, JSON.stringify(cachedAccountSummary)); } catch {}
       syncWorkbenchTooltip();
       const pop = document.getElementById('ag-ps-popover');
@@ -3789,6 +4128,8 @@
     window.removeEventListener('message', onWorkbenchBridgeMessage);
     clearBridgeRetryTimers();
     bridgeTargetWin = null;
+    bridgeTargetFrameEl = null;
+    bridgeTargetOrigin = '*';
   });
   setTimeout(() => { if (!disposed) broadcastBridgePing(); }, 450);
 
@@ -4025,11 +4366,12 @@
       const tier7 = liveQ.pct7d >= 50 ? 'ok' : liveQ.pct7d >= 20 ? 'warn' : 'danger';
       quotaChips.push(`<span class="ag-ps-qchip" data-tier="${tier7}">7d ${liveQ.pct7d}%</span>`);
     }
+    const safeAccountCount = Math.max(0, Math.min(99, Math.floor(Number(accSum?.accountCount) || 0)));
     const accSubHtml = accSum?.pendingSwitchEmail
       ? `<span class="ag-ps-qchip" data-tier="warn">待重启切至 ${escapeHtml(shortAccountEmail(accSum.pendingSwitchEmail))}</span>`
       : (quotaChips.length
         ? quotaChips.join('')
-        : `<span class="ag-ps-toggle-sub">${accSum?.accountCount ? `已捕获 ${accSum.accountCount} 个账号` : '打开工作台同步主备账号与额度'}</span>`);
+        : `<span class="ag-ps-toggle-sub">${safeAccountCount > 0 ? `已捕获 ${escapeHtml(String(safeAccountCount))} 个账号` : '打开工作台同步主备账号与额度'}</span>`);
 
     pop.innerHTML = `
       <div class="ag-ps-pop-hdr">
@@ -4240,16 +4582,14 @@
       const sw = e.target.closest('[data-toggle]');
       if (sw) {
         const k = sw.getAttribute('data-toggle');
-        prefs[k] = !prefs[k];
-        savePrefs();
-        emitBus('prefs');
+        if (!k || !hasOwn(PREF_VALIDATORS, k) || PREF_VALIDATORS[k] !== boolValidator) return;
+        if (!setPref(k, !Boolean(prefs[k]))) return;
         const busy = isAgentGenerating();
         if (k === 'inkStream') syncStreamObserver(busy);
         if (k === 'outline' && !prefs.outline) toggleOutlineDrawer(false);
         syncMascotDock(busy);
         syncUsageExtraMount();
         syncToolbarButtons();
-        renderPopoverContent(pop);
         return;
       }
       const mcm = e.target.closest('[data-mascot-count-mode]');
@@ -5048,21 +5388,16 @@
     syncMascotObstacles: nudgeMascotObstacleSync,
     setAttrIfChanged,
     setStyleVarIfChanged,
+    escapeHtml,
+    clampInt: clampRangeInt,
+    canUseHostCookie,
+    copyText,
     onCleanup
   };
   window.__agPrismBus = prismBus;
   const attachedInitFns = new Set();
   if (window.__agPrismModules && typeof window.__agPrismModules === 'object') {
     for (const initFn of Object.values(window.__agPrismModules)) {
-      if (typeof initFn === 'function' && !attachedInitFns.has(initFn)) {
-        attachedInitFns.add(initFn);
-        try { initFn(prismBus); } catch {}
-      }
-    }
-  }
-  if (Array.isArray(window.__agPrismBusQueue)) {
-    const queued = window.__agPrismBusQueue.splice(0, window.__agPrismBusQueue.length);
-    for (const initFn of queued) {
       if (typeof initFn === 'function' && !attachedInitFns.has(initFn)) {
         attachedInitFns.add(initFn);
         try { initFn(prismBus); } catch {}
@@ -5083,12 +5418,15 @@
   window.__agPrismSuiteDispose = function () {
     if (disposed) return;
     disposed = true;
-    while (cleanups.length) {
-      const fn = cleanups.pop();
+    const list = Array.from(cleanups);
+    cleanups.clear();
+    while (list.length) {
+      const fn = list.pop();
       try { fn(); } catch {}
     }
   };
-  if (typeof window.ctx?.onCleanup === 'function') {
-    window.ctx.onCleanup(window.__agPrismSuiteDispose);
+  const patchCtx = typeof ctx !== 'undefined' ? ctx : window.__AG_PATCH_CTX__;
+  if (typeof patchCtx?.onCleanup === 'function') {
+    patchCtx.onCleanup(window.__agPrismSuiteDispose);
   }
 })();

@@ -242,8 +242,7 @@ body.dark .ag-ps-ssh-status[data-tone="warn"] {
 }
 
 .ag-ps-turn-act-btn:focus:not(:focus-visible),
-.ag-ps-inline-btn:focus:not(:focus-visible),
-.ag-ps-wf-seg-btn:focus:not(:focus-visible) {
+.ag-ps-inline-btn:focus:not(:focus-visible) {
   outline: none;
 }
 
@@ -397,58 +396,14 @@ body.dark .ag-ps-inline-warn {
   box-shadow: 0 0 0 2px var(--background, #FFFFFF), 0 0 0 4px var(--primary, #2563EB);
 }
 
-/* ---- 5. Popover Workflow Section Fallback Helpers ---- */
-.ag-ps-wf-seg-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 7px;
-  background-color: var(--muted, rgba(128, 128, 128, 0.10));
-  border: 1px solid var(--sidebar-border, rgba(128, 128, 128, 0.14));
-  flex-shrink: 0;
-}
-
-.ag-ps-wf-seg-btn {
-  border: none;
-  border-radius: 5px;
-  padding: 2.5px 6px;
-  background: transparent;
-  color: var(--muted-foreground, #6B6964);
-  font-family: inherit;
-  font-size: 10.5px;
-  font-weight: 500;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background-color 110ms ease, color 110ms ease;
-}
-
-.ag-ps-wf-seg-btn:hover,
-.ag-ps-wf-seg-btn:focus-visible {
-  color: var(--foreground, #141413);
-}
-
-.ag-ps-wf-seg-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 1.5px var(--primary, #2563EB) inset;
-}
-
-.ag-ps-wf-seg-btn[data-selected="1"] {
-  background-color: var(--background, #FFFFFF);
-  color: var(--foreground, #141413);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
-  font-weight: 600;
-}
-
-/* ---- 6. Reduced Motion Guard ---- */
+/* ---- 5. Reduced Motion Guard (Segmented controls reuse .ag-ps-seg-group/.ag-ps-seg-btn from prism-suite.css) ---- */
 @media (prefers-reduced-motion: reduce) {
   #ag-ps-img-menu,
   .ag-ps-img-menu-item,
   .ag-ps-drop-target,
   .ag-ps-turn-actions,
   .ag-ps-turn-act-btn,
-  .ag-ps-inline-btn,
-  .ag-ps-wf-seg-btn {
+  .ag-ps-inline-btn {
     animation: none !important;
     transition: none !important;
   }

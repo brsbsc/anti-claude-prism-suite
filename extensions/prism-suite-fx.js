@@ -72,21 +72,6 @@
     done: '已完成'
   };
 
-  function escapeHtml(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
-
-  function clampInt(val, min, max, fallback) {
-    const n = Math.round(Number(val));
-    if (!Number.isFinite(n)) return fallback;
-    return Math.max(min, Math.min(max, n));
-  }
-
   function parseCssColorToRgb(colorStr) {
     const s = String(colorStr || '').trim();
     const hex = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
@@ -156,6 +141,11 @@
     const { signal } = ac;
 
     bus.registerDefaults(FX_DEFAULTS);
+
+    const escapeHtml = bus.escapeHtml || ((s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])));
+    const clampInt = bus.clampInt || ((v, min, max, fb) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fb; });
+    const canUseHostCookie = bus.canUseHostCookie || (() => /^https?:$/i.test(window.location?.protocol || ''));
+    const copyText = bus.copyText || ((t) => navigator.clipboard?.writeText(String(t || '')).then(() => true, () => false) ?? Promise.resolve(false));
 
     function getPrefs() {
       const p = (bus.getPrefs && bus.getPrefs()) || {};
@@ -258,7 +248,7 @@
         if (reducedMotion) {
           stopScheduler();
           clearBeamCanvas();
-          if (orbCanvas && getPrefs().thinkingOrb) renderThinkingOrbFrame(0, performance.now(), true);
+          if (orbCanvas && getPrefs().thinkingOrb) renderThinkingOrbFrame(0, Date.now(), true);
         } else {
           ensureScheduler();
         }
@@ -1391,6 +1381,17 @@
     /* ========================================================================
      * 6. User Bubble Tinting & Compact Layout
      * ======================================================================== */
+    const DRAGGING_BUBBLE_TTL_MS = 4000;
+    let draggingBubbleStrength = null;
+    let draggingBubbleStrengthAt = 0;
+
+    function clearDraggingBubbleStrength(reapply = false) {
+      const hadDragging = draggingBubbleStrength !== null;
+      draggingBubbleStrength = null;
+      draggingBubbleStrengthAt = 0;
+      if (reapply && hadDragging) applyBubbleTintAndCompact();
+    }
+
     function resolveBubbleColor(prefs) {
       const presetId = prefs.bubbleTintPreset || 'accent';
       const dark = safeIsDark();
@@ -1412,6 +1413,8 @@
 
       // User bubble tinting
       if (!prefs.bubbleTint) {
+        draggingBubbleStrength = null;
+        draggingBubbleStrengthAt = 0;
         setAttr(html, 'data-ag-ps-bubble-tint', '');
         setAttr(html, 'data-ag-ps-bubble-contrast', '');
         setStyleVar(html, '--ag-ps-bubble-color', '');
@@ -1419,12 +1422,18 @@
         return;
       }
 
-      const strength = clampInt(
-        strengthOverride !== undefined ? strengthOverride : prefs.bubbleTintStrength,
-        10,
-        100,
-        22
-      );
+      if (strengthOverride === undefined && draggingBubbleStrength !== null) {
+        const pop = document.getElementById('ag-ps-popover');
+        if (!pop || pop.getAttribute('data-open') !== '1' || Date.now() - draggingBubbleStrengthAt > DRAGGING_BUBBLE_TTL_MS) {
+          draggingBubbleStrength = null;
+          draggingBubbleStrengthAt = 0;
+        }
+      }
+
+      const rawStrength = strengthOverride !== undefined
+        ? strengthOverride
+        : (draggingBubbleStrength !== null ? draggingBubbleStrength : prefs.bubbleTintStrength);
+      const strength = clampInt(rawStrength, 10, 100, 22);
       const color = resolveBubbleColor(prefs);
       setAttr(html, 'data-ag-ps-bubble-tint', '1');
       setStyleVar(html, '--ag-ps-bubble-color', color);
@@ -1759,14 +1768,9 @@
     }, { capture: true, signal });
 
     document.addEventListener('click', (e) => {
-      if (disposed || autoClickingOverview) return;
+      if (disposed || autoClickingOverview || !isConversationRoute()) return;
       const target = e.target;
       if (!target || typeof target.closest !== 'function') return;
-      if (target.closest('#ag-ps-pill')) {
-        scheduleRailRepositionBurst();
-        return;
-      }
-      if (!isConversationRoute()) return;
       const btn = target.closest('[data-testid="toggle-overview-panel"]');
       if (!btn) {
         overviewOpenAtPointerDown = null;
@@ -2085,9 +2089,14 @@
     function attachRailScroll(vp) {
       const curOv = getVisibleOverviewPanel();
       if (railScrollVp === vp && railScrollAc) {
-        if (railVpRO && curOv && curOv !== railObservedOv) {
-          railObservedOv = curOv;
-          try { railVpRO.observe(curOv); } catch {}
+        if (railVpRO && curOv !== railObservedOv) {
+          if (railObservedOv) {
+            try { railVpRO.unobserve(railObservedOv); } catch {}
+          }
+          railObservedOv = curOv || null;
+          if (railObservedOv) {
+            try { railVpRO.observe(railObservedOv); } catch {}
+          }
         }
         return;
       }
@@ -2286,14 +2295,6 @@
 
     function isHomeWelcomeRoute(p) {
       return p === '/' || p === '';
-    }
-
-    function canUseHostCookie() {
-      try {
-        return typeof window === 'object' && Boolean(window.location) && /^https?:$/i.test(window.location.protocol || '');
-      } catch {
-        return false;
-      }
     }
 
     function saveLastConversationPath(pathname) {
@@ -2650,7 +2651,8 @@
     }
 
     function syncSwitchReturnHelper() {
-      if (getPrefs().autoDismissOnboarding) {
+      const prefs = getPrefs();
+      if (prefs.switchReturnHelper && prefs.autoDismissOnboarding) {
         tryDismissOnboardingDialog();
       }
       const pathname = window.location.pathname || '';
@@ -2663,7 +2665,6 @@
         return;
       }
 
-      const prefs = getPrefs();
       if (!prefs.switchReturnHelper) {
         wasOnSettingsRoute = false;
         removeReturnBar();
@@ -2767,37 +2768,9 @@
     }
 
     function copyHandoffPrompt() {
-      const onDone = (ok) => {
+      Promise.resolve(copyText(HANDOFF_PROMPT_TEXT)).then((ok) => {
         safeToast(ok ? '已复制切号交接指令，粘贴发送即可' : '复制失败，请手动输入“准备切号”');
-      };
-      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-        navigator.clipboard.writeText(HANDOFF_PROMPT_TEXT).then(
-          () => onDone(true),
-          () => {
-            onDone(fallbackCopyText(HANDOFF_PROMPT_TEXT));
-          }
-        );
-        return;
-      }
-      onDone(fallbackCopyText(HANDOFF_PROMPT_TEXT));
-    }
-
-    function fallbackCopyText(text) {
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.setAttribute('readonly', '');
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.select();
-        const ok = document.execCommand('copy');
-        ta.remove();
-        return Boolean(ok);
-      } catch {
-        return false;
-      }
+      });
     }
 
     let quotaNudgeLeaveTimer = 0;
@@ -3149,7 +3122,6 @@
       }
     }
 
-    document.addEventListener('visibilitychange', onVisibilityOrFocusChange, { signal });
     window.addEventListener('focus', () => {
       if (disposed) return;
       windowFocused = true;
@@ -3208,6 +3180,7 @@
       order: 10,
       title: '视觉特效与排版',
       render(rawPrefs) {
+        clearDraggingBubbleStrength(true);
         const p = Object.assign({}, FX_DEFAULTS, rawPrefs || {});
         const previewing = isBeamPreviewActive(Date.now());
         const strength = clampInt(p.bubbleTintStrength, 10, 100, 22);
@@ -3465,6 +3438,7 @@
 
         const bubbleResetBtn = target.closest('[data-fx-bubble-reset]');
         if (bubbleResetBtn) {
+          clearDraggingBubbleStrength();
           bus.setPref('bubbleTintStrength', 22);
           return true;
         }
@@ -3487,6 +3461,8 @@
         const slider = target && target.closest && target.closest('[data-fx-bubble-strength]');
         if (!slider) return false;
         const val = clampInt(slider.value, 10, 100, 22);
+        draggingBubbleStrength = val;
+        draggingBubbleStrengthAt = Date.now();
         applyBubbleTintAndCompact(val);
         const root = slider.closest('#ag-ps-popover') || document;
         const valEl = root.querySelector('[data-fx-bubble-strength-val]');
@@ -3502,6 +3478,7 @@
         const slider = target && target.closest && target.closest('[data-fx-bubble-strength]');
         if (!slider) return false;
         const val = clampInt(slider.value, 10, 100, 22);
+        clearDraggingBubbleStrength();
         bus.setPref('bubbleTintStrength', val);
         return true;
       }
@@ -3510,9 +3487,19 @@
     /* ========================================================================
      * 13. Clean Disposal (Hot-Reload & Uninstall Safe)
      * ======================================================================== */
+    let unregisterBusCleanup = null;
+
     function dispose() {
       if (disposed) return;
       disposed = true;
+      draggingBubbleStrength = null;
+      draggingBubbleStrengthAt = 0;
+
+      if (typeof unregisterBusCleanup === 'function') {
+        const unreg = unregisterBusCleanup;
+        unregisterBusCleanup = null;
+        try { unreg(); } catch {}
+      }
 
       stopScheduler();
       stopHiddenUnreadPoll();
@@ -3571,6 +3558,12 @@
         html.style.removeProperty('--ag-ps-bubble-mix');
       }
 
+      if (window.__agPrismModules && window.__agPrismModules.fx === initFxModule) {
+        delete window.__agPrismModules.fx;
+      }
+      if (window.__agPrismFxToken === INSTANCE_TOKEN) {
+        delete window.__agPrismFxToken;
+      }
       if (window.__agPrismFxDispose === dispose) {
         delete window.__agPrismFxDispose;
       }
@@ -3578,7 +3571,7 @@
 
     window.__agPrismFxDispose = dispose;
     if (typeof bus.onCleanup === 'function') {
-      bus.onCleanup(dispose);
+      unregisterBusCleanup = bus.onCleanup(dispose);
     }
 
     // Initial sync
