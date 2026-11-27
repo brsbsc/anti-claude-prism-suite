@@ -15,7 +15,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { resolveSafeExecCwd, resolveWslInteropEnv } from './account-vault.mjs';
+import {
+  detectIsWsl,
+  listWslWindowsUserDirs,
+  resolvePowerShellExe,
+  resolveSafeExecCwd,
+  resolveWslInteropEnv
+} from './platform-utils.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -856,43 +862,16 @@ function extractReleaseHighlights(body) {
   return out;
 }
 
-function detectIsWslHost(platform = process.platform) {
-  if (platform !== 'linux') return false;
-  try {
-    const ver = fs.readFileSync('/proc/version', 'utf8');
-    if (/microsoft/i.test(ver)) return true;
-  } catch {}
-  return fs.existsSync('/mnt/c/Windows/System32');
-}
-
 function resolveWindowsNtfsTempDirForUpdate() {
   if (process.platform === 'win32') {
     return path.join(os.tmpdir(), `prism-suite-update-${Date.now()}`);
   }
-  const winUsersRoot = '/mnt/c/Users';
-  const candidates = [];
-  if (process.env.PRISM_WIN_USER) candidates.push(process.env.PRISM_WIN_USER);
-  try {
-    const cur = os.userInfo().username;
-    if (cur) candidates.push(cur);
-  } catch {}
-  candidates.push('Administrator');
-  for (const u of candidates) {
-    const t = path.join(winUsersRoot, u, 'AppData', 'Local', 'Temp');
+  for (const userDir of listWslWindowsUserDirs()) {
+    const t = path.join(userDir, 'AppData', 'Local', 'Temp');
     if (fs.existsSync(t)) {
       return path.join(t, `prism-suite-update-${Date.now()}`);
     }
   }
-  try {
-    const skip = new Set(['Public', 'Default', 'Default User', 'All Users']);
-    for (const ent of fs.readdirSync(winUsersRoot, { withFileTypes: true })) {
-      if (!ent.isDirectory() || skip.has(ent.name) || ent.name.startsWith('.')) continue;
-      const t = path.join(winUsersRoot, ent.name, 'AppData', 'Local', 'Temp');
-      if (fs.existsSync(t)) {
-        return path.join(t, `prism-suite-update-${Date.now()}`);
-      }
-    }
-  } catch {}
   return path.join(os.tmpdir(), `prism-suite-update-${Date.now()}`);
 }
 
@@ -1030,24 +1009,35 @@ function acquireSelfUpdateLock(lockDir = path.join(os.homedir(), '.gemini', 'ant
   throw Object.assign(new Error('无法获取更新互斥锁'), { code: 'UPDATE_IN_PROGRESS' });
 }
 
+function assertSafeTarEntryPath(entryPath) {
+  const clean = String(entryPath || '').replace(/\r$/, '').trim();
+  if (!clean) return;
+  if (clean.includes('\0') || clean.startsWith('/') || clean.startsWith('\\') || /^[A-Za-z]:/.test(clean)) {
+    throw Object.assign(new Error(`归档包含绝对路径，已中止解压: ${clean}`), { code: 'UNSAFE_TAR_ENTRY' });
+  }
+  const segs = clean.split(/[\\/]+/);
+  if (segs.includes('..')) {
+    throw Object.assign(new Error(`归档包含路径穿越条目，已中止解压: ${clean}`), { code: 'UNSAFE_TAR_ENTRY' });
+  }
+}
+
 async function auditTarEntriesSafe(tarPath, execFn) {
   const listed = await execFn('tar', ['-tvzf', tarPath], { timeout: 20000, maxBuffer: 4 * 1024 * 1024 });
-  const lines = String(listed?.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  for (const line of lines) {
+  const verboseLines = String(listed?.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  for (const line of verboseLines) {
     const typeChar = line[0];
-    if (typeChar === 'l' || typeChar === 'h' || typeChar === 'c' || typeChar === 'b' || typeChar === 'p') {
+    if (typeChar === 'l' || typeChar === 'h' || typeChar === 'c' || typeChar === 'b' || typeChar === 'p' || typeChar === 's' || typeChar === 'D') {
       throw Object.assign(new Error(`归档包含不安全链接或设备项，已中止解压: ${line.slice(0, 80)}`), { code: 'UNSAFE_TAR_ENTRY' });
     }
-    const parts = line.split(/\s+/);
-    const entryPath = parts.slice(5).join(' ').trim();
-    if (!entryPath) continue;
-    if (entryPath.startsWith('/') || entryPath.startsWith('\\') || /^[A-Za-z]:/.test(entryPath)) {
-      throw Object.assign(new Error(`归档包含绝对路径，已中止解压: ${entryPath}`), { code: 'UNSAFE_TAR_ENTRY' });
-    }
-    const segs = entryPath.split(/[\\/]+/);
-    if (segs.includes('..')) {
-      throw Object.assign(new Error(`归档包含路径穿越条目，已中止解压: ${entryPath}`), { code: 'UNSAFE_TAR_ENTRY' });
-    }
+  }
+
+  const plainListed = await execFn('tar', ['-tzf', tarPath], { timeout: 20000, maxBuffer: 4 * 1024 * 1024 });
+  const plainLines = String(plainListed?.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (plainLines.length === 0) {
+    throw Object.assign(new Error('归档条目列表为空，已中止解压'), { code: 'UNSAFE_TAR_ENTRY' });
+  }
+  for (const entryPath of plainLines) {
+    assertSafeTarEntryPath(entryPath);
   }
 }
 
@@ -1078,12 +1068,46 @@ async function installPluginFromTarballSafely({ tarballUrl, fetchImpl, token, ex
   }
 }
 
+function translateWindowsSecurityError(err) {
+  const detail = `${err?.message || ''}\n${err?.stderr || ''}`;
+  if (/smartscreen|blocked|virus|defender|operation did not complete successfully/i.test(detail)) {
+    return Object.assign(
+      new Error('安装器被 Windows 安全策略/SmartScreen 拦截，可前往 Releases 页面手动下载运行安装包'),
+      { code: 'WINDOWS_SECURITY_BLOCKED' }
+    );
+  }
+  return err;
+}
+
+async function resolveWslExeWindowsPath(exePath, execFn) {
+  if (/^\/mnt\/([a-zA-Z])\//.test(exePath)) {
+    return exePath.replace(/^\/mnt\/([a-zA-Z])\//, (_, d) => `${d.toUpperCase()}:\\`).replace(/\//g, '\\');
+  }
+  let converted = '';
+  try {
+    const res = await execFn('wslpath', ['-w', exePath], { timeout: 5000 });
+    converted = String(res?.stdout || '').trim();
+  } catch {
+    converted = '';
+  }
+  const isValidWinPath =
+    (/^[a-zA-Z]:\\/.test(converted) || /^\\\\[^\\]+\\[^\\]+/.test(converted)) &&
+    !/[\x00-\x1f\x7f]/.test(converted);
+  if (!isValidWinPath) {
+    throw Object.assign(
+      new Error(`无法将 WSL 安装器路径转换为合法 Windows 路径: ${exePath}`),
+      { code: 'INVALID_WINDOWS_INSTALLER_PATH' }
+    );
+  }
+  return converted;
+}
+
 async function runWindowsInstallerWithFallback(exePath, args, { execFn, wsl, tmpDir }) {
   const execOpts = {
     timeout: 45000,
     windowsHide: true,
-    cwd: resolveSafeExecCwd(tmpDir),
-    env: wsl ? resolveWslInteropEnv(process.env) : process.env,
+    cwd: resolveSafeExecCwd({ isWsl: wsl, tmpDir }),
+    env: wsl ? resolveWslInteropEnv(process.env, true) : process.env,
     maxBuffer: 4 * 1024 * 1024
   };
   try {
@@ -1091,23 +1115,21 @@ async function runWindowsInstallerWithFallback(exePath, args, { execFn, wsl, tmp
   } catch (err) {
     if (wsl && err && (err.code === 'EACCES' || /EACCES|permission denied/i.test(String(err.message || '')))) {
       // DrvFS metadata/noexec fallback: invoke Windows Start-Process -Wait via encoded PowerShell
-      const winExePath = exePath.replace(/^\/mnt\/([a-zA-Z])\//, (_, d) => `${d.toUpperCase()}:\\`).replace(/\//g, '\\');
+      const winExePath = await resolveWslExeWindowsPath(exePath, execFn);
       const psArgsJson = JSON.stringify(args);
-      const psScript = `$p = Start-Process -FilePath '${winExePath.replace(/'/g, "''")}' -ArgumentList (ConvertFrom-Json '${psArgsJson.replace(/'/g, "''")}') -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode`;
+      const psScript = `$ErrorActionPreference = 'Stop'; $p = Start-Process -FilePath '${winExePath.replace(/'/g, "''")}' -ArgumentList (ConvertFrom-Json '${psArgsJson.replace(/'/g, "''")}') -WindowStyle Hidden -Wait -PassThru; if ($null -eq $p) { exit 1 }; exit $p.ExitCode`;
       const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-      return await execFn(
-        'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-InputFormat', 'None', '-EncodedCommand', encoded],
-        execOpts
-      );
+      try {
+        return await execFn(
+          resolvePowerShellExe(wsl),
+          ['-NoProfile', '-NonInteractive', '-InputFormat', 'None', '-EncodedCommand', encoded],
+          execOpts
+        );
+      } catch (psErr) {
+        throw translateWindowsSecurityError(psErr);
+      }
     }
-    if (/smartscreen|blocked|virus|defender|operation did not complete successfully/i.test(String(err?.message || err?.stderr || ''))) {
-      throw Object.assign(
-        new Error('安装器被 Windows 安全策略/SmartScreen 拦截，可前往 Releases 页面手动下载运行安装包'),
-        { code: 'WINDOWS_SECURITY_BLOCKED' }
-      );
-    }
-    throw err;
+    throw translateWindowsSecurityError(err);
   }
 }
 
@@ -1181,7 +1203,7 @@ export async function applyPrismSelfUpdate({
       };
     }
 
-    const wsl = typeof isWsl === 'boolean' ? isWsl : detectIsWslHost(platform);
+    const wsl = typeof isWsl === 'boolean' ? isWsl : detectIsWsl({ platform, checkMountFallback: true });
     const useWinInstaller = platform === 'win32' || wsl;
     const execFn = runExecFile || (async (file, args, opts) => {
       const res = await execFileAsync(file, args, { windowsHide: true, ...opts });
@@ -1208,12 +1230,13 @@ export async function applyPrismSelfUpdate({
       fs.mkdirSync(tmpDir, { recursive: true });
       const exePath = path.join(tmpDir, 'Anti-Claude-Prism-Suite-Setup.exe');
       let cleanupPending = false;
+      let runRes = null;
+      let wslLog = '';
       try {
         fs.writeFileSync(exePath, exeBuf);
         // Critical: inside WSL2 pass --no-wsl to avoid recursive WSL -> Windows -> wsl.exe deadlock; update WSL plugin natively below
         const installerArgs = wsl ? ['--silent-install', '--no-wsl'] : ['--silent-install'];
-        const runRes = await runWindowsInstallerWithFallback(exePath, installerArgs, { execFn, wsl, tmpDir });
-        let wslLog = '';
+        runRes = await runWindowsInstallerWithFallback(exePath, installerArgs, { execFn, wsl, tmpDir });
         if (wsl && info.tarballUrl) {
           const wslRes = await installPluginFromTarballSafely({
             tarballUrl: info.tarballUrl,
@@ -1225,22 +1248,6 @@ export async function applyPrismSelfUpdate({
           });
           wslLog = String(wslRes?.stdout || '').trim().slice(0, 400);
         }
-        return {
-          ok: true,
-          updatedTo: info.latestTag,
-          latestVersion: info.latestVersion,
-          previousVersion: info.currentVersion,
-          sha256Verified: true,
-          sha256Prefix: actualSha.slice(0, 16),
-          method: wsl ? 'wsl-split-safe-update' : 'win-silent-installer',
-          needsRestart: true,
-          cleanupPending,
-          releaseUrl: info.releaseUrl,
-          log: [String(runRes?.stdout || '').trim().slice(0, 400), wslLog].filter(Boolean).join('\n'),
-          message: wsl
-            ? `已完成双端原地升级至 ${info.latestTag}（Windows 扩展经 SHA-256 校验安装，WSL 插件本地无递归升级保 inode；重启 Antigravity 生效）`
-            : `已通过官方安装包完成原地升级至 ${info.latestTag}（SHA-256 校验通过，重启 Antigravity 生效）`
-        };
       } finally {
         try {
           fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1248,6 +1255,22 @@ export async function applyPrismSelfUpdate({
           cleanupPending = true;
         }
       }
+      return {
+        ok: true,
+        updatedTo: info.latestTag,
+        latestVersion: info.latestVersion,
+        previousVersion: info.currentVersion,
+        sha256Verified: true,
+        sha256Prefix: actualSha.slice(0, 16),
+        method: wsl ? 'wsl-split-safe-update' : 'win-silent-installer',
+        needsRestart: true,
+        cleanupPending,
+        releaseUrl: info.releaseUrl,
+        log: [String(runRes?.stdout || '').trim().slice(0, 400), wslLog].filter(Boolean).join('\n'),
+        message: wsl
+          ? `已完成双端原地升级至 ${info.latestTag}（Windows 扩展经 SHA-256 校验安装，WSL 插件本地无递归升级保 inode；重启 Antigravity 生效）`
+          : `已通过官方安装包完成原地升级至 ${info.latestTag}（SHA-256 校验通过，重启 Antigravity 生效）`
+      };
     }
 
     // macOS / native Linux: download official release tag tarball, audit entries, and run install.mjs

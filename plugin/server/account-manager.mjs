@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createAccountVault, deriveAccountIdFromEmail, sanitizeAccountId } from './account-vault.mjs';
 import { redactMemoryText } from './handoff-memory.mjs';
+import { listWslWindowsUserDirs, writeFileAtomic, writeJsonAtomic } from './platform-utils.mjs';
 
 const STALE_LOCK_MS = 120000;
 const PENDING_SWITCH_TTL_MS = 5 * 60 * 1000;
@@ -41,18 +42,7 @@ function defaultAccountState(stateDir) {
 }
 
 function writeJsonAtomic0600(filePath, obj) {
-  const dir = path.dirname(filePath);
-  fs.mkdirSync(dir, { recursive: true });
-  const tmpPath = path.join(dir, `.prism-tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
-  const text = `${JSON.stringify(obj, null, 2)}\n`;
-  try {
-    fs.writeFileSync(tmpPath, text, { encoding: 'utf8', mode: 0o600 });
-    fs.chmodSync(tmpPath, 0o600);
-    fs.renameSync(tmpPath, filePath);
-  } catch (err) {
-    try { fs.rmSync(tmpPath, { force: true }); } catch {}
-    throw err;
-  }
+  writeJsonAtomic(filePath, obj, { mode: 0o600 });
 }
 
 function isPidAliveLocal(pid) {
@@ -361,26 +351,8 @@ function resolveAntigravityLocalStorageDirs({ localStorageDir = '', platform = p
     return dirs;
   }
   // Linux / WSL2: check Windows host AppData first when running in WSL, then native Linux config
-  const winUsersRoot = '/mnt/c/Users';
-  if (fs.existsSync(winUsersRoot)) {
-    const preferredUsers = [];
-    if (process.env.PRISM_WIN_USER) preferredUsers.push(process.env.PRISM_WIN_USER);
-    try {
-      const curUser = os.userInfo().username;
-      if (curUser) preferredUsers.push(curUser);
-    } catch {}
-    preferredUsers.push('Administrator');
-    const skip = new Set(['Public', 'Default', 'Default User', 'All Users']);
-    for (const u of preferredUsers) {
-      if (!u || skip.has(u)) continue;
-      pushUnique(path.join(winUsersRoot, u, 'AppData', 'Roaming', 'Antigravity', 'Local Storage', 'leveldb'));
-    }
-    try {
-      for (const ent of fs.readdirSync(winUsersRoot, { withFileTypes: true })) {
-        if (!ent.isDirectory() || skip.has(ent.name) || ent.name.startsWith('.')) continue;
-        pushUnique(path.join(winUsersRoot, ent.name, 'AppData', 'Roaming', 'Antigravity', 'Local Storage', 'leveldb'));
-      }
-    } catch {}
+  for (const userDir of listWslWindowsUserDirs()) {
+    pushUnique(path.join(userDir, 'AppData', 'Roaming', 'Antigravity', 'Local Storage', 'leveldb'));
   }
   pushUnique(path.join(homeDir, '.config', 'Antigravity', 'Local Storage', 'leveldb'));
   return dirs;
@@ -778,22 +750,10 @@ function resolveAntiClaudeExtensionDirs({ homeDir = os.homedir(), platform = pro
     for (const d of extraExtensionDirs) pushUnique(d);
   }
   pushUnique(path.join(homeDir, '.gemini', 'antigravity', 'anti-claude', 'user', 'extensions'));
-  if (platform !== 'win32' && platform !== 'darwin' && fs.existsSync('/mnt/c/Users')) {
-    const skip = new Set(['Public', 'Default', 'Default User', 'All Users']);
-    const preferred = [process.env.PRISM_WIN_USER, 'Administrator'].filter(Boolean);
-    try {
-      const u = os.userInfo().username;
-      if (u) preferred.unshift(u);
-    } catch {}
-    for (const u of preferred) {
-      if (!skip.has(u)) pushUnique(path.join('/mnt/c/Users', u, '.gemini', 'antigravity', 'anti-claude', 'user', 'extensions'));
+  if (platform !== 'win32' && platform !== 'darwin') {
+    for (const userDir of listWslWindowsUserDirs()) {
+      pushUnique(path.join(userDir, '.gemini', 'antigravity', 'anti-claude', 'user', 'extensions'));
     }
-    try {
-      for (const ent of fs.readdirSync('/mnt/c/Users', { withFileTypes: true })) {
-        if (!ent.isDirectory() || skip.has(ent.name) || ent.name.startsWith('.')) continue;
-        pushUnique(path.join('/mnt/c/Users', ent.name, '.gemini', 'antigravity', 'anti-claude', 'user', 'extensions'));
-      }
-    } catch {}
   }
   return dirs;
 }
@@ -814,7 +774,7 @@ function buildPrismPrefsSeedJs(cleanPrefs) {
 
 export function evaluateQuotaPoolHealth(eff, activeModel = '') {
   if (!eff || typeof eff !== 'object') {
-    return { minPct: null, avgPct: null, hasKnown: false };
+    return { minPct: null, avgPct: null, hasKnown: false, anyExhausted: false };
   }
   const model = String(activeModel || '').trim().toLowerCase();
   const targetFam = /claude|sonnet|opus|gpt/.test(model)
@@ -844,11 +804,44 @@ export function evaluateQuotaPoolHealth(eff, activeModel = '') {
     pushIfFinite(eff.effective7dPct);
   }
   if (!vals.length) {
-    return { minPct: null, avgPct: null, hasKnown: false };
+    return { minPct: null, avgPct: null, hasKnown: false, anyExhausted: false };
   }
   const minPct = Math.min(...vals);
   const avgPct = vals.reduce((acc, x) => acc + x, 0) / vals.length;
-  return { minPct, avgPct, hasKnown: true };
+  return { minPct, avgPct, hasKnown: true, anyExhausted: minPct < 20 };
+}
+
+function scoreAccountForStandby(account, {
+  eff,
+  activeModel = '',
+  hysteresis = 20,
+  vaultHasBackup = true
+} = {}) {
+  const compatible = accountSupportsModel(account, activeModel);
+  const health = evaluateQuotaPoolHealth(eff, activeModel);
+  const minPct = health.minPct;
+  const avgPct = health.avgPct;
+  const qScore = health.hasKnown
+    ? minPct * 1.15 + avgPct * 0.35
+    : 92;
+  const healthyForRecommend = !health.hasKnown || minPct >= hysteresis;
+  const depletedPool = Boolean(health.anyExhausted);
+  const criticallyLow = Boolean(health.hasKnown && minPct < 10);
+  const roleBoost = account.role === 'primary' && healthyForRecommend ? 200 : 0;
+  const lowPenalty = criticallyLow ? 600 : (depletedPool ? 380 : 0);
+  const compatBoost = compatible ? 1000 : 0;
+  const backupPenalty = vaultHasBackup === false ? 2000 : 0;
+  const prioPenalty = clampInt(account.priority, 1, 99, 50);
+  const score = Math.round((compatBoost + roleBoost + qScore - lowPenalty - backupPenalty - prioPenalty) * 100) / 100;
+  return {
+    compatible,
+    health,
+    hasKnownQuota: health.hasKnown,
+    minPct,
+    avgPct,
+    depletedPool,
+    score
+  };
 }
 
 export function createAccountManager(options = {}) {
@@ -1011,12 +1004,9 @@ export function createAccountManager(options = {}) {
             writtenSeedFiles.push(seedPath);
             continue;
           }
-          const tmpSeed = path.join(extDir, `.prism-prefs-${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`);
           try {
-            fs.writeFileSync(tmpSeed, jsText, { encoding: 'utf8', flag: 'wx' });
-            fs.renameSync(tmpSeed, seedPath);
+            writeFileAtomic(seedPath, jsText, { mode: null, encoding: 'utf8', prefix: '.prism-prefs-' });
           } catch {
-            try { fs.rmSync(tmpSeed, { force: true }); } catch {}
             fs.writeFileSync(seedPath, jsText, 'utf8');
           }
           writtenSeedFiles.push(seedPath);
@@ -1132,12 +1122,30 @@ export function createAccountManager(options = {}) {
     }
   }
 
-  function pickRecommendedTarget({ currentId = '', reason = 'manual', activeModel = '', quotaSnapshot = null, state: providedState = null } = {}) {
+  function pickRecommendedTarget({
+    currentId,
+    reason = 'manual',
+    activeModel = '',
+    quotaSnapshot = null,
+    state: providedState = null,
+    vaultBackupMap = null,
+    nowMs = Date.now()
+  } = {}) {
     const state = providedState || loadState();
     const accounts = state.accounts || [];
-    const curId = currentId || state.activeAccountId || '';
+    const effectiveCurId = currentId === undefined ? (state.activeAccountId || '') : (currentId || '');
     const primary = accounts.find((a) => a.role === 'primary') || null;
     const hysteresis = clampInt(state.primaryHysteresisPct, 5, 50, 20);
+    const hasBackupFor = (id) => {
+      if (!vaultBackupMap) return true;
+      if (vaultBackupMap instanceof Map) {
+        return vaultBackupMap.has(id) ? Boolean(vaultBackupMap.get(id)) : true;
+      }
+      if (typeof vaultBackupMap === 'object') {
+        return Object.prototype.hasOwnProperty.call(vaultBackupMap, id) ? Boolean(vaultBackupMap[id]) : true;
+      }
+      return true;
+    };
 
     let crossFamilyHint = '';
     if (reason === '5h_low' || (quotaSnapshot && Number(quotaSnapshot.window5hPct) <= 10)) {
@@ -1147,8 +1155,8 @@ export function createAccountManager(options = {}) {
     }
 
     let primaryRecovery = null;
-    if (primary && curId && primary.id !== curId) {
-      const eff = computeEffectiveQuota(primary.lastQuota);
+    if (primary && effectiveCurId && primary.id !== effectiveCurId && hasBackupFor(primary.id)) {
+      const eff = computeEffectiveQuota(primary.lastQuota, nowMs);
       const health = evaluateQuotaPoolHealth(eff, activeModel);
       const p7 = toFinitePctOrNull(eff?.effective7dPct);
       const p5 = toFinitePctOrNull(eff?.effective5hPct);
@@ -1167,30 +1175,18 @@ export function createAccountManager(options = {}) {
     }
 
     const candidates = accounts
-      .filter((a) => a.id !== curId)
+      .filter((a) => a.id !== effectiveCurId && hasBackupFor(a.id))
       .map((a) => {
-        const compatible = accountSupportsModel(a, activeModel);
-        const eff = computeEffectiveQuota(a.lastQuota);
-        const health = evaluateQuotaPoolHealth(eff, activeModel);
-        const minPct = health.minPct;
-        const avgPct = health.avgPct;
-        const qScore = health.hasKnown
-          ? minPct * 1.15 + avgPct * 0.35
-          : 92;
-        const healthyForRecommend = !health.hasKnown || minPct >= hysteresis;
-        const depletedPool = health.hasKnown && minPct < 20;
-        const criticallyLow = health.hasKnown && minPct < 10;
-        const roleBoost = a.role === 'primary' && healthyForRecommend ? 200 : 0;
-        const lowPenalty = criticallyLow ? 600 : (depletedPool ? 380 : 0);
-        const compatBoost = compatible ? 1000 : 0;
-        const prioPenalty = clampInt(a.priority, 1, 99, 50);
+        const eff = computeEffectiveQuota(a.lastQuota, nowMs);
+        const scored = scoreAccountForStandby(a, {
+          eff,
+          activeModel,
+          hysteresis,
+          vaultHasBackup: true
+        });
         return {
           account: a,
-          compatible,
-          hasKnownQuota: health.hasKnown,
-          minPct,
-          depletedPool,
-          score: compatBoost + roleBoost + qScore - lowPenalty - prioPenalty
+          ...scored
         };
       })
       .sort((a, b) => b.score - a.score);
@@ -1258,6 +1254,9 @@ export function createAccountManager(options = {}) {
       }
     }
 
+    const nowMs = Date.now();
+    const hysteresis = clampInt(state.primaryHysteresisPct, 5, 50, 20);
+    const vaultBackupMap = new Map();
     const accountsWithVault = state.accounts.map((a) => {
       let vaultHasBackup = false;
       if (vaultProbe.supported) {
@@ -1272,20 +1271,38 @@ export function createAccountManager(options = {}) {
           }
         }
       }
+      vaultBackupMap.set(a.id, vaultHasBackup);
+      const effectiveQuota = computeEffectiveQuota(a.lastQuota, nowMs);
+      const scored = scoreAccountForStandby(a, {
+        eff: effectiveQuota,
+        activeModel,
+        hysteresis,
+        vaultHasBackup
+      });
       return {
         ...a,
-        effectiveQuota: computeEffectiveQuota(a.lastQuota),
+        effectiveQuota,
+        poolHealth: scored.health,
+        standbyScore: scored.score,
         vaultHasBackup,
-        isCurrentActive: Boolean(matchedActive && matchedActive.id === a.id) || state.activeAccountId === a.id
+        isCurrentActive: activeCred.email
+          ? Boolean(matchedActive && matchedActive.id === a.id)
+          : state.activeAccountId === a.id
       };
     });
 
+    const effectiveCurrentId = activeCred.email
+      ? (matchedActive ? matchedActive.id : '')
+      : state.activeAccountId;
+
     const recommendation = pickRecommendedTarget({
-      currentId: matchedActive ? matchedActive.id : state.activeAccountId,
+      currentId: effectiveCurrentId,
       reason: quotaHints?.reason || 'manual',
       activeModel,
       quotaSnapshot: quotaHints,
-      state
+      state,
+      vaultBackupMap,
+      nowMs
     });
 
     return {
@@ -1524,7 +1541,8 @@ export function createAccountManager(options = {}) {
     nextAction = '',
     fromAccount = '',
     toAccount = '',
-    alsoRecordMemory = true
+    alsoRecordMemory = true,
+    skipStateWrite = false
   } = {}) {
     const resolvedCwd = cwd ? path.resolve(cwd) : '';
     const git = readGitSummaryReadOnly(resolvedCwd);
@@ -1563,9 +1581,11 @@ export function createAccountManager(options = {}) {
     safeSnapshot.markdown = mdLines.join('\n');
 
     writeJsonAtomic0600(snapshotFile, safeSnapshot);
-    const state = loadState();
-    state.lastSnapshotAt = createdAt;
-    saveState(state);
+    if (!skipStateWrite) {
+      const state = loadState();
+      state.lastSnapshotAt = createdAt;
+      saveState(state);
+    }
 
     let memoryEntry = null;
     if (alsoRecordMemory && handoffMemory) {
@@ -1589,16 +1609,15 @@ export function createAccountManager(options = {}) {
 
   function switchAccount(targetId, { dryRun = false, saveSnapshot = true, allowUncapturedActive = false, autoCaptureUncaptured = false, handoff = {} } = {}) {
     const cleanTargetId = sanitizeAccountId(targetId);
-    const state = loadState();
-    assertEnabled(state);
-
-    const target = state.accounts.find((a) => a.id === cleanTargetId);
-    if (!target) {
-      throw Object.assign(new Error(`目标账号槽位不存在: ${cleanTargetId}`), { code: 'ACCOUNT_NOT_FOUND' });
-    }
-
     const releaseLock = acquireSwitchLock(cleanTargetId);
     try {
+      const state = loadState();
+      assertEnabled(state);
+
+      const target = state.accounts.find((a) => a.id === cleanTargetId);
+      if (!target) {
+        throw Object.assign(new Error(`目标账号槽位不存在: ${cleanTargetId}`), { code: 'ACCOUNT_NOT_FOUND' });
+      }
       const targetSaved = vault.inspectSaved(cleanTargetId);
       if (!targetSaved.exists) {
         throw Object.assign(new Error(`目标账号 (${target.email}) 在隔离凭据库中无备份，请先登录该账号并捕获`), {
@@ -1685,7 +1704,8 @@ export function createAccountManager(options = {}) {
         snapshotRes = saveHandoffSnapshot({
           ...handoff,
           fromAccount: active.email || state.activeAccountId || '当前账号',
-          toAccount: target.email
+          toAccount: target.email,
+          skipStateWrite: true
         });
         if (snapshotRes?.snapshot?.createdAt) {
           state.lastSnapshotAt = snapshotRes.snapshot.createdAt;

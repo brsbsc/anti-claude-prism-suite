@@ -17,6 +17,21 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import {
+  cleanPowerShellError,
+  detectIsWsl,
+  resolvePowerShellExe,
+  resolveSafeExecCwd,
+  resolveWslInteropEnv,
+  writeFileAtomic
+} from './platform-utils.mjs';
+
+export {
+  cleanPowerShellError,
+  detectIsWsl,
+  resolveSafeExecCwd,
+  resolveWslInteropEnv
+};
 
 export const ACTIVE_WIN_TARGET = 'gemini:antigravity';
 export const PRISM_WIN_PREFIX = 'prism-suite:account:';
@@ -310,17 +325,6 @@ export function extractCredentialEmail(rawInput, depth = 0) {
   return '';
 }
 
-export function detectIsWsl({ platform = process.platform, env = process.env, procVersionPath = '/proc/version' } = {}) {
-  if (platform !== 'linux') return false;
-  if (env.WSL_DISTRO_NAME || env.WSL_INTEROP) return true;
-  try {
-    const ver = fs.readFileSync(procVersionPath, 'utf8');
-    return /microsoft/i.test(ver);
-  } catch {
-    return false;
-  }
-}
-
 export function detectVaultBackend({ platform = process.platform, isWsl = detectIsWsl({ platform }), distro = process.env.WSL_DISTRO_NAME || '' } = {}) {
   if (platform === 'win32') {
     return {
@@ -368,97 +372,6 @@ export function detectVaultBackend({ platform = process.platform, isWsl = detect
   };
 }
 
-export function resolveSafeExecCwd({
-  isWsl = false,
-  platform = process.platform,
-  existsSync = fs.existsSync,
-  homeDir = os.homedir(),
-  tmpDir = os.tmpdir(),
-  getCwd = () => process.cwd()
-} = {}) {
-  const candidates = [];
-  if (isWsl) {
-    candidates.push('/mnt/c/Windows/Temp', '/mnt/c', homeDir, tmpDir, '/');
-  } else {
-    try {
-      const cur = getCwd();
-      if (cur && existsSync(cur)) return cur;
-    } catch {}
-    candidates.push(homeDir, tmpDir, platform === 'win32' ? 'C:\\' : '/');
-  }
-  for (const dir of candidates) {
-    if (!dir) continue;
-    try {
-      if (existsSync(dir)) return dir;
-    } catch {}
-  }
-  return platform === 'win32' ? 'C:\\' : '/';
-}
-
-export function resolveWslInteropEnv(baseEnv = process.env, isWsl = false, {
-  interopDir = '/run/WSL',
-  existsSync = fs.existsSync,
-  readdirSync = fs.readdirSync,
-  statSync = fs.statSync
-} = {}) {
-  const envCopy = { ...(baseEnv || {}) };
-  if (!isWsl) return envCopy;
-  const current = envCopy.WSL_INTEROP;
-  if (current) {
-    try {
-      if (existsSync(current)) return envCopy;
-    } catch {}
-  }
-  try {
-    if (!existsSync(interopDir)) return envCopy;
-    const files = [];
-    for (const name of readdirSync(interopDir)) {
-      if (!/_interop$/i.test(name)) continue;
-      const full = path.join(interopDir, name);
-      try {
-        const st = statSync(full);
-        files.push({ full, mtimeMs: Number(st.mtimeMs) || 0 });
-      } catch {}
-    }
-    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    if (files.length > 0) {
-      envCopy.WSL_INTEROP = files[0].full;
-    }
-  } catch {}
-  return envCopy;
-}
-
-export function cleanPowerShellError(stderr = '', stdout = '', status = 1, signal = '') {
-  let raw = String(stderr || stdout || '').trim();
-  if (raw) {
-    raw = raw
-      .replace(/^#<\s*CLIXML\s*/i, '')
-      .replace(/<Objs\b[\s\S]*$/i, (m) => {
-        const msgs = [];
-        const re = /<S\s+S="(?:Error|Warning)"[^>]*>([\s\S]*?)<\/S>/gi;
-        let hit;
-        while ((hit = re.exec(m)) !== null) {
-          const text = hit[1]
-            .replace(/_x000D__x000A_/gi, ' ')
-            .replace(/_x000A_/gi, ' ')
-            .replace(/&lt;/g, '<')
-            .replace(/&gt;/g, '>')
-            .replace(/&amp;/g, '&')
-            .trim();
-          if (text) msgs.push(text);
-        }
-        if (msgs.length) return msgs.join(' ');
-        return m.replace(/<[^>]+>/g, ' ');
-      })
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-  if (raw) return raw.slice(0, 180);
-  const sigNote = signal ? ` (${signal})` : '';
-  return `exit ${status ?? 'unknown'}${sigNote}`;
-}
-
 function defaultRunCmd(bin, args, { input = '', timeoutMs = 15000, cwd, env } = {}) {
   const spawnOpts = {
     input,
@@ -482,29 +395,16 @@ function defaultRunCmd(bin, args, { input = '', timeoutMs = 15000, cwd, env } = 
   };
 }
 
-function resolvePowerShellExe(isWsl) {
-  if (!isWsl) {
-    const sysRoot = process.env.SystemRoot || 'C:\\Windows';
-    const full = path.join(sysRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    return fs.existsSync(full) ? full : 'powershell.exe';
-  }
-  const wslPs = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-  return fs.existsSync(wslPs) ? wslPs : 'powershell.exe';
+function isValidUtf8TextBuffer(buf, { allowNewlines = false } = {}) {
+  if (!Buffer.isBuffer(buf) || !buf.length) return false;
+  const text = buf.toString('utf8');
+  if (!Buffer.from(text, 'utf8').equals(buf)) return false;
+  const ctrlRe = allowNewlines ? /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/ : /[\x00-\x1f\x7f]/;
+  return !ctrlRe.test(text);
 }
 
-function writeFileAtomic0600(targetPath, buf) {
-  const dir = path.dirname(targetPath);
-  fs.mkdirSync(dir, { recursive: true });
-  const tmpPath = path.join(dir, `.prism-tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
-  try {
-    fs.writeFileSync(tmpPath, buf, { mode: 0o600 });
-    fs.chmodSync(tmpPath, 0o600);
-    fs.renameSync(tmpPath, targetPath);
-  } catch (err) {
-    try { fs.rmSync(tmpPath, { force: true }); } catch {}
-    throw err;
-  }
-}
+const PRISM_B64_PREFIX_BUF = Buffer.from('prism-b64:', 'ascii');
+const KEYCHAIN_INTERACTIVE_MAX_BYTES = 3900;
 
 export function createAccountVault(options = {}) {
   const platform = options.platform || process.platform;
@@ -591,23 +491,66 @@ export function createAccountVault(options = {}) {
     return Boolean(res.deleted);
   }
 
-  function readKeychainBuffer(service, account) {
-    const res = runCmd('security', ['find-generic-password', '-s', service, '-a', account, '-w'], { timeoutMs: 15000 });
+  function parseKeychainPasswordOutput(text) {
+    const normalized = String(text || '').replace(/\r\n/g, '\n');
+    const mHex = normalized.match(/^password:\s+0x([0-9a-fA-F]+)/m);
+    if (mHex && mHex[1].length % 2 === 0) {
+      return Buffer.from(mHex[1], 'hex');
+    }
+    const mStr = normalized.match(/^password:\s+"(.*)"$/m);
+    if (mStr) {
+      return Buffer.from(mStr[1], 'utf8');
+    }
+    return null;
+  }
+
+  function readKeychainBuffer(service, account, raw = false) {
+    const res = runCmd('security', ['find-generic-password', '-s', service, '-a', account, '-g'], { timeoutMs: 15000 });
     if (res.status !== 0) {
       if (/could not be found|SecKeychainSearchCopyNext/i.test(res.stderr || '')) return null;
       throw Object.assign(new Error('macOS Keychain 读取失败'), { code: 'VAULT_COMMAND_FAILED' });
     }
-    const raw = String(res.stdout || '').replace(/\r?\n$/, '');
-    if (raw.startsWith('prism-b64:')) {
-      return Buffer.from(raw.slice('prism-b64:'.length), 'base64');
+    // macOS `security -g` writes the password line to stderr; also accept stdout for test mocks
+    const buf = parseKeychainPasswordOutput(res.stderr) ?? parseKeychainPasswordOutput(res.stdout);
+    if (!buf) {
+      throw Object.assign(new Error('macOS Keychain 返回格式异常，未解析到凭据内容'), { code: 'VAULT_COMMAND_FAILED' });
     }
-    return Buffer.from(raw, 'utf8');
+    if (!raw && buf.length >= PRISM_B64_PREFIX_BUF.length && buf.subarray(0, PRISM_B64_PREFIX_BUF.length).equals(PRISM_B64_PREFIX_BUF)) {
+      const b64 = buf.subarray(PRISM_B64_PREFIX_BUF.length).toString('ascii').trim();
+      buf.fill(0);
+      return Buffer.from(b64, 'base64');
+    }
+    return buf;
   }
 
-  function writeKeychainBuffer(service, account, buf) {
-    const encoded = `prism-b64:${buf.toString('base64')}`;
-    const cmdLine = `add-generic-password -U -s ${JSON.stringify(service)} -a ${JSON.stringify(account)} -w ${JSON.stringify(encoded)}\n`;
-    const res = runCmd('security', ['-i'], { input: cmdLine, timeoutMs: 15000 });
+  function writeKeychainBuffer(service, account, buf, raw = false) {
+    let flag;
+    let val;
+    let cmdLine;
+    if (raw) {
+      if (isValidUtf8TextBuffer(buf, { allowNewlines: false })) {
+        flag = '-w';
+        val = buf.toString('utf8');
+        cmdLine = `add-generic-password -U -s ${JSON.stringify(service)} -a ${JSON.stringify(account)} -w ${JSON.stringify(val)}\n`;
+      } else {
+        // Use macOS Keychain native -X <hex> for non-printable/multiline raw blobs so active slots never get prism-b64: prefixed
+        flag = '-X';
+        val = buf.toString('hex');
+        cmdLine = `add-generic-password -U -s ${JSON.stringify(service)} -a ${JSON.stringify(account)} -X ${val}\n`;
+      }
+    } else {
+      flag = '-w';
+      val = `prism-b64:${buf.toString('base64')}`;
+      cmdLine = `add-generic-password -U -s ${JSON.stringify(service)} -a ${JSON.stringify(account)} -w ${JSON.stringify(val)}\n`;
+    }
+    let res;
+    if (Buffer.byteLength(cmdLine, 'utf8') < KEYCHAIN_INTERACTIVE_MAX_BYTES) {
+      res = runCmd('security', ['-i'], { input: cmdLine, timeoutMs: 15000 });
+    } else {
+      // Fallback to direct argv ONLY when exceeding `security -i`'s 4095-byte line buffer limit,
+      // which would otherwise silently truncate and corrupt the Keychain entry.
+      res = runCmd('security', ['add-generic-password', '-U', '-s', service, '-a', account, flag, val], { timeoutMs: 15000 });
+    }
     if (res.status !== 0) {
       throw Object.assign(new Error('macOS Keychain 写入失败'), { code: 'VAULT_COMMAND_FAILED' });
     }
@@ -622,22 +565,36 @@ export function createAccountVault(options = {}) {
     return true;
   }
 
-  function readSecretToolBuffer(service, account) {
+  function readSecretToolBuffer(service, account, raw = false) {
     const res = runCmd('secret-tool', ['lookup', 'service', service, 'account', account], { timeoutMs: 15000 });
-    if (res.status !== 0 || !res.stdout) return null;
-    const raw = String(res.stdout || '').replace(/\r?\n$/, '');
-    if (raw.startsWith('prism-b64:')) {
-      return Buffer.from(raw.slice('prism-b64:'.length), 'base64');
+    if (res.status !== 0 || res.stdout === undefined || res.stdout === null || res.stdout === '') return null;
+    const text = String(res.stdout);
+    if (!raw) {
+      const trimmed = text.trim();
+      if (trimmed.startsWith('prism-b64:')) {
+        return Buffer.from(trimmed.slice('prism-b64:'.length), 'base64');
+      }
     }
-    return Buffer.from(raw, 'utf8');
+    return Buffer.from(text, 'utf8');
   }
 
-  function writeSecretToolBuffer(service, account, label, buf) {
-    const encoded = `prism-b64:${buf.toString('base64')}`;
+  function writeSecretToolBuffer(service, account, label, buf, raw = false) {
+    let payload;
+    if (raw) {
+      if (!isValidUtf8TextBuffer(buf, { allowNewlines: true })) {
+        throw Object.assign(
+          new Error('Linux secret-tool 活跃槽不支持写入非 UTF-8 二进制凭据，已拒绝写入以防损坏登录态'),
+          { code: 'UNSUPPORTED_RAW_BINARY_SECRET' }
+        );
+      }
+      payload = buf.toString('utf8');
+    } else {
+      payload = `prism-b64:${buf.toString('base64')}`;
+    }
     const res = runCmd(
       'secret-tool',
       ['store', '--label', label, 'service', service, 'account', account],
-      { input: encoded, timeoutMs: 15000 }
+      { input: payload, timeoutMs: 15000 }
     );
     if (res.status !== 0) {
       throw Object.assign(new Error('Linux secret-tool 写入失败'), { code: 'VAULT_COMMAND_FAILED' });
@@ -679,11 +636,11 @@ export function createAccountVault(options = {}) {
       }
     }
     if (backendInfo.backend === 'darwin-keychain') {
-      const buf = readKeychainBuffer('gemini', 'antigravity');
+      const buf = readKeychainBuffer('gemini', 'antigravity', true);
       return { exists: Boolean(buf), buf, hasUserScope: false };
     }
     if (backendInfo.backend === 'linux-secret-service') {
-      const buf = readSecretToolBuffer('gemini', 'antigravity');
+      const buf = readSecretToolBuffer('gemini', 'antigravity', true);
       return { exists: Boolean(buf), buf, hasUserScope: false };
     }
     throw Object.assign(new Error(`当前平台不支持隔离凭据库: ${backendInfo.backend}`), { code: 'UNSUPPORTED_VAULT' });
@@ -712,9 +669,9 @@ export function createAccountVault(options = {}) {
         ? Buffer.from(envelope.userScopeB64, 'base64')
         : null;
       try {
-        writeFileAtomic0600(wslTokenPath, tokenBuf);
+        writeFileAtomic(wslTokenPath, tokenBuf, { mode: 0o600 });
         if (scopeBuf) {
-          writeFileAtomic0600(wslUserScopePath, scopeBuf);
+          writeFileAtomic(wslUserScopePath, scopeBuf, { mode: 0o600 });
         } else if (fs.existsSync(wslUserScopePath)) {
           fs.rmSync(wslUserScopePath, { force: true });
         }
@@ -725,11 +682,11 @@ export function createAccountVault(options = {}) {
       return;
     }
     if (backendInfo.backend === 'darwin-keychain') {
-      writeKeychainBuffer('gemini', 'antigravity', buf);
+      writeKeychainBuffer('gemini', 'antigravity', buf, true);
       return;
     }
     if (backendInfo.backend === 'linux-secret-service') {
-      writeSecretToolBuffer('gemini', 'antigravity', 'Antigravity Active Credential', buf);
+      writeSecretToolBuffer('gemini', 'antigravity', 'Antigravity Active Credential', buf, true);
       return;
     }
     throw Object.assign(new Error(`当前平台不支持隔离凭据库: ${backendInfo.backend}`), { code: 'UNSUPPORTED_VAULT' });
@@ -741,10 +698,10 @@ export function createAccountVault(options = {}) {
       return readWinCredBuffer(savedTargetName(cleanId));
     }
     if (backendInfo.backend === 'darwin-keychain') {
-      return readKeychainBuffer('prism-suite', cleanId);
+      return readKeychainBuffer('prism-suite', cleanId, false);
     }
     if (backendInfo.backend === 'linux-secret-service') {
-      return readSecretToolBuffer('prism-suite', cleanId);
+      return readSecretToolBuffer('prism-suite', cleanId, false);
     }
     throw Object.assign(new Error(`当前平台不支持隔离凭据库: ${backendInfo.backend}`), { code: 'UNSUPPORTED_VAULT' });
   }
@@ -1071,8 +1028,8 @@ export function createAccountVault(options = {}) {
       }
 
       const expectedHash = fingerprintBuffer(targetBuf);
-      writeActiveRaw(targetBuf);
       swapped = true;
+      writeActiveRaw(targetBuf);
 
       const afterRaw = readActiveRaw();
       verifyActiveBuf = afterRaw.buf;

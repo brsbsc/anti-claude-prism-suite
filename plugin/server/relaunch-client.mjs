@@ -15,22 +15,35 @@ import { spawn, spawnSync } from 'node:child_process';
 import {
   cleanPowerShellError,
   detectIsWsl,
+  resolvePowerShellExe,
   resolveSafeExecCwd,
   resolveWslInteropEnv
-} from './account-vault.mjs';
+} from './platform-utils.mjs';
+
+const STRIPPED_RELAUNCH_ENV_KEYS = new Set([
+  'ELECTRON_RUN_AS_NODE',
+  'NODE_OPTIONS',
+  'ANTIGRAVITY_LS_ADDRESS',
+  'ANTIGRAVITY_CSRF_TOKEN',
+  'ANTIGRAVITY_AGENTAPI_EXE'
+]);
 
 function psSingleQuote(val) {
   return `'${String(val ?? '').replace(/'/g, "''")}'`;
 }
 
-function resolvePowerShellExe(isWsl) {
-  if (!isWsl) {
-    const sysRoot = process.env.SystemRoot || 'C:\\Windows';
-    const full = path.join(sysRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    return fs.existsSync(full) ? full : 'powershell.exe';
+function shSingleQuote(val) {
+  return `'${String(val ?? '').replace(/'/g, "'\\''")}'`;
+}
+
+function buildCleanUnixRelaunchEnv(baseEnv = process.env) {
+  const out = {};
+  for (const [k, v] of Object.entries(baseEnv || {})) {
+    if (v === undefined) continue;
+    if (STRIPPED_RELAUNCH_ENV_KEYS.has(k) || k.startsWith('ANTIGRAVITY_SIDECAR_')) continue;
+    out[k] = v;
   }
-  const wslPs = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-  return fs.existsSync(wslPs) ? wslPs : 'powershell.exe';
+  return out;
 }
 
 function defaultRunCmd(bin, args, { input = '', timeoutMs = 10000, cwd, env } = {}) {
@@ -364,6 +377,7 @@ export function createClientRelauncher(options = {}) {
 
     const delaySec = (Math.max(250, Math.min(5000, Number(delayMs) || 650)) / 1000).toFixed(2);
     const unixDebugFlag = normalizeDebugPortFlag(targetInfo.debugPort);
+    const cleanUnixEnv = buildCleanUnixRelaunchEnv(env);
     if (platform === 'darwin') {
       const argsArg = targetInfo.preserveDebugPort ? ` --args ${unixDebugFlag}` : '';
       const script = [
@@ -372,9 +386,9 @@ export function createClientRelauncher(options = {}) {
         'for i in 1 2 3 4 5 6 7 8 9 10 11 12; do pgrep -x Antigravity >/dev/null 2>&1 || break; sleep 0.3; done',
         'pkill -x Antigravity >/dev/null 2>&1 || true',
         'sleep 0.5',
-        `open -n -a ${JSON.stringify(targetInfo.targetPath)}${argsArg}`
+        `open -n -a ${shSingleQuote(targetInfo.targetPath)}${argsArg}`
       ].join('; ');
-      spawnDetached('/bin/sh', ['-c', script], { cwd: homeDir });
+      spawnDetached('/bin/sh', ['-c', script], { cwd: homeDir, env: cleanUnixEnv });
       return {
         ok: true,
         dryRun: false,
@@ -392,9 +406,9 @@ export function createClientRelauncher(options = {}) {
         `sleep ${delaySec}`,
         'pkill -TERM -x antigravity >/dev/null 2>&1 || true',
         'sleep 1.2',
-        `nohup ${JSON.stringify(targetInfo.targetPath)}${argsPart} >/dev/null 2>&1 &`
+        `nohup ${shSingleQuote(targetInfo.targetPath)}${argsPart} >/dev/null 2>&1 &`
       ].join('; ');
-      spawnDetached('/bin/sh', ['-c', script], { cwd: homeDir });
+      spawnDetached('/bin/sh', ['-c', script], { cwd: homeDir, env: cleanUnixEnv });
       return {
         ok: true,
         dryRun: false,

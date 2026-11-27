@@ -28,9 +28,17 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createAccountManager } from './account-manager.mjs';
-import { createAccountVault, resolveSafeExecCwd, resolveWslInteropEnv } from './account-vault.mjs';
+import { createAccountVault } from './account-vault.mjs';
+import {
+  detectIsWsl,
+  listWslWindowsUserDirs,
+  resolveSafeExecCwd,
+  resolveWslInteropEnv,
+  writeFileAtomic,
+  writeJsonAtomic
+} from './platform-utils.mjs';
 import { createClientRelauncher } from './relaunch-client.mjs';
-import { createHandoffMemoryStore } from './handoff-memory.mjs';
+import { createHandoffMemoryStore, redactMemoryText } from './handoff-memory.mjs';
 import { createPrismProfileManager } from './prism-profile.mjs';
 import { createModelHub } from './model-hub.mjs';
 import { checkUpstreams, renderMarkdownReport, syncUpstreamBaseline, checkPrismSelfUpdate, applyPrismSelfUpdate } from './upstream-radar.mjs';
@@ -57,6 +65,7 @@ const TRANSCRIPT_MAX_RESULTS = 50;
 const TRANSCRIPT_CACHE_MAX_ENTRIES = 100;
 
 const transcriptParseCache = new Map();
+const DIR_NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
 const IMAGE_MIME_BY_EXT = {
   '.png': 'image/png',
@@ -117,14 +126,7 @@ export function sha256Hex(bufOrStr) {
 }
 
 export function detectWsl() {
-  if (process.platform !== 'linux') return false;
-  if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true;
-  try {
-    const ver = fs.readFileSync('/proc/version', 'utf8');
-    return /microsoft|wsl/i.test(ver);
-  } catch {
-    return false;
-  }
+  return detectIsWsl();
 }
 
 export function fallbackLinuxToWindowsPath(linuxPath, distroName = process.env.WSL_DISTRO_NAME || 'Ubuntu') {
@@ -249,14 +251,6 @@ function isUncPathString(rawPath) {
   return trimmed.startsWith('\\\\') || trimmed.startsWith('//');
 }
 
-function isLocalWslUncHost(rawPath) {
-  if (!isUncPathString(rawPath)) return false;
-  const m = rawPath.trim().match(/^(?:\\\\|\/\/)([^\\/]+)/);
-  if (!m) return false;
-  const host = m[1].toLowerCase();
-  return host === 'wsl.localhost' || host === 'wsl$';
-}
-
 export function buildWindowsExplorerArgs(winPath, isDir) {
   const raw = String(winPath ?? '');
   if (!raw || /[\x00-\x1f\x7f"]/.test(raw)) {
@@ -367,7 +361,7 @@ export function isPrivateOrLocalIp(ip) {
   return false;
 }
 
-export async function validateLanUncPath(rawPath, { lookupFn } = {}) {
+function parseUncPathStrict(rawPath) {
   if (typeof rawPath !== 'string' || !rawPath.trim()) {
     return { ok: false, error: 'UNC 路径不能为空' };
   }
@@ -403,8 +397,16 @@ export async function validateLanUncPath(rawPath, { lookupFn } = {}) {
 
   const normalizedPath = `\\\\${host}${rest ? `\\${rest.replace(/\//g, '\\')}` : ''}`;
   const hostLower = host.toLowerCase();
+  const isLocalWsl = hostLower === 'wsl.localhost' || hostLower === 'wsl$';
+  return { ok: true, host, hostLower, rest, normalizedPath, isLocalWsl };
+}
 
-  if (hostLower === 'wsl.localhost' || hostLower === 'wsl$' || hostLower === 'localhost') {
+export async function validateLanUncPath(rawPath, { lookupFn } = {}) {
+  const parsed = parseUncPathStrict(rawPath);
+  if (!parsed.ok) return parsed;
+  const { host, hostLower, normalizedPath, isLocalWsl } = parsed;
+
+  if (isLocalWsl || hostLower === 'localhost') {
     return { ok: true, host, normalizedPath, ips: ['127.0.0.1'], localAlias: true };
   }
 
@@ -507,33 +509,6 @@ function findFirstExistingFile(paths, isWin = process.platform === 'win32') {
     if (p && isExecutableFile(p, isWin)) return p;
   }
   return '';
-}
-
-function getWslWindowsUserDirs() {
-  const dirs = [];
-  const seen = new Set();
-  const add = (p) => {
-    if (p && !seen.has(p) && fs.existsSync(p)) {
-      seen.add(p);
-      dirs.push(p);
-    }
-  };
-  // Infer active Windows user from PATH entries like /mnt/c/Users/<Name>/AppData/...
-  const pathEnv = process.env.PATH || '';
-  for (const seg of pathEnv.split(':')) {
-    const m = seg.match(/^(\/mnt\/c\/Users\/[^/]+)(?:\/|$)/i);
-    if (m) add(m[1]);
-  }
-  try {
-    if (fs.existsSync('/mnt/c/Users')) {
-      for (const ent of fs.readdirSync('/mnt/c/Users', { withFileTypes: true })) {
-        if (!ent.isDirectory()) continue;
-        if (['Public', 'Default', 'Default User', 'All Users'].includes(ent.name)) continue;
-        add(path.join('/mnt/c/Users', ent.name));
-      }
-    }
-  } catch {}
-  return dirs;
 }
 
 function detectInstalledOpenTargets(isWsl) {
@@ -774,7 +749,7 @@ function detectInstalledOpenTargets(isWsl) {
   }
 
   // Linux / WSL
-  const wslUsers = isWsl ? getWslWindowsUserDirs() : [];
+  const wslUsers = isWsl ? listWslWindowsUserDirs() : [];
   const linuxEditors = [
     {
       id: 'vscode',
@@ -1045,29 +1020,7 @@ function spawnDetachedSafe(bin, args, options = {}) {
 
 /* ---------------- Cross-Session Transcript Search & Redaction ---------------- */
 
-export function redactSensitiveText(text) {
-  let out = String(text ?? '');
-  if (!out) return '';
-  // PEM private keys (complete or truncated)
-  out = out.replace(
-    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g,
-    '[REDACTED_PRIVATE_KEY]'
-  );
-  // sk-... API keys (OpenAI / Anthropic / Stripe etc.)
-  out = out.replace(/\bsk-(?:proj-|ant-|live-|test-)?[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_API_KEY]');
-  // GitHub tokens
-  out = out.replace(/\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GH_TOKEN]');
-  // Google API keys
-  out = out.replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, '[REDACTED_GOOGLE_KEY]');
-  // Bearer tokens
-  out = out.replace(/\b(Bearer[ \t]+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1[REDACTED_TOKEN]');
-  // password / token / secret / api_key key=value assignments
-  out = out.replace(
-    /\b([A-Za-z0-9_.-]*(?:password|passwd|token|secret|api[_-]?key)[ \t]*[:=][ \t]*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;'"`]+)/gi,
-    '$1[REDACTED]'
-  );
-  return out;
-}
+export const redactSensitiveText = redactMemoryText;
 
 function safeLstatJoinInRoot(rootDir, ...segments) {
   const absRoot = path.resolve(rootDir);
@@ -1632,14 +1585,9 @@ export function createPrismFilesServer({
         : cur.dismissedGuides
     };
     if (stateFile) {
-      fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-      const tmp = `${stateFile}.tmp-${process.pid}-${Date.now()}`;
       try {
-        fs.writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8');
-        fs.renameSync(tmp, stateFile);
-      } catch {
-        try { fs.rmSync(tmp, { force: true }); } catch {}
-      }
+        writeJsonAtomic(stateFile, next, { mode: 0o600, trailingNewline: false, prefix: '.prism-state-' });
+      } catch {}
     }
     return next;
   }
@@ -1649,22 +1597,22 @@ export function createPrismFilesServer({
 
   async function guardUncAccessIfNeeded(rawPath) {
     if (!isUncPathString(rawPath)) return { ok: true, isUnc: false };
-    const trimmed = String(rawPath).trim();
-    if (/^(?:\\\\|\/\/)[?.](?:\\|\/|$)/.test(trimmed)) {
-      return { ok: false, isUnc: true, error: '已拒绝设备/扩展前缀路径 (\\\\?\\ 或 \\\\.\\)' };
+    const parsed = parseUncPathStrict(rawPath);
+    if (!parsed.ok) {
+      return { ok: false, isUnc: true, error: parsed.error };
     }
-    if (!isLocalWslUncHost(trimmed) && !loadState().allowLanSmb) {
+    if (!parsed.isLocalWsl && !loadState().allowLanSmb) {
       return {
         ok: false,
         isUnc: true,
         error: '当前未开启「允许局域网 NAS/SMB 路径」，请在顶栏手动开启后再访问 UNC 网络路径'
       };
     }
-    const validation = await validateLanUncPath(trimmed);
+    const validation = await validateLanUncPath(parsed.normalizedPath);
     if (!validation.ok) {
       return { ok: false, isUnc: true, error: validation.error };
     }
-    return { ok: true, isUnc: true, normalizedPath: validation.normalizedPath };
+    return { ok: true, isUnc: true, normalizedPath: validation.normalizedPath, isLocalWsl: parsed.isLocalWsl };
   }
 
   async function resolveWslUncPathForFs(uncCheck) {
@@ -1672,7 +1620,7 @@ export function createPrismFilesServer({
     if (!isWsl) {
       return { ok: true, convertedToLocal: false, path: uncCheck.normalizedPath };
     }
-    if (isLocalWslUncHost(uncCheck.normalizedPath)) {
+    if (uncCheck.isLocalWsl) {
       const linuxPath = await toLinuxPathFromWslUnc(uncCheck.normalizedPath);
       if (linuxPath) {
         return { ok: true, convertedToLocal: true, path: linuxPath };
@@ -1688,37 +1636,38 @@ export function createPrismFilesServer({
     };
   }
 
+  async function resolveToolPathWithUnc(rawPath, { fallbackDir, expandLocal = false } = {}) {
+    const uncCheck = await guardUncAccessIfNeeded(rawPath);
+    if (!uncCheck.ok) {
+      return { ok: false, isUnc: true, error: uncCheck.error, path: String(rawPath || '') };
+    }
+    if (uncCheck.isUnc) {
+      const wslResolved = await resolveWslUncPathForFs(uncCheck);
+      if (!wslResolved.ok) {
+        return { ok: false, isUnc: true, error: wslResolved.error, path: uncCheck.normalizedPath };
+      }
+      return {
+        ok: true,
+        isUnc: true,
+        path: wslResolved.path,
+        uncPrevalidated: !wslResolved.convertedToLocal
+      };
+    }
+    return {
+      ok: true,
+      isUnc: false,
+      path: expandLocal ? expandUserPath(rawPath, fallbackDir) : rawPath,
+      uncPrevalidated: false
+    };
+  }
+
   function checkUncSyncGuard(rawPath, { uncPrevalidated = false } = {}) {
     if (!isUncPathString(rawPath)) return { ok: true, isUnc: false };
-    if (/[\x00-\x1f\x7f]/.test(rawPath)) {
-      return { ok: false, isUnc: true, error: 'UNC 路径包含非法控制字符或 NUL 字节' };
+    const parsed = parseUncPathStrict(rawPath);
+    if (!parsed.ok) {
+      return { ok: false, isUnc: true, error: parsed.error };
     }
-    const trimmed = String(rawPath).trim();
-    if (/^(?:\\\\|\/\/)[?.](?:\\|\/|$)/.test(trimmed)) {
-      return { ok: false, isUnc: true, error: '已拒绝设备/扩展前缀路径 (\\\\?\\ 或 \\\\.\\)' };
-    }
-    if (trimmed.includes('@')) {
-      return { ok: false, isUnc: true, error: 'UNC 路径禁止包含凭据或 WebDAV 符号 (@)' };
-    }
-    if (trimmed.includes(':')) {
-      return { ok: false, isUnc: true, error: 'UNC 路径禁止包含端口或冒号 (:)' };
-    }
-    const m = trimmed.match(/^(?:\\\\|\/\/)([^\\/]+)(?:[\\/](.*))?$/);
-    if (!m) {
-      return { ok: false, isUnc: true, error: '不是有效的 UNC 网络路径' };
-    }
-    const host = m[1];
-    const rest = m[2] ?? '';
-    if (!host || host === '.' || host === '..' || /\s/.test(host) || host.includes('"')) {
-      return { ok: false, isUnc: true, error: 'UNC 主机名格式无效' };
-    }
-    const segments = rest ? rest.split(/[\\/]+/) : [];
-    if (segments.some((seg) => seg === '..')) {
-      return { ok: false, isUnc: true, error: 'UNC 路径禁止包含 .. 路径穿越段' };
-    }
-    const normalizedPath = `\\\\${host}${rest ? `\\${rest.replace(/\//g, '\\')}` : ''}`;
-    const hostLower = host.toLowerCase();
-    const isLocalWsl = hostLower === 'wsl.localhost' || hostLower === 'wsl$';
+    const { host, hostLower, normalizedPath, isLocalWsl } = parsed;
     if (!isLocalWsl && !loadState().allowLanSmb) {
       return {
         ok: false,
@@ -1814,22 +1763,40 @@ export function createPrismFilesServer({
       return { ok: false, error: `无法读取目录：${err.message}`, dir: targetDir, entries: [] };
     }
     const q = String(query || '').trim().toLowerCase();
-    const items = [];
+    const candidates = [];
     for (const ent of rawEntries) {
       const name = ent.name;
       if (!showHidden && name.startsWith('.')) continue;
       if (q && !name.toLowerCase().includes(q)) continue;
       const full = path.join(targetDir, name);
       let isDir = ent.isDirectory();
+      let cachedStat = null;
+      const typeUnknown = !isDir && !ent.isFile() && !ent.isSymbolicLink() && !ent.isFIFO() && !ent.isSocket() && !ent.isBlockDevice() && !ent.isCharacterDevice();
+      if (!isDir && (ent.isSymbolicLink() || typeUnknown)) {
+        try {
+          cachedStat = fs.statSync(full);
+          isDir = cachedStat.isDirectory();
+        } catch {}
+      }
+      candidates.push({ name, full, isDir, cachedStat });
+    }
+    candidates.sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+      return DIR_NAME_COLLATOR.compare(a.name, b.name);
+    });
+    const total = candidates.length;
+    const truncated = total > 400;
+    const entries = candidates.slice(0, 400).map(({ name, full, isDir: initIsDir, cachedStat }) => {
+      let isDir = initIsDir;
       let size = 0;
       let mtimeMs = 0;
       try {
-        const s = fs.statSync(full);
+        const s = cachedStat || fs.statSync(full);
         isDir = s.isDirectory();
         size = isDir ? 0 : s.size;
         mtimeMs = Math.round(s.mtimeMs);
       } catch {}
-      items.push({
+      return {
         path: full,
         uri: pathToFileURL(full).href,
         name,
@@ -1838,22 +1805,17 @@ export function createPrismFilesServer({
         sizeText: isDir ? '' : formatBytes(size),
         mtimeMs,
         kind: getFileKind(name, isDir)
-      });
-    }
-    items.sort((a, b) => {
-      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+      };
     });
-    const truncated = items.length > 400;
     const parent = path.dirname(targetDir);
     saveState({ lastPath: targetDir });
     return {
       ok: true,
       dir: targetDir,
       parent: parent !== targetDir ? parent : '',
-      total: items.length,
+      total,
       truncated,
-      entries: items.slice(0, 400),
+      entries,
       platformLabel
     };
   }
@@ -2012,6 +1974,14 @@ export function createPrismFilesServer({
       return { ok: false, error: `文件内容超过安全编辑上限 (${formatBytes(MAX_SAVE_BYTES)})` };
     }
     if (baseHash) {
+      if (st.size > MAX_SAVE_BYTES) {
+        return {
+          ok: false,
+          conflict: true,
+          error: `磁盘文件已在外部变大并超出安全编辑上限 (${formatBytes(MAX_SAVE_BYTES)})，请刷新后再检查`,
+          currentMtimeMs: Math.round(st.mtimeMs)
+        };
+      }
       const curHash = sha256Hex(fs.readFileSync(real));
       if (curHash !== String(baseHash)) {
         return {
@@ -2035,12 +2005,9 @@ export function createPrismFilesServer({
       return { ok: false, error: '缺少版本校验信息（baseHash / expectedMtimeMs），已拒绝盲写' };
     }
     const fileMode = (st.mode & 0o777) || 0o600;
-    const tmp = path.join(path.dirname(real), `.prism-save-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 6)}.tmp`);
     try {
       const outBuf = Buffer.from(text, 'utf8');
-      fs.writeFileSync(tmp, outBuf, { flag: 'wx', mode: fileMode });
-      try { fs.chmodSync(tmp, fileMode); } catch {}
-      fs.renameSync(tmp, real);
+      writeFileAtomic(real, outBuf, { mode: fileMode, prefix: '.prism-save-' });
       const nextSt = fs.statSync(real);
       return {
         ok: true,
@@ -2051,7 +2018,6 @@ export function createPrismFilesServer({
         baseHash: sha256Hex(outBuf)
       };
     } catch (err) {
-      try { fs.rmSync(tmp, { force: true }); } catch {}
       return { ok: false, error: `保存失败：${err.message}` };
     }
   }
@@ -2234,7 +2200,7 @@ export function createPrismFilesServer({
     let launchDir = '';
 
     if (isWsl && uncCheck.isUnc) {
-      if (isLocalWslUncHost(uncCheck.normalizedPath)) {
+      if (uncCheck.isLocalWsl) {
         const linuxPath = await toLinuxPathFromWslUnc(uncCheck.normalizedPath);
         if (linuxPath) {
           abs = linuxPath;
@@ -2990,48 +2956,27 @@ export function createPrismFilesServer({
       let initDirPrevalidated = false;
 
       if (args.dir) {
-        const dirUnc = await guardUncAccessIfNeeded(args.dir);
-        if (!dirUnc.ok) {
-          warnings.push(dirUnc.error);
+        const resolved = await resolveToolPathWithUnc(args.dir, { fallbackDir, expandLocal: true });
+        if (!resolved.ok) {
+          warnings.push(resolved.error);
           initDir = safeDefaultDir;
-        } else if (dirUnc.isUnc) {
-          const wslResolved = await resolveWslUncPathForFs(dirUnc);
-          if (!wslResolved.ok) {
-            warnings.push(wslResolved.error);
-            initDir = safeDefaultDir;
-          } else {
-            initDir = wslResolved.path;
-            initDirPrevalidated = !wslResolved.convertedToLocal;
-          }
         } else {
-          initDir = expandUserPath(args.dir, fallbackDir);
+          initDir = resolved.path;
+          initDirPrevalidated = resolved.uncPrevalidated;
         }
       } else if (state.lastPath && isUncPathString(state.lastPath)) {
-        const lastUnc = await guardUncAccessIfNeeded(state.lastPath);
-        if (lastUnc.ok) {
-          const wslResolved = await resolveWslUncPathForFs(lastUnc);
-          if (wslResolved.ok) {
-            initDir = wslResolved.path;
-            initDirPrevalidated = !wslResolved.convertedToLocal;
-          }
+        const resolved = await resolveToolPathWithUnc(state.lastPath);
+        if (resolved.ok) {
+          initDir = resolved.path;
+          initDirPrevalidated = resolved.uncPrevalidated;
         }
       }
 
       let selectFile = '';
       if (args.selectFile) {
-        const selUnc = await guardUncAccessIfNeeded(args.selectFile);
-        if (!selUnc.ok) {
-          warnings.push(selUnc.error);
-        } else if (selUnc.isUnc) {
-          const wslSel = await resolveWslUncPathForFs(selUnc);
-          if (!wslSel.ok) {
-            warnings.push(wslSel.error);
-          } else {
-            selectFile = wslSel.path;
-          }
-        } else {
-          selectFile = expandUserPath(args.selectFile);
-        }
+        const resolvedSel = await resolveToolPathWithUnc(args.selectFile, { expandLocal: true });
+        if (!resolvedSel.ok) warnings.push(resolvedSel.error);
+        else selectFile = resolvedSel.path;
       }
 
       const listing = listDirectoryInternal(initDir, state.showHidden, '', { uncPrevalidated: initDirPrevalidated });
@@ -3056,70 +3001,37 @@ export function createPrismFilesServer({
     }
 
     if (name === 'list_directory') {
-      const uncCheck = await guardUncAccessIfNeeded(args.dir);
-      if (!uncCheck.ok) {
-        const errRes = { ok: false, error: uncCheck.error, dir: String(args.dir || ''), entries: [] };
+      const resolved = await resolveToolPathWithUnc(args.dir);
+      if (!resolved.ok) {
+        const errRes = { ok: false, error: resolved.error, dir: resolved.path, entries: [] };
         return { content: [{ type: 'text', text: JSON.stringify(errRes) }], structuredContent: errRes };
       }
-      let dirArg = args.dir;
-      let uncPrevalidated = false;
-      if (uncCheck.isUnc) {
-        const wslResolved = await resolveWslUncPathForFs(uncCheck);
-        if (!wslResolved.ok) {
-          const errRes = { ok: false, error: wslResolved.error, dir: uncCheck.normalizedPath, entries: [] };
-          return { content: [{ type: 'text', text: JSON.stringify(errRes) }], structuredContent: errRes };
-        }
-        dirArg = wslResolved.path;
-        uncPrevalidated = !wslResolved.convertedToLocal;
-      }
-      const res = listDirectoryInternal(dirArg, Boolean(args.showHidden), args.query || '', { uncPrevalidated });
+      const res = listDirectoryInternal(resolved.path, Boolean(args.showHidden), args.query || '', { uncPrevalidated: resolved.uncPrevalidated });
       return { content: [{ type: 'text', text: JSON.stringify(res) }], structuredContent: res };
     }
 
     if (name === 'read_file_preview') {
-      const uncCheck = await guardUncAccessIfNeeded(args.path);
-      if (!uncCheck.ok) {
-        const errRes = { ok: false, error: uncCheck.error, path: String(args.path || '') };
+      const resolved = await resolveToolPathWithUnc(args.path);
+      if (!resolved.ok) {
+        const errRes = { ok: false, error: resolved.error, path: resolved.path };
         return { content: [{ type: 'text', text: errRes.error }], structuredContent: errRes };
       }
-      let pathArg = args.path;
-      let uncPrevalidated = false;
-      if (uncCheck.isUnc) {
-        const wslResolved = await resolveWslUncPathForFs(uncCheck);
-        if (!wslResolved.ok) {
-          const errRes = { ok: false, error: wslResolved.error, path: uncCheck.normalizedPath };
-          return { content: [{ type: 'text', text: errRes.error }], structuredContent: errRes };
-        }
-        pathArg = wslResolved.path;
-        uncPrevalidated = !wslResolved.convertedToLocal;
-      }
-      const res = readFilePreviewInternal(pathArg, { uncPrevalidated });
+      const res = readFilePreviewInternal(resolved.path, { uncPrevalidated: resolved.uncPrevalidated });
       return { content: [{ type: 'text', text: res.ok ? `Loaded ${res.name}` : res.error }], structuredContent: res };
     }
 
     if (name === 'save_file_content') {
-      const uncCheck = await guardUncAccessIfNeeded(args.path);
-      if (!uncCheck.ok) {
-        const errRes = { ok: false, error: uncCheck.error };
+      const resolved = await resolveToolPathWithUnc(args.path);
+      if (!resolved.ok) {
+        const errRes = { ok: false, error: resolved.error };
         return { content: [{ type: 'text', text: errRes.error }], structuredContent: errRes };
       }
-      let pathArg = args.path;
-      let uncPrevalidated = false;
-      if (uncCheck.isUnc) {
-        const wslResolved = await resolveWslUncPathForFs(uncCheck);
-        if (!wslResolved.ok) {
-          const errRes = { ok: false, error: wslResolved.error };
-          return { content: [{ type: 'text', text: errRes.error }], structuredContent: errRes };
-        }
-        pathArg = wslResolved.path;
-        uncPrevalidated = !wslResolved.convertedToLocal;
-      }
       const res = saveFileContentInternal(
-        pathArg,
+        resolved.path,
         args.content,
         args.expectedMtimeMs,
         args.baseHash || '',
-        { uncPrevalidated }
+        { uncPrevalidated: resolved.uncPrevalidated }
       );
       return { content: [{ type: 'text', text: res.ok ? `Saved ${res.path}` : res.error }], structuredContent: res };
     }
@@ -3654,6 +3566,7 @@ export function createPrismFilesServer({
         currentVersion: SERVER_INFO.version,
         force: Boolean(args.force),
         pluginDir: path.dirname(PLUGIN_ROOT),
+        lockDir: resolvedAccountStateDir,
         fetchImpl: upstreamFetch || globalThis.fetch
       });
       return {
