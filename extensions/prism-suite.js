@@ -25,7 +25,10 @@
   const MASCOT_SIZE_DEFAULT = 24;
   const MASCOT_MIN_COUNT_DEFAULT = 1;
 
+  const isNumericPref = (v) => typeof v === 'number' || (typeof v === 'string' && v.trim() !== '');
+
   function clampMascotSize(val) {
+    if (!isNumericPref(val)) return MASCOT_SIZE_DEFAULT;
     const n = Number(val);
     if (!Number.isFinite(n)) return MASCOT_SIZE_DEFAULT;
     const stepped = Math.round(n / 2) * 2;
@@ -33,12 +36,14 @@
   }
 
   function clampMascotMinCount(val) {
+    if (!isNumericPref(val)) return MASCOT_MIN_COUNT_DEFAULT;
     const n = Math.round(Number(val));
     if (!Number.isFinite(n)) return MASCOT_MIN_COUNT_DEFAULT;
     return Math.max(1, Math.min(3, n));
   }
 
   function clampRangeInt(val, min, max, fallback) {
+    if (!isNumericPref(val)) return fallback;
     const n = Math.round(Number(val));
     if (!Number.isFinite(n)) return fallback;
     return Math.max(min, Math.min(max, n));
@@ -59,11 +64,11 @@
     inkStream: boolValidator,
     mascot: boolValidator,
     mascotCountMode: enumValidator(['fixed', 'agents']),
-    mascotMinCount: (v) => (Number.isFinite(Number(v)) ? clampMascotMinCount(v) : undefined),
+    mascotMinCount: (v) => (isNumericPref(v) && Number.isFinite(Number(v)) ? clampMascotMinCount(v) : undefined),
     mascotStyle: enumValidator(['trio', 'zoo', 'cyber', 'crab', 'cat', 'penguin', 'fox', 'shiba', 'robot', 'owlet', 'axolotl', 'bunny', 'frog', 'chick', 'slime']),
     mascotRoam: boolValidator,
     mascotVibe: enumValidator(['calm', 'lively']),
-    mascotSize: (v) => (Number.isFinite(Number(v)) ? clampMascotSize(v) : undefined),
+    mascotSize: (v) => (isNumericPref(v) && Number.isFinite(Number(v)) ? clampMascotSize(v) : undefined),
     thoughtMode: enumValidator(['off', 'bilingual', 'immersive']),
     borderBeam: boolValidator,
     borderBeamMode: enumValidator(['always', 'busy']),
@@ -74,7 +79,7 @@
     thinkingOrbMode: enumValidator(['both', 'replace']),
     bubbleTint: boolValidator,
     bubbleTintPreset: enumValidator(['accent', 'sky', 'emerald', 'amber', 'violet']),
-    bubbleTintStrength: (v) => (Number.isFinite(Number(v)) ? clampRangeInt(v, 10, 100, 22) : undefined),
+    bubbleTintStrength: (v) => (isNumericPref(v) && Number.isFinite(Number(v)) ? clampRangeInt(v, 10, 100, 22) : undefined),
     compactLayout: boolValidator,
     unreadBadge: boolValidator,
     sidebarSessions: enumValidator(['default', '10', 'all']),
@@ -1369,7 +1374,6 @@
     { id: 'robot', name: '棱镜小机甲', emoji: '🤖', svg: SVG_ROBOT, lines: ['小天线满格，多模型协同在线 🤖', 'GPU 合成层引擎全开，空闲 0fps ⚡', '棱镜光谱校准完成，随时出击 🔷'] }
   ];
   const SPRITE_BY_ID = Object.fromEntries(SPRITE_CATALOG.map((s) => [s.id, s]));
-  const SPRITE_POOL = SPRITE_CATALOG.map((s) => s.svg);
   const MAX_DYNAMIC_ACTORS = 8;
   const actorSkinOverrides = new Map();
 
@@ -2842,6 +2846,7 @@
       dock = document.createElement('div');
       dock.id = 'ag-ps-mascot-dock';
       dock.setAttribute('data-ag-i18n-ignore', '1');
+      if (document.hidden) dock.setAttribute('data-page-hidden', '1');
       dock.addEventListener('click', (e) => handleMascotActorClick(e, dock));
       box.appendChild(dock);
       rebuilt = true;
@@ -4449,6 +4454,14 @@
                           <button type="button" class="ag-ps-seg-btn" data-mascot-style="cat" data-selected="${prefs.mascotStyle === 'cat' ? '1' : '0'}">紫猫</button>
                           <button type="button" class="ag-ps-seg-btn" data-mascot-style="penguin" data-selected="${prefs.mascotStyle === 'penguin' ? '1' : '0'}">企鹅</button>
                           <button type="button" class="ag-ps-seg-btn" data-mascot-style="fox" data-selected="${prefs.mascotStyle === 'fox' ? '1' : '0'}">赤狐</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="shiba" data-selected="${prefs.mascotStyle === 'shiba' ? '1' : '0'}">柴犬</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="robot" data-selected="${prefs.mascotStyle === 'robot' ? '1' : '0'}">机甲</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="owlet" data-selected="${prefs.mascotStyle === 'owlet' ? '1' : '0'}">猫头鹰</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="axolotl" data-selected="${prefs.mascotStyle === 'axolotl' ? '1' : '0'}">恐龙</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="bunny" data-selected="${prefs.mascotStyle === 'bunny' ? '1' : '0'}">樱花兔</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="frog" data-selected="${prefs.mascotStyle === 'frog' ? '1' : '0'}">翡翠蛙</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="chick" data-selected="${prefs.mascotStyle === 'chick' ? '1' : '0'}">闪电鸡</button>
+                          <button type="button" class="ag-ps-seg-btn" data-mascot-style="slime" data-selected="${prefs.mascotStyle === 'slime' ? '1' : '0'}">蓝萌</button>
                         </div>
                       </div>`
                     : `<div class="ag-ps-toggle-row">
@@ -4803,7 +4816,7 @@
   }
 
   function findSidebarWorkbenchEntry() {
-    const candidates = document.querySelectorAll('aside button, aside a, aside [role="button"], nav button, nav a, [data-testid*="sidebar" i] button, [data-testid*="sidebar" i] a');
+    const candidates = document.querySelectorAll('aside button, aside a, aside [role="button"], nav button, nav a, [data-testid*="sidebar" i] button, [data-testid*="sidebar" i] a, .bg-sidebar button, .bg-sidebar a, .bg-sidebar [role="button"]');
     for (const el of candidates) {
       if (!el.isConnected) continue;
       const r = el.getBoundingClientRect();
@@ -4924,19 +4937,20 @@
 
   function onSidebarWorkbenchToggleCapture(e) {
     if (disposed || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-    const t = e.target;
+    const rawTarget = e.target;
+    const t = rawTarget && rawTarget.nodeType === 1 ? rawTarget : rawTarget?.parentElement;
     if (!t || !t.closest) return;
+    if (!t.closest('aside, nav, [data-testid*="sidebar" i], .bg-sidebar')) return;
+    if (!isFullPageWorkbenchActive()) return;
     const sbEntry = findSidebarWorkbenchEntry();
     if (!sbEntry || !sbEntry.contains(t)) return;
     // Ignore secondary menu/unpin buttons inside the sidebar row
     const innerBtn = t.closest('button, [role="button"]');
     if (innerBtn && innerBtn !== sbEntry && sbEntry.contains(innerBtn)) return;
-    if (isFullPageWorkbenchActive()) {
-      e.preventDefault();
-      e.stopPropagation();
-      if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-      returnFromFullPageWorkbench();
-    }
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+    returnFromFullPageWorkbench();
   }
   document.addEventListener('click', onSidebarWorkbenchToggleCapture, true);
   onCleanup(() => document.removeEventListener('click', onSidebarWorkbenchToggleCapture, true));
@@ -5277,12 +5291,15 @@
 
   function onVisibilityChange() {
     if (disposed) return;
+    const dock = document.getElementById('ag-ps-mascot-dock');
     if (document.hidden) {
+      if (dock) dock.setAttribute('data-page-hidden', '1');
       detachStreamObserver();
       clearInkHighlights();
       stopMascotRoaming(false);
       emitBus('visibility');
     } else {
+      if (dock) dock.removeAttribute('data-page-hidden');
       emitBus('visibility');
       tickAll();
     }

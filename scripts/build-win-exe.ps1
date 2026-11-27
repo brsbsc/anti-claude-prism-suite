@@ -50,6 +50,32 @@ foreach ($requiredExt in @("prism-suite.css", "prism-suite.js", "prism-suite-fx.
     }
 }
 
+foreach ($requiredPlugin in @(
+    "plugin.json",
+    "mcp_config.json",
+    "upstream.json",
+    "rules\AGENTS.md",
+    "server\index.mjs",
+    "server\platform-utils.mjs",
+    "server\prism-profile.mjs",
+    "server\model-hub.mjs",
+    "server\handoff-memory.mjs",
+    "server\account-manager.mjs",
+    "server\account-vault.mjs",
+    "server\relaunch-client.mjs",
+    "server\upstream-radar.mjs",
+    "ui\app.html",
+    "ui\inline.html",
+    "skills\prism-cross-model-council\SKILL.md",
+    "skills\prism-slot-relay\SKILL.md",
+    "skills\prism-upstream-absorb\SKILL.md"
+)) {
+    $reqPluginPath = Join-Path $PluginDir $requiredPlugin
+    if (-not (Test-Path -LiteralPath $reqPluginPath -PathType Leaf)) {
+        throw "Missing required plugin file: $reqPluginPath"
+    }
+}
+
 $CscCandidates = @(
     "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
     "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"

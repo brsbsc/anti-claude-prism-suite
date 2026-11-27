@@ -4434,7 +4434,7 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
           lightPalette: ['default', 'crystal', 'alabaster', 'sage'],
           darkPalette: ['default', 'obsidian', 'basalt', 'marine'],
           mascotCountMode: ['fixed', 'agents'],
-          mascotStyle: ['trio', 'zoo', 'cyber', 'crab', 'cat', 'penguin', 'fox'],
+          mascotStyle: ['trio', 'zoo', 'cyber', 'crab', 'cat', 'penguin', 'fox', 'shiba', 'robot', 'owlet', 'axolotl', 'bunny', 'frog', 'chick', 'slime'],
           mascotVibe: ['calm', 'lively'],
           thoughtMode: ['off', 'bilingual', 'immersive'],
           borderBeamMode: ['always', 'busy'],
@@ -4457,20 +4457,21 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
           if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
           const out = {};
           let cnt = 0;
-          for (const k of Object.keys(BOOL_ALLOW.size ? obj : {})) {
+          const isNumericVal = (v) => typeof v === 'number' || (typeof v === 'string' && v.trim() !== '');
+          for (const k of Object.keys(obj)) {
             if (BOOL_ALLOW.has(k) && typeof obj[k] === 'boolean') {
               out[k] = obj[k];
               cnt++;
             } else if (Object.prototype.hasOwnProperty.call(ENUM_ALLOW, k) && ENUM_ALLOW[k].includes(obj[k])) {
               out[k] = obj[k];
               cnt++;
-            } else if (k === 'mascotMinCount' && Number.isFinite(Number(obj[k]))) {
+            } else if (k === 'mascotMinCount' && isNumericVal(obj[k]) && Number.isFinite(Number(obj[k]))) {
               out[k] = Math.max(1, Math.min(3, Math.round(Number(obj[k]))));
               cnt++;
-            } else if (k === 'mascotSize' && Number.isFinite(Number(obj[k]))) {
+            } else if (k === 'mascotSize' && isNumericVal(obj[k]) && Number.isFinite(Number(obj[k]))) {
               out[k] = Math.max(16, Math.min(36, Math.round(Number(obj[k]) / 2) * 2));
               cnt++;
-            } else if (k === 'bubbleTintStrength' && Number.isFinite(Number(obj[k]))) {
+            } else if (k === 'bubbleTintStrength' && isNumericVal(obj[k]) && Number.isFinite(Number(obj[k]))) {
               out[k] = Math.max(10, Math.min(100, Math.round(Number(obj[k]))));
               cnt++;
             }
@@ -4523,7 +4524,8 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
         writeAtomicUtf8(seedFile, scriptBody);
         try {
           const prismStateDir = path.join(HOME, '.gemini', 'antigravity', 'prism-suite');
-          fs.mkdirSync(prismStateDir, { recursive: true });
+          fs.mkdirSync(prismStateDir, { recursive: true, mode: 0o700 });
+          try { fs.chmodSync(prismStateDir, 0o700); } catch {}
           writeAtomicUtf8(
             path.join(prismStateDir, 'ui-prefs.json'),
             `${JSON.stringify({ schema: 1, updatedAt: new Date(merged._ts).toISOString(), prefs: merged }, null, 2)}\n`
@@ -4797,6 +4799,91 @@ function resolveParentHostTheme(page) {
   return null;
 }
 
+export async function verifyElectronNativeViaCdp(send, contextId = null) {
+  const winEvalParams = { expression: 'window', returnByValue: false };
+  if (contextId !== null) winEvalParams.contextId = contextId;
+  const winRes = await send('Runtime.evaluate', winEvalParams).catch(() => null);
+  const objectId = winRes?.result?.result?.objectId;
+  // Fail-closed: if CDP inspection fails, never grant host trust
+  if (!objectId) return false;
+  const toRelease = [objectId];
+  try {
+    const propsRes = await send('Runtime.getProperties', {
+      objectId,
+      ownProperties: true,
+      accessorPropertiesOnly: false,
+      generatePreview: false
+    }).catch(() => null);
+    const props = propsRes?.result?.result;
+    if (!Array.isArray(props)) return false;
+    const enProp = props.find((p) => p && p.name === 'electronNative');
+    if (!enProp || enProp.writable !== false || enProp.configurable !== false) return false;
+    const enObjId = enProp.value?.objectId;
+    if (!enObjId || enProp.value?.type !== 'object' || enProp.value?.subtype === 'proxy') return false;
+    toRelease.push(enObjId);
+
+    const enPropsRes = await send('Runtime.getProperties', {
+      objectId: enObjId,
+      ownProperties: true,
+      accessorPropertiesOnly: false,
+      generatePreview: false
+    }).catch(() => null);
+    const enProps = enPropsRes?.result?.result;
+    if (!Array.isArray(enProps)) return false;
+
+    for (const methodName of ['getZoomLevel', 'setTitleBarOverlay', 'openExternal']) {
+      const mProp = enProps.find((p) => p && p.name === methodName);
+      const fnObjId = mProp?.value?.objectId;
+      if (
+        !mProp ||
+        mProp.get ||
+        mProp.set ||
+        !fnObjId ||
+        mProp.value?.type !== 'function' ||
+        mProp.value?.subtype === 'proxy' ||
+        !/^function\s*\(\)\s*\{\s*\[native code\]\s*\}$/.test(String(mProp.value?.description || ''))
+      ) {
+        return false;
+      }
+      toRelease.push(fnObjId);
+      const fnMetaRes = await send('Runtime.getProperties', {
+        objectId: fnObjId,
+        ownProperties: false,
+        accessorPropertiesOnly: false,
+        generatePreview: false
+      }).catch(() => null);
+      if (!Array.isArray(fnMetaRes?.result?.result)) return false;
+      const internalProps = fnMetaRes?.result?.internalProperties;
+      if (internalProps !== undefined && !Array.isArray(internalProps)) return false;
+      if (Array.isArray(internalProps)) {
+        for (const ip of internalProps) {
+          if (!ip) continue;
+          // Reject JS-defined functions (have [[FunctionLocation]]) and .bind() wrappers (have [[TargetFunction]]/[[BoundThis]])
+          if (ip.name === '[[TargetFunction]]' || ip.name === '[[BoundThis]]' || ip.name === '[[FunctionLocation]]') {
+            return false;
+          }
+        }
+      }
+      if (methodName === 'getZoomLevel') {
+        const zoomRes = await send('Runtime.callFunctionOn', {
+          objectId: fnObjId,
+          functionDeclaration: 'function() { return this(); }',
+          returnByValue: true
+        }).catch(() => null);
+        const zv = zoomRes?.result?.result;
+        if (!zv || zv.type !== 'number' || !Number.isFinite(zv.value)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  } finally {
+    for (const oid of toRelease) {
+      await send('Runtime.releaseObject', { objectId: oid }).catch(() => {});
+    }
+  }
+}
+
 export async function attachTarget(page, endpoint, opts = {}) {
   const readOnly = Boolean(opts && opts.readOnly);
   const wsUrl = String(page.webSocketDebuggerUrl || '').replace(/^ws:\/\/localhost:/i, 'ws://127.0.0.1:');
@@ -4899,37 +4986,7 @@ export async function attachTarget(page, endpoint, opts = {}) {
     return send('Runtime.evaluate', params);
   };
 
-  const isLoopbackHttpUrl = (rawUrl) => {
-    try {
-      const u = new URL(String(rawUrl || ''));
-      return (u.protocol === 'http:' || u.protocol === 'https:') && (u.hostname === '127.0.0.1' || u.hostname === 'localhost');
-    } catch {
-      return false;
-    }
-  };
-
-  const verifyElectronNativeInspector = async (contextId = null) => {
-    const winEvalParams = { expression: 'window', returnByValue: false };
-    if (contextId !== null) winEvalParams.contextId = contextId;
-    const winRes = await send('Runtime.evaluate', winEvalParams).catch(() => null);
-    const objectId = winRes?.result?.result?.objectId;
-    if (!objectId) return true;
-    try {
-      const propsRes = await send('Runtime.getProperties', {
-        objectId,
-        ownProperties: true,
-        accessorPropertiesOnly: false,
-        generatePreview: false
-      }).catch(() => null);
-      const props = propsRes?.result?.result;
-      if (!Array.isArray(props)) return true;
-      const enProp = props.find((p) => p && p.name === 'electronNative');
-      if (!enProp || enProp.writable !== false || enProp.configurable !== false) return false;
-      return true;
-    } finally {
-      await send('Runtime.releaseObject', { objectId }).catch(() => {});
-    }
-  };
+  const verifyElectronNativeInspector = (contextId = null) => verifyElectronNativeViaCdp(send, contextId);
 
   const probeHostKind = async (contextId = null) => {
     let probeKind = 'non_host';
@@ -4942,7 +4999,7 @@ export async function attachTarget(page, endpoint, opts = {}) {
       if (probeKind !== 'loading') break;
       await new Promise((r) => setTimeout(r, 150));
     }
-    if (probeKind === 'host' && page.type === 'page' && isLoopbackHttpUrl(entry.url)) {
+    if (probeKind === 'host' && page.type === 'page' && !/^vscode-file:/i.test(String(entry.url || ''))) {
       const verified = await verifyElectronNativeInspector(contextId);
       if (!verified) return 'non_host';
     }

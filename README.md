@@ -198,7 +198,7 @@ flowchart TB
 > **如何配置 `prism_list_models` / `prism_ask_model` 所需的会诊网关？**
 > 打开工作台 **「模型中枢」** 页签，任选一种方式即可：
 > 1. **可视化探测导入**：点击 **`+ 网关`** 填入兼容端点 Base URL 与环境变量名（或存入系统凭据库）→ 点击 **`🔍 发现模型`** 自动拉取 `/v1/models` 清单并一键勾选导入 T1–T4 梯队；
-> 2. **AI 零密钥代配**：点击副栏 **`🤖 AI 代配`** 复制安全部署口令粘贴给当前对话 AI，让 AI 直接为你编排写入 `~/.gemini/antigravity/prism-files/prism-profile.json`（`0600` 权限，仅写环境变量名，全程零私钥入聊天框）。
+> 2. **AI 零密钥代配**：点击副栏 **`🤖 AI 代配`** 复制安全部署口令粘贴给当前对话 AI，让 AI 直接为你编排写入 `~/.gemini/antigravity/anti-claude/prism-profile.json`（`0600` 权限，仅写环境变量名，全程零私钥入聊天框）。
 
 ### 五、随包内置的 3 项工程协作 Skill
 
@@ -250,7 +250,7 @@ node install.mjs
 | `node install.mjs --no-kernel-daemon` | 部署内核文件与用户层模板，但不注册/重启宿主后台守护进程 |
 | `node uninstall.mjs` | 干净移除棱镜扩展（含自动生成的偏好种子）与 `prism-files` 插件，保留用户数据与其他插件 |
 | `node uninstall.mjs --with-kernel` | 彻底卸载本套件扩展、插件及内置 `Anti-Claude` 守护进程与开机自启项 |
-| `npm test` | 运行全套 20 组自动化回归、性能门禁与安全边界测试 |
+| `npm test` | 运行全套自动化回归、性能门禁与安全边界测试 |
 | `npm run build:win-exe` | 在 Windows 环境使用系统自带 `csc.exe` 重新编译单文件安装器 `.exe` |
 
 ### 方式三：应用内一键自更新

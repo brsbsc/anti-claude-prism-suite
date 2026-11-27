@@ -6183,6 +6183,7 @@
 
   function syncSidebarEnhancements() {
     if (disposed) return;
+    bindSidebarWheelTargets();
     restoreLegacySidebarCjkNodes();
     const unifiedRecentsOn = Boolean(FEAT.hideSidebarProjects);
     if (!FEAT.folderStatus && !FEAT.recentSection && !unifiedRecentsOn) {
@@ -6301,8 +6302,27 @@
     }
   }
 
+  const boundSidebarWheelEls = new Set();
+  function bindSidebarWheelTargets() {
+    if (disposed) return;
+    for (const el of Array.from(boundSidebarWheelEls)) {
+      if (!el || !el.isConnected) {
+        try { el.removeEventListener('wheel', onSidebarWheel, true); } catch {}
+        boundSidebarWheelEls.delete(el);
+      }
+    }
+    const sidebars = document.querySelectorAll('.bg-sidebar');
+    for (let i = 0; i < sidebars.length; i++) {
+      const sb = sidebars[i];
+      if (!boundSidebarWheelEls.has(sb)) {
+        sb.addEventListener('wheel', onSidebarWheel, { capture: true, passive: false });
+        boundSidebarWheelEls.add(sb);
+      }
+    }
+  }
+
   const onWindowSidebarEvent = () => scheduleSidebarSync();
-  document.addEventListener('wheel', onSidebarWheel, { capture: true, passive: false });
+  bindSidebarWheelTargets();
   window.addEventListener('focus', onWindowSidebarEvent);
   window.addEventListener('blur', onWindowSidebarEvent);
   window.addEventListener('popstate', onWindowSidebarEvent);
@@ -14180,7 +14200,7 @@
   const OWN_SEL =
     '.ag-collapse-ghost, .ag-orbit-dots, .ag-elapsed-timer, #ag-claude-ctx-ring, #ag-claude-quota-popover, #ag-claude-model-popover, #ag-claude-model-subpop, #ag-claude-model-tripop, .ag-claude-inline-editor, .ag-claude-folder-badges, #ag-claude-recent-section, #ag-recent-row-menu, #ag-project-action-menu, #ag-claude-ux-settings-nav, #ag-claude-ux-settings-panel, #ag-settings-stats-wrap, .ag-settings-subhdr-chev, #ag-claude-projects-nav-btn, #ag-claude-projects-view, #ag-claude-project-modal, .ag-code-fold-toggle, .ag-code-fold-bar, #ag-claude-ov-sections';
   const CLASS_WATCH_SEL =
-    '[id="antigravity.agentSidePanelInputBox"], [data-testid="tool-group-collapsible"], [data-testid="worked-for-collapsible"], [data-testid="progress-updates-collapsible"], [data-testid="ephemeral-tool-status"]';
+    '[id="antigravity.agentSidePanelInputBox"], [data-testid="tool-group-collapsible"], [data-testid="worked-for-collapsible"], [data-testid="progress-updates-collapsible"], [data-testid="ephemeral-tool-status"], .bg-sidebar';
 
   function isOwnNode(n) {
     const el = n && (n.nodeType === 1 ? n : n.parentElement);
@@ -14344,7 +14364,10 @@
     window.removeEventListener('pointercancel', onPinnedRowPointerCancel, true);
     clearPinnedComposerDropHighlights();
     window.removeEventListener('resize', onWindowResizePopover);
-    document.removeEventListener('wheel', onSidebarWheel, true);
+    for (const sb of boundSidebarWheelEls) {
+      try { sb.removeEventListener('wheel', onSidebarWheel, true); } catch {}
+    }
+    boundSidebarWheelEls.clear();
     window.removeEventListener('focus', onWindowSidebarEvent);
     window.removeEventListener('blur', onWindowSidebarEvent);
     window.removeEventListener('popstate', onWindowSidebarEvent);

@@ -31,17 +31,21 @@ import { createAccountManager } from './account-manager.mjs';
 import { createAccountVault } from './account-vault.mjs';
 import {
   detectIsWsl,
+  isPrivateOrLocalIp,
   listWslWindowsUserDirs,
+  redactSensitiveText,
   resolveSafeExecCwd,
   resolveWslInteropEnv,
   writeFileAtomic,
   writeJsonAtomic
 } from './platform-utils.mjs';
 import { createClientRelauncher } from './relaunch-client.mjs';
-import { createHandoffMemoryStore, redactMemoryText } from './handoff-memory.mjs';
+import { createHandoffMemoryStore } from './handoff-memory.mjs';
 import { createPrismProfileManager } from './prism-profile.mjs';
 import { createModelHub } from './model-hub.mjs';
 import { checkUpstreams, renderMarkdownReport, syncUpstreamBaseline, checkPrismSelfUpdate, applyPrismSelfUpdate } from './upstream-radar.mjs';
+
+export { isPrivateOrLocalIp, redactSensitiveText };
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
@@ -63,9 +67,28 @@ const TRANSCRIPT_MAX_TOTAL_BYTES = 24 * 1024 * 1024;
 const TRANSCRIPT_BUDGET_MS = 1500;
 const TRANSCRIPT_MAX_RESULTS = 50;
 const TRANSCRIPT_CACHE_MAX_ENTRIES = 100;
+const TRANSCRIPT_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 
 const transcriptParseCache = new Map();
+let transcriptCacheEstBytes = 0;
 const DIR_NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+function readFdBounded(fd, maxBytes) {
+  const cap = Math.max(0, Math.floor(Number(maxBytes) || 0));
+  if (cap === 0) return Buffer.alloc(0);
+  const chunks = [];
+  let total = 0;
+  const step = Math.min(65536, cap);
+  while (total < cap) {
+    const want = Math.min(step, cap - total);
+    const buf = Buffer.allocUnsafe(want);
+    const n = fs.readSync(fd, buf, 0, want, null);
+    if (n <= 0) break;
+    chunks.push(n === want ? buf : buf.subarray(0, n));
+    total += n;
+  }
+  return chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, total);
+}
 
 const IMAGE_MIME_BY_EXT = {
   '.png': 'image/png',
@@ -79,7 +102,7 @@ const IMAGE_MIME_BY_EXT = {
 };
 
 const SENSITIVE_SEGMENTS = new Set(['.ssh', '.gnupg', '.aws', '.codex', '.claude', '.cc-switch']);
-const SENSITIVE_BASENAME_RE = /^(?:\.env(?:\..+)?|\.npmrc|\.pypirc|\.netrc|\.git-credentials|id_rsa(?:\.pub)?|id_ed25519(?:\.pub)?|auth\.json|credentials\.json|cc-switch\.db|prism-profile\.json|handoff-memory\.sqlite(?:-wal|-shm|-journal)?|handoff-catalog\.json|jetski-standalone-oauth-token|credential-user-scope|.*\.(?:pem|key|p12|pfx|kdbx))$/i;
+const SENSITIVE_BASENAME_RE = /^(?:\.env(?:\..+)?|\.envrc|\.npmrc|\.pypirc|\.netrc|\.pgpass|\.git-credentials|id_rsa(?:\.pub)?|id_ed25519(?:\.pub)?|id_ecdsa(?:\.pub)?|id_dsa(?:\.pub)?|auth\.json|credentials\.json|cc-switch\.db|prism-profile\.json|handoff-memory\.sqlite(?:-wal|-shm|-journal)?|handoff-memories\.jsonl|handoff-catalog\.json|handoff-snapshot\.json|jetski-standalone-oauth-token|credential-user-scope|.*\.(?:pem|key|p12|pfx|kdbx))$/i;
 const PRISM_PROTECTED_FILES = new Set([
   'accounts.json',
   'switch.lock',
@@ -94,18 +117,25 @@ const PRISM_PROTECTED_FILES = new Set([
   'prism-profile.json'
 ]);
 
-export function isSensitivePath(targetPath) {
+export function isSensitivePath(targetPath, { platform = process.platform } = {}) {
   const raw = String(targetPath || '');
   const trimmedStart = raw.trimStart();
   if (!trimmedStart.trim()) return false;
-  // Block Windows NTFS Alternate Data Streams (any colon outside leading drive prefix ^[A-Za-z]:)
-  const withoutDrivePrefix = trimmedStart.replace(/^[A-Za-z]:/, '');
-  if (withoutDrivePrefix.includes(':')) return true;
 
   const isWinDrivePath = /^[A-Za-z]:/.test(trimmedStart);
-  const norm = (isUncPathString(trimmedStart) || isWinDrivePath) ? trimmedStart : path.resolve(trimmedStart);
-  const normWithoutDrive = norm.replace(/^[A-Za-z]:/, '');
-  if (normWithoutDrive.includes(':')) return true;
+  const isWinTarget = platform === 'win32' || isWinDrivePath || isUncPathString(trimmedStart);
+  const withoutDrivePrefix = trimmedStart.replace(/^[A-Za-z]:/, '');
+  // Block Windows NTFS Alternate Data Streams on Windows/UNC/drive paths or explicit ADS markers on POSIX
+  if (isWinTarget && withoutDrivePrefix.includes(':')) return true;
+  if (/::\$|:Zone\.Identifier\b/i.test(withoutDrivePrefix)) return true;
+
+  const norm = (isUncPathString(trimmedStart) || isWinDrivePath)
+    ? path.win32.normalize(trimmedStart)
+    : path.resolve(trimmedStart);
+  if (isWinTarget) {
+    const normWithoutDrive = norm.replace(/^[A-Za-z]:/, '');
+    if (normWithoutDrive.includes(':')) return true;
+  }
 
   const parts = norm.split(/[\\/]+/).filter(Boolean);
   for (const seg of parts) {
@@ -114,19 +144,17 @@ export function isSensitivePath(targetPath) {
   }
   const rawBase = parts.length > 0 ? parts[parts.length - 1] : path.basename(norm);
   const cleanBase = rawBase.replace(/:.*$/, '').replace(/[. ]+$/, '');
+  const cleanBaseLower = cleanBase.toLowerCase();
   const parentSeg = parts.length >= 2 ? parts[parts.length - 2].replace(/:.*$/, '').replace(/[. ]+$/, '').toLowerCase() : '';
-  if (parentSeg === 'prism-suite' && PRISM_PROTECTED_FILES.has(cleanBase.toLowerCase())) {
-    return true;
-  }
+  if (parentSeg === 'prism-suite' && PRISM_PROTECTED_FILES.has(cleanBaseLower)) return true;
+  if (parentSeg === '.kube' && cleanBaseLower === 'config') return true;
+  if (parentSeg === '.docker' && cleanBaseLower === 'config.json') return true;
+  if (parentSeg === 'gh' && cleanBaseLower === 'hosts.yml') return true;
   return SENSITIVE_BASENAME_RE.test(cleanBase);
 }
 
-export function sha256Hex(bufOrStr) {
+function sha256Hex(bufOrStr) {
   return crypto.createHash('sha256').update(bufOrStr).digest('hex');
-}
-
-export function detectWsl() {
-  return detectIsWsl();
 }
 
 export function fallbackLinuxToWindowsPath(linuxPath, distroName = process.env.WSL_DISTRO_NAME || 'Ubuntu') {
@@ -141,7 +169,7 @@ export function fallbackLinuxToWindowsPath(linuxPath, distroName = process.env.W
   return `\\\\wsl.localhost\\${distroName}${winRest}`;
 }
 
-export async function toWindowsPathFromWsl(linuxPath) {
+async function toWindowsPathFromWsl(linuxPath) {
   const abs = path.resolve(linuxPath);
   try {
     const { stdout } = await execFileAsync('wslpath', ['-w', abs], { timeout: 4000 });
@@ -153,9 +181,9 @@ export async function toWindowsPathFromWsl(linuxPath) {
   return fallbackLinuxToWindowsPath(abs);
 }
 
-export async function toLinuxPathFromWslUnc(winUncPath) {
+async function toLinuxPathFromWslUnc(winUncPath) {
   const raw = String(winUncPath || '').trim();
-  if (!raw || /[\x00-\x1f\x7f]/.test(raw)) return '';
+  if (!raw || raw.startsWith('-') || /[\x00-\x1f\x7f]/.test(raw)) return '';
   try {
     const { stdout } = await execFileAsync('wslpath', ['-u', raw], { timeout: 4000 });
     const rawOut = String(stdout || '').replace(/\r?\n$/, '');
@@ -166,7 +194,7 @@ export async function toLinuxPathFromWslUnc(winUncPath) {
   return '';
 }
 
-export function realpathNearest(targetPath) {
+function realpathNearest(targetPath) {
   const abs = path.resolve(String(targetPath || ''));
   try {
     return fs.realpathSync(abs);
@@ -192,7 +220,7 @@ export function realpathNearest(targetPath) {
   }
 }
 
-export function resolveHomeAndBrain() {
+function resolveHomeAndBrain() {
   const home = os.homedir();
   const rawBrainDir = process.env.PRISM_FILES_BRAIN_DIR
     ? path.resolve(process.env.PRISM_FILES_BRAIN_DIR)
@@ -201,17 +229,13 @@ export function resolveHomeAndBrain() {
   return { home, brainDir };
 }
 
-export function isPathInside(childPath, parentPath) {
+function isPathInside(childPath, parentPath) {
   if (!childPath || !parentPath) return false;
   const rel = path.relative(path.resolve(parentPath), path.resolve(childPath));
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
-export function hasSensitiveSegment(targetPath) {
-  return isSensitivePath(targetPath);
-}
-
-export function expandUserPath(rawPath, fallbackDir) {
+function expandUserPath(rawPath, fallbackDir) {
   const trimmed = String(rawPath || '').trim();
   if (!trimmed) return path.resolve(fallbackDir || process.cwd());
   if (trimmed === '~') return os.homedir();
@@ -221,7 +245,7 @@ export function expandUserPath(rawPath, fallbackDir) {
   return path.resolve(trimmed);
 }
 
-export function formatBytes(bytes) {
+function formatBytes(bytes) {
   const n = Number(bytes) || 0;
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1).replace(/\.0$/, '')} KB`;
@@ -229,7 +253,7 @@ export function formatBytes(bytes) {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2).replace(/\.?0+$/, '')} GB`;
 }
 
-export function getFileKind(fileName, isDir) {
+function getFileKind(fileName, isDir) {
   if (isDir) return 'dir';
   const ext = path.extname(String(fileName || '')).toLowerCase();
   if (IMAGE_MIME_BY_EXT[ext]) return 'image';
@@ -251,114 +275,37 @@ function isUncPathString(rawPath) {
   return trimmed.startsWith('\\\\') || trimmed.startsWith('//');
 }
 
-export function buildWindowsExplorerArgs(winPath, isDir) {
+function normalizeWinExplorerPath(winPath, isDir) {
   const raw = String(winPath ?? '');
   if (!raw || /[\x00-\x1f\x7f"]/.test(raw)) {
     throw new Error('Windows 路径包含非法字符或控制字符');
   }
   const driveRootMatch = raw.match(/^([a-zA-Z]):[\\/]?$/);
   if (driveRootMatch) {
-    return [`${driveRootMatch[1].toUpperCase()}:\\`];
+    return { direct: `${driveRootMatch[1].toUpperCase()}:\\` };
   }
   const normalized = raw.replace(/\//g, '\\');
-  // UNC server root or share root cannot be selected with /select,
-  if (/^\\\\[^\\]+(?:\\[^\\]+)?\\?$/.test(normalized)) {
-    return [normalized];
+  // Directories and UNC server/share roots open directly without /select,
+  if (isDir || /^\\\\[^\\]+(?:\\[^\\]+)?\\?$/.test(normalized)) {
+    return { direct: normalized };
   }
-  if (isDir) {
-    return [normalized];
-  }
-  return [`/select,"${normalized}"`];
+  return { select: normalized };
+}
+
+export function buildWindowsExplorerArgs(winPath, isDir) {
+  const p = normalizeWinExplorerPath(winPath, isDir);
+  return p.direct ? [p.direct] : [`/select,"${p.select}"`];
 }
 
 export function buildWslExplorerArgs(winPath, isDir) {
-  const raw = String(winPath ?? '');
-  if (!raw || /[\x00-\x1f\x7f"]/.test(raw)) {
-    throw new Error('Windows 路径包含非法字符或控制字符');
-  }
-  const driveRootMatch = raw.match(/^([a-zA-Z]):[\\/]?$/);
-  if (driveRootMatch) {
-    return [`${driveRootMatch[1].toUpperCase()}:\\`];
-  }
-  const normalized = raw.replace(/\//g, '\\');
-  if (/^\\\\[^\\]+(?:\\[^\\]+)?\\?$/.test(normalized)) {
-    return [normalized];
-  }
-  if (isDir) {
-    return [normalized];
-  }
+  const p = normalizeWinExplorerPath(winPath, isDir);
   // In WSL interop, passing two separate argv items avoids escaping inner quotes while auto-quoting spaces in winPath
-  return ['/select,', normalized];
+  return p.direct ? [p.direct] : ['/select,', p.select];
 }
 
-function expandIpv6ToGroups(ip) {
-  let s = ip.toLowerCase();
-  if (s.includes('.')) {
-    const lastColon = s.lastIndexOf(':');
-    if (lastColon === -1) return null;
-    const ipv4Part = s.slice(lastColon + 1);
-    if (!net.isIPv4(ipv4Part)) return null;
-    const octets = ipv4Part.split('.').map((n) => Number(n));
-    const hi = ((octets[0] << 8) | octets[1]).toString(16);
-    const lo = ((octets[2] << 8) | octets[3]).toString(16);
-    s = `${s.slice(0, lastColon + 1)}${hi}:${lo}`;
-  }
-  const halves = s.split('::');
-  if (halves.length > 2) return null;
-  const left = halves[0] ? halves[0].split(':') : [];
-  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
-  const missing = 8 - (left.length + right.length);
-  if (halves.length === 1 && missing !== 0) return null;
-  if (halves.length === 2 && missing < 0) return null;
-  const full = [...left, ...Array(Math.max(0, missing)).fill('0'), ...right];
-  if (full.length !== 8) return null;
-  const groups = [];
-  for (const part of full) {
-    if (!/^[0-9a-f]{1,4}$/.test(part)) return null;
-    groups.push(parseInt(part, 16));
-  }
-  return groups;
-}
-
-export function isPrivateOrLocalIp(ip) {
-  if (typeof ip !== 'string') return false;
-  let s = ip.trim().toLowerCase();
-  const zoneIdx = s.indexOf('%');
-  if (zoneIdx !== -1) s = s.slice(0, zoneIdx);
-  if (!s) return false;
-
-  if (net.isIPv4(s)) {
-    const parts = s.split('.').map((n) => Number(n));
-    const [a, b] = parts;
-    if (a === 127) return true; // 127.0.0.0/8 loopback
-    if (a === 10) return true; // 10.0.0.0/8 RFC1918
-    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12 RFC1918
-    if (a === 192 && b === 168) return true; // 192.168.0.0/16 RFC1918
-    if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT / Tailscale
-    if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local
-    return false;
-  }
-
-  if (net.isIPv6(s)) {
-    const g = expandIpv6ToGroups(s);
-    if (!g) return false;
-    // Loopback ::1
-    if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0 && g[6] === 0 && g[7] === 1) {
-      return true;
-    }
-    // IPv4-mapped IPv6 ::ffff:0:0/96
-    if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0xffff) {
-      const v4 = `${(g[6] >> 8) & 0xff}.${g[6] & 0xff}.${(g[7] >> 8) & 0xff}.${g[7] & 0xff}`;
-      return isPrivateOrLocalIp(v4);
-    }
-    // ULA fc00::/7
-    if ((g[0] & 0xfe00) === 0xfc00) return true;
-    // Link-local fe80::/10
-    if ((g[0] & 0xffc0) === 0xfe80) return true;
-    return false;
-  }
-
-  return false;
+function ignoreExplorerExit1(err) {
+  // explorer.exe routinely exits with code 1 even when the window opens cleanly
+  if (err && typeof err.code === 'number' && err.code !== 1) throw err;
 }
 
 function parseUncPathStrict(rawPath) {
@@ -473,7 +420,7 @@ export function parseLineCol(rawLine, rawCol) {
 }
 
 export function hasWindowsBatchMeta(str) {
-  return /[&|<>^%!"\r\n\0]/.test(String(str ?? ''));
+  return /[&|<>^%!"()\r\n\0]/.test(String(str ?? ''));
 }
 
 function isExecutableFile(filePath, isWin = process.platform === 'win32') {
@@ -1020,8 +967,6 @@ function spawnDetachedSafe(bin, args, options = {}) {
 
 /* ---------------- Cross-Session Transcript Search & Redaction ---------------- */
 
-export const redactSensitiveText = redactMemoryText;
-
 function safeLstatJoinInRoot(rootDir, ...segments) {
   const absRoot = path.resolve(rootDir);
   let cur = absRoot;
@@ -1115,11 +1060,11 @@ function extractChunksFromTranscriptObj(obj, lineIndex) {
           : rawRole;
   const timestamp = String(obj.timestamp || obj.createdAt || obj.ts || obj.time || '');
 
-  const pushChunk = (kind, text) => {
+  const pushChunk = (kind, text, alreadyRedacted = false) => {
     const rawClean = String(text || '').trim();
     if (!rawClean) return;
     // Redact BEFORE keyword matching and BEFORE excerpt slicing so secret fragments can never leak
-    const safeText = redactSensitiveText(rawClean);
+    const safeText = alreadyRedacted ? rawClean : redactSensitiveText(rawClean);
     if (!safeText) return;
     chunks.push({
       kind,
@@ -1135,16 +1080,16 @@ function extractChunksFromTranscriptObj(obj, lineIndex) {
     if (typeof str !== 'string' || !str.trim()) return;
     const redactedStr = redactSensitiveText(str);
     if (forceKind) {
-      pushChunk(forceKind, redactedStr);
+      pushChunk(forceKind, redactedStr, true);
       return;
     }
     if (role === 'tool') {
-      pushChunk('code_cmd', redactedStr);
+      pushChunk('code_cmd', redactedStr, true);
       return;
     }
     const { prose, code } = splitProseAndFencedCode(redactedStr);
-    for (const p of prose) pushChunk('prose', p);
-    for (const c of code) pushChunk('code_cmd', c);
+    for (const p of prose) pushChunk('prose', p, true);
+    for (const c of code) pushChunk('code_cmd', c, true);
   };
 
   const ingestContent = (content) => {
@@ -1183,8 +1128,8 @@ function extractChunksFromTranscriptObj(obj, lineIndex) {
     ingestContent(obj.message.content ?? obj.message.parts ?? obj.message.text);
   }
   if (obj.content !== undefined) ingestContent(obj.content);
-  if (obj.parts !== undefined) ingestContent(obj.parts);
-  if (typeof obj.text === 'string') ingestText(obj.text);
+  else if (obj.parts !== undefined) ingestContent(obj.parts);
+  else if (typeof obj.text === 'string') ingestText(obj.text);
 
   // Explicit command/tool fields at top level
   const cmdParts = [];
@@ -1205,24 +1150,35 @@ function extractChunksFromTranscriptObj(obj, lineIndex) {
   return chunks;
 }
 
+function estimateChunksMemoryBytes(chunks) {
+  let bytes = 64;
+  for (const c of chunks) {
+    bytes += 96 + (c.text ? c.text.length * 4 : 0);
+  }
+  return bytes;
+}
+
 function loadParsedTranscriptChunks(filePath, stat) {
-  const cacheKey = `${filePath}|${stat.mtimeMs}:${stat.size}:${stat.ino || 0}`;
-  const cached = transcriptParseCache.get(cacheKey);
-  if (cached) {
+  const sig = `${stat.mtimeMs}:${stat.size}:${stat.ino || 0}`;
+  const cached = transcriptParseCache.get(filePath);
+  if (cached && cached.sig === sig) {
+    // Refresh LRU order
+    transcriptParseCache.delete(filePath);
+    transcriptParseCache.set(filePath, cached);
     return { chunks: cached.chunks, bytesRead: cached.bytesRead, fromCache: true };
   }
 
   const readLen = Math.min(stat.size, TRANSCRIPT_MAX_FILE_BYTES);
-  const buf = Buffer.alloc(readLen);
+  let buf;
   const fd = fs.openSync(filePath, 'r');
-  let actualRead = 0;
   try {
-    actualRead = fs.readSync(fd, buf, 0, readLen, 0);
+    buf = readFdBounded(fd, readLen);
   } finally {
     fs.closeSync(fd);
   }
+  const actualRead = buf.length;
 
-  const rawText = buf.subarray(0, actualRead).toString('utf8');
+  const rawText = buf.toString('utf8');
   const lines = rawText.split(/\r?\n/);
   // Drop incomplete trailing line if file exceeded per-file byte limit
   if (stat.size > TRANSCRIPT_MAX_FILE_BYTES && lines.length > 1) {
@@ -1243,11 +1199,23 @@ function loadParsedTranscriptChunks(filePath, stat) {
     for (const c of extracted) chunks.push(c);
   }
 
-  if (transcriptParseCache.size >= TRANSCRIPT_CACHE_MAX_ENTRIES) {
-    const oldestKey = transcriptParseCache.keys().next().value;
-    if (oldestKey !== undefined) transcriptParseCache.delete(oldestKey);
+  if (cached) {
+    transcriptCacheEstBytes = Math.max(0, transcriptCacheEstBytes - cached.estBytes);
+    transcriptParseCache.delete(filePath);
   }
-  transcriptParseCache.set(cacheKey, { chunks, bytesRead: actualRead });
+  const estBytes = estimateChunksMemoryBytes(chunks);
+  transcriptParseCache.set(filePath, { sig, chunks, bytesRead: actualRead, estBytes });
+  transcriptCacheEstBytes += estBytes;
+  while (
+    transcriptParseCache.size > TRANSCRIPT_CACHE_MAX_ENTRIES ||
+    (transcriptCacheEstBytes > TRANSCRIPT_CACHE_MAX_BYTES && transcriptParseCache.size > 1)
+  ) {
+    const oldestKey = transcriptParseCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const evicted = transcriptParseCache.get(oldestKey);
+    transcriptParseCache.delete(oldestKey);
+    if (evicted) transcriptCacheEstBytes = Math.max(0, transcriptCacheEstBytes - evicted.estBytes);
+  }
   return { chunks, bytesRead: actualRead, fromCache: false };
 }
 
@@ -1390,8 +1358,7 @@ export function searchTranscripts({ query, filter = 'all', limit = 40, brainDir 
       const idx = chunk.textLower.indexOf(qLower);
       if (idx === -1) continue;
 
-      const rawExcerpt = buildExcerptAroundMatch(chunk.text, idx, q.length);
-      const safeSnippet = redactSensitiveText(rawExcerpt);
+      const safeSnippet = buildExcerptAroundMatch(chunk.text, idx, q.length);
 
       results.push({
         sessionId: sess.name,
@@ -1447,7 +1414,7 @@ export function createPrismFilesServer({
 } = {}) {
   const stateFile = dataDir ? path.join(path.resolve(dataDir), 'state.json') : '';
   const { home, brainDir } = resolveHomeAndBrain();
-  const isWsl = detectWsl();
+  const isWsl = detectIsWsl();
   const resolvedAccountStateDir = accountStateDir
     ? path.resolve(accountStateDir)
     : path.join(home, '.gemini', 'antigravity', 'prism-suite');
@@ -1488,7 +1455,8 @@ export function createPrismFilesServer({
     homeDir: home,
     stateDir: resolvedAccountStateDir,
     brainDir,
-    handoffMemory
+    handoffMemory,
+    vault: sharedProviderVault
   });
   const clientRelauncher = injectedClientRelauncher || createClientRelauncher({
     isWsl,
@@ -1515,9 +1483,9 @@ export function createPrismFilesServer({
   let cachedOpenTargetMap = null;
   let cachedOpenTargetsExpiresAt = 0;
 
-  function getDetectedTargetsInternal({ force = false } = {}) {
+  function getDetectedTargetsInternal() {
     const now = Date.now();
-    if (force || !cachedOpenTargets || now >= cachedOpenTargetsExpiresAt) {
+    if (!cachedOpenTargets || now >= cachedOpenTargetsExpiresAt) {
       cachedOpenTargets = detectInstalledOpenTargets(isWsl);
       cachedOpenTargetMap = new Map(cachedOpenTargets.map((t) => [t.id, t]));
       cachedOpenTargetsExpiresAt = now + OPEN_TARGETS_TTL_MS;
@@ -1840,6 +1808,7 @@ export function createPrismFilesServer({
       return { ok: false, error: err.message, path: abs };
     }
     if (st.isDirectory()) return { ok: false, error: '目标是文件夹而非文件', path: abs, isDir: true };
+    if (!st.isFile()) return { ok: false, error: '仅支持普通文件预览（已拒绝管道/设备/套接字等特殊文件）', path: abs };
 
     const ext = path.extname(abs).toLowerCase();
     const name = path.basename(abs);
@@ -1859,9 +1828,6 @@ export function createPrismFilesServer({
         editable: false
       };
     }
-    const editableBlocked =
-      isPathInside(real, brainDir) ||
-      st.size > MAX_SAVE_BYTES;
 
     if (IMAGE_MIME_BY_EXT[ext]) {
       if (st.size > MAX_IMAGE_PREVIEW_BYTES) {
@@ -1878,7 +1844,47 @@ export function createPrismFilesServer({
           editable: false
         };
       }
-      const b64 = fs.readFileSync(abs).toString('base64');
+      let imgBuf;
+      let fst;
+      const fd = fs.openSync(real, 'r');
+      try {
+        fst = fs.fstatSync(fd);
+        if (!fst.isFile()) {
+          return { ok: false, error: '仅支持普通文件预览（已拒绝特殊文件）', path: abs };
+        }
+        if (fst.size > MAX_IMAGE_PREVIEW_BYTES) {
+          return {
+            ok: true,
+            path: abs,
+            uri: pathToFileURL(abs).href,
+            name,
+            kind: 'image',
+            previewType: 'too_large',
+            size: fst.size,
+            sizeText: formatBytes(fst.size),
+            mtimeMs: Math.round(fst.mtimeMs),
+            editable: false
+          };
+        }
+        imgBuf = readFdBounded(fd, MAX_IMAGE_PREVIEW_BYTES + 1);
+      } finally {
+        fs.closeSync(fd);
+      }
+      if (imgBuf.length > MAX_IMAGE_PREVIEW_BYTES) {
+        return {
+          ok: true,
+          path: abs,
+          uri: pathToFileURL(abs).href,
+          name,
+          kind: 'image',
+          previewType: 'too_large',
+          size: imgBuf.length,
+          sizeText: formatBytes(imgBuf.length),
+          mtimeMs: Math.round(fst.mtimeMs),
+          editable: false
+        };
+      }
+      const b64 = imgBuf.toString('base64');
       return {
         ok: true,
         path: abs,
@@ -1888,23 +1894,32 @@ export function createPrismFilesServer({
         previewType: 'image',
         mime: IMAGE_MIME_BY_EXT[ext],
         dataUrl: `data:${IMAGE_MIME_BY_EXT[ext]};base64,${b64}`,
-        size: st.size,
-        sizeText: formatBytes(st.size),
-        mtimeMs: Math.round(st.mtimeMs),
+        size: fst.size,
+        sizeText: formatBytes(fst.size),
+        mtimeMs: Math.round(fst.mtimeMs),
         editable: false
       };
     }
 
-    const readLen = Math.min(st.size, MAX_TEXT_PREVIEW_BYTES);
-    const fd = fs.openSync(abs, 'r');
-    const buf = Buffer.alloc(readLen);
-    let actualRead = 0;
+    let rawSlice;
+    let fst;
+    const fd = fs.openSync(real, 'r');
     try {
-      actualRead = fs.readSync(fd, buf, 0, readLen, 0);
+      fst = fs.fstatSync(fd);
+      if (!fst.isFile()) {
+        return { ok: false, error: '仅支持普通文件预览（已拒绝特殊文件）', path: abs };
+      }
+      rawSlice = readFdBounded(fd, MAX_TEXT_PREVIEW_BYTES + 1);
     } finally {
       fs.closeSync(fd);
     }
-    const slice = buf.subarray(0, actualRead);
+    const truncated = rawSlice.length > MAX_TEXT_PREVIEW_BYTES || fst.size > MAX_TEXT_PREVIEW_BYTES;
+    const slice = rawSlice.length > MAX_TEXT_PREVIEW_BYTES
+      ? rawSlice.subarray(0, MAX_TEXT_PREVIEW_BYTES)
+      : rawSlice;
+    const editableBlocked =
+      isPathInside(real, brainDir) ||
+      fst.size > MAX_SAVE_BYTES;
     // Check NUL byte for binary files
     let isBinary = false;
     const probeLen = Math.min(slice.length, 4096);
@@ -1922,13 +1937,15 @@ export function createPrismFilesServer({
         name,
         kind,
         previewType: 'binary',
-        size: st.size,
-        sizeText: formatBytes(st.size),
-        mtimeMs: Math.round(st.mtimeMs),
+        size: fst.size,
+        sizeText: formatBytes(fst.size),
+        mtimeMs: Math.round(fst.mtimeMs),
         editable: false
       };
     }
-    const truncated = st.size > MAX_TEXT_PREVIEW_BYTES;
+    const decodedText = truncated
+      ? new TextDecoder('utf-8', { fatal: false }).decode(slice).replace(/\uFFFD$/, '')
+      : slice.toString('utf8');
     return {
       ok: true,
       path: abs,
@@ -1936,12 +1953,12 @@ export function createPrismFilesServer({
       name,
       kind,
       previewType: kind === 'markdown' ? 'markdown' : 'text',
-      text: slice.toString('utf8'),
+      text: decodedText,
       baseHash: truncated ? '' : sha256Hex(slice),
       truncated,
-      size: st.size,
-      sizeText: formatBytes(st.size),
-      mtimeMs: Math.round(st.mtimeMs),
+      size: Math.max(fst.size, rawSlice.length),
+      sizeText: formatBytes(Math.max(fst.size, rawSlice.length)),
+      mtimeMs: Math.round(fst.mtimeMs),
       editable: !editableBlocked && !truncated
     };
   }
@@ -1951,6 +1968,9 @@ export function createPrismFilesServer({
   }
 
   function saveFileContentInternal(rawPath, content, expectedMtimeMs, baseHash = '', { uncPrevalidated = false } = {}) {
+    if (typeof content !== 'string') {
+      return { ok: false, error: '文件内容必须是字符串，已拒绝保存' };
+    }
     const syncUnc = checkUncSyncGuard(rawPath, { uncPrevalidated });
     if (!syncUnc.ok) {
       return { ok: false, error: syncUnc.error };
@@ -1968,7 +1988,8 @@ export function createPrismFilesServer({
     }
     const st = fs.statSync(real);
     if (st.isDirectory()) return { ok: false, error: '目标为目录，无法写入' };
-    const text = String(content ?? '');
+    if (!st.isFile()) return { ok: false, error: '仅支持写入普通文件，已拒绝特殊文件' };
+    const text = content;
     const byteLen = Buffer.byteLength(text, 'utf8');
     if (byteLen > MAX_SAVE_BYTES) {
       return { ok: false, error: `文件内容超过安全编辑上限 (${formatBytes(MAX_SAVE_BYTES)})` };
@@ -1982,13 +2003,31 @@ export function createPrismFilesServer({
           currentMtimeMs: Math.round(st.mtimeMs)
         };
       }
-      const curHash = sha256Hex(fs.readFileSync(real));
+      let curBuf;
+      let fst;
+      const fd = fs.openSync(real, 'r');
+      try {
+        fst = fs.fstatSync(fd);
+        if (!fst.isFile()) return { ok: false, error: '仅支持写入普通文件，已拒绝特殊文件' };
+        curBuf = readFdBounded(fd, MAX_SAVE_BYTES + 1);
+      } finally {
+        fs.closeSync(fd);
+      }
+      if (curBuf.length > MAX_SAVE_BYTES) {
+        return {
+          ok: false,
+          conflict: true,
+          error: `磁盘文件已在外部变大并超出安全编辑上限 (${formatBytes(MAX_SAVE_BYTES)})，请刷新后再检查`,
+          currentMtimeMs: Math.round(fst.mtimeMs)
+        };
+      }
+      const curHash = sha256Hex(curBuf);
       if (curHash !== String(baseHash)) {
         return {
           ok: false,
           conflict: true,
           error: '文件内容已在外部变更，请刷新后再保存',
-          currentMtimeMs: Math.round(st.mtimeMs)
+          currentMtimeMs: Math.round(fst.mtimeMs)
         };
       }
     } else if (typeof expectedMtimeMs === 'number' && Number.isFinite(expectedMtimeMs)) {
@@ -2007,7 +2046,7 @@ export function createPrismFilesServer({
     const fileMode = (st.mode & 0o777) || 0o600;
     try {
       const outBuf = Buffer.from(text, 'utf8');
-      writeFileAtomic(real, outBuf, { mode: fileMode, prefix: '.prism-save-' });
+      writeFileAtomic(real, outBuf, { mode: fileMode, dirMode: null, prefix: '.prism-save-', rejectSymlink: true });
       const nextSt = fs.statSync(real);
       return {
         ok: true,
@@ -2100,16 +2139,12 @@ export function createPrismFilesServer({
       const likelyDir = /[\\/]$/.test(winPath) || /^\\\\[^\\]+(?:\\[^\\]+)?\\?$/.test(winPath) || !path.win32.extname(winPath);
       try {
         const args = buildWslExplorerArgs(winPath, likelyDir);
-        try {
-          await execFileAsync(explorerBin, args, {
-            timeout: 8000,
-            windowsHide: true,
-            cwd: resolveSafeExecCwd({ isWsl: true, homeDir: home }),
-            env: resolveWslInteropEnv(process.env, true)
-          });
-        } catch (err) {
-          if (err && typeof err.code === 'number' && err.code !== 1) throw err;
-        }
+        await execFileAsync(explorerBin, args, {
+          timeout: 8000,
+          windowsHide: true,
+          cwd: resolveSafeExecCwd({ isWsl: true, homeDir: home }),
+          env: resolveWslInteropEnv(process.env, true)
+        }).catch(ignoreExplorerExit1);
         return { ok: true, path: winPath, winPath, method: 'wsl-windows-explorer-unc' };
       } catch (err) {
         return { ok: false, error: `打开系统文件管理器失败：${err.message}`, path: winPath };
@@ -2132,16 +2167,11 @@ export function createPrismFilesServer({
       if (process.platform === 'win32') {
         const explorerArgs = buildWindowsExplorerArgs(abs, isDir);
         const useVerbatim = explorerArgs.length === 1 && explorerArgs[0].startsWith('/select,');
-        try {
-          await execFileAsync('explorer.exe', explorerArgs, {
-            windowsVerbatimArguments: useVerbatim,
-            windowsHide: true,
-            timeout: 8000
-          });
-        } catch (err) {
-          // explorer.exe routinely exits with code 1 even when the window opens cleanly
-          if (err && typeof err.code === 'number' && err.code !== 1) throw err;
-        }
+        await execFileAsync('explorer.exe', explorerArgs, {
+          windowsVerbatimArguments: useVerbatim,
+          windowsHide: true,
+          timeout: 8000
+        }).catch(ignoreExplorerExit1);
         return { ok: true, path: abs, method: 'windows-explorer' };
       }
       if (isWsl) {
@@ -2151,16 +2181,12 @@ export function createPrismFilesServer({
         }
         const explorerBin = fs.existsSync('/mnt/c/Windows/explorer.exe') ? '/mnt/c/Windows/explorer.exe' : 'explorer.exe';
         const args = buildWslExplorerArgs(winPath, isDir);
-        try {
-          await execFileAsync(explorerBin, args, {
-            timeout: 8000,
-            windowsHide: true,
-            cwd: resolveSafeExecCwd({ isWsl: true, homeDir: home }),
-            env: resolveWslInteropEnv(process.env, true)
-          });
-        } catch (err) {
-          if (err && typeof err.code === 'number' && err.code !== 1) throw err;
-        }
+        await execFileAsync(explorerBin, args, {
+          timeout: 8000,
+          windowsHide: true,
+          cwd: resolveSafeExecCwd({ isWsl: true, homeDir: home }),
+          env: resolveWslInteropEnv(process.env, true)
+        }).catch(ignoreExplorerExit1);
         return { ok: true, path: abs, winPath, method: 'wsl-windows-explorer' };
       }
       const openTarget = isDir ? abs : path.dirname(abs);
@@ -2275,10 +2301,10 @@ export function createPrismFilesServer({
           if (hasWindowsBatchMeta(winBatchBin)) {
             return { ok: false, error: '启动参数包含 Windows 批处理元字符，已拒绝执行' };
           }
-          // In WSL interop, pass separate clean argv entries to cmd.exe to avoid double-quoted single-arg escaping issues
+          // Leading `call` prevents cmd.exe /c from stripping outer quotes when both batch path and args contain spaces
           await spawnDetachedSafe(
             cmdBin,
-            ['/d', '/c', winBatchBin, ...spec.args],
+            ['/d', '/c', 'call', winBatchBin, ...spec.args],
             {
               cwd: spec.cwd || resolveSafeExecCwd({ isWsl: true, homeDir: home }),
               env: resolveWslInteropEnv(process.env, true)
@@ -2444,7 +2470,8 @@ export function createPrismFilesServer({
           lastTab: { type: 'string', enum: ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'] },
           showHidden: { type: 'boolean' },
           doubleClickAction: { type: 'string', enum: ['reveal', 'open_tab'] },
-          allowLanSmb: { type: 'boolean' }
+          allowLanSmb: { type: 'boolean' },
+          dismissedGuides: { type: 'array', items: { type: 'string' } }
         }
       },
       _meta: { ui: { visibility: ['app'] } }
@@ -2825,6 +2852,7 @@ export function createPrismFilesServer({
           apiKeyEnv: { type: 'string' },
           apiKey: { type: ['string', 'null'] },
           clearVaultKey: { type: 'boolean' },
+          confirmOriginChange: { type: 'boolean' },
           allowKeyless: { type: 'boolean' },
           enabled: { type: 'boolean' }
         },
@@ -3540,7 +3568,13 @@ export function createPrismFilesServer({
       ) {
         const siblingRootCfg = path.join(PLUGIN_ROOT, '..', 'upstream.json');
         if (fs.existsSync(siblingRootCfg)) {
-          try { fs.copyFileSync(resolvedUpstreamConfigPath, siblingRootCfg); } catch {}
+          try {
+            writeFileAtomic(siblingRootCfg, fs.readFileSync(resolvedUpstreamConfigPath), {
+              mode: null,
+              dirMode: null,
+              rejectSymlink: true
+            });
+          } catch {}
         }
       }
       try { if (fs.existsSync(upstreamCacheFile)) fs.rmSync(upstreamCacheFile, { force: true }); } catch {}
@@ -3609,7 +3643,11 @@ export function createPrismFilesServer({
         return { jsonrpc: '2.0', id, result: { tools: TOOLS } };
       }
       if (method === 'tools/call') {
-        const result = await handleToolCall(params?.name, params?.arguments || {});
+        const rawArgs = params?.arguments;
+        if (rawArgs !== undefined && rawArgs !== null && (typeof rawArgs !== 'object' || Array.isArray(rawArgs))) {
+          return { jsonrpc: '2.0', id, error: { code: -32602, message: 'Invalid params: arguments must be an object' } };
+        }
+        const result = await handleToolCall(params?.name, rawArgs || {});
         return { jsonrpc: '2.0', id, result };
       }
       if (method === 'resources/list') {
@@ -3687,6 +3725,9 @@ export function createPrismFilesServer({
     clientRelauncher,
     close: () => {
       try { handoffMemory.close?.(); } catch {}
+      try { sharedProviderVault.invalidateCache?.(); } catch {}
+      transcriptParseCache.clear();
+      transcriptCacheEstBytes = 0;
     }
   };
 }
@@ -3728,34 +3769,82 @@ if (isMain) {
   } catch {}
   const server = createPrismFilesServer({ dataDir, defaultRoot: effectiveDefaultRoot });
   let buffer = '';
+  let bufferBytes = 0;
+  let discardUntilNewline = false;
+
+  const cleanupAndExit = (code = 0) => {
+    try { server.close(); } catch {}
+    process.exit(code);
+  };
+  process.on('SIGINT', () => cleanupAndExit(0));
+  process.on('SIGTERM', () => cleanupAndExit(0));
+  process.stdout.on('error', (err) => {
+    if (err?.code === 'EPIPE') cleanupAndExit(0);
+  });
 
   const sendLine = (obj) => {
     if (!obj) return;
-    process.stdout.write(`${JSON.stringify(obj)}\n`);
+    try {
+      process.stdout.write(`${JSON.stringify(obj)}\n`);
+    } catch {}
+  };
+
+  const dispatchRawLine = (rawLine) => {
+    const line = rawLine.trim();
+    if (!line) return;
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return;
+    }
+    Promise.resolve(server.handleRpc(parsed))
+      .then(sendLine)
+      .catch(() => {});
   };
 
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (chunk) => {
-    buffer += chunk;
-    if (Buffer.byteLength(buffer, 'utf8') > MAX_STDIN_BUFFER_BYTES) {
-      buffer = '';
-      return;
-    }
-    let idx;
-    while ((idx = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, idx).trim();
-      buffer = buffer.slice(idx + 1);
-      if (!line) continue;
-      let parsed;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
+    let pos = 0;
+    while (pos < chunk.length) {
+      if (discardUntilNewline) {
+        const nl = chunk.indexOf('\n', pos);
+        if (nl === -1) return;
+        discardUntilNewline = false;
+        pos = nl + 1;
         continue;
       }
-      Promise.resolve(server.handleRpc(parsed))
-        .then(sendLine)
-        .catch(() => {});
+      const nl = chunk.indexOf('\n', pos);
+      if (nl !== -1) {
+        const seg = chunk.slice(pos, nl);
+        pos = nl + 1;
+        const segBytes = Buffer.byteLength(seg, 'utf8');
+        if (bufferBytes + segBytes > MAX_STDIN_BUFFER_BYTES) {
+          buffer = '';
+          bufferBytes = 0;
+          continue;
+        }
+        const fullLine = buffer ? buffer + seg : seg;
+        buffer = '';
+        bufferBytes = 0;
+        dispatchRawLine(fullLine);
+      } else {
+        const tail = chunk.slice(pos);
+        const tailBytes = Buffer.byteLength(tail, 'utf8');
+        if (bufferBytes + tailBytes > MAX_STDIN_BUFFER_BYTES) {
+          buffer = '';
+          bufferBytes = 0;
+          discardUntilNewline = true;
+          return;
+        }
+        buffer += tail;
+        bufferBytes += tailBytes;
+        break;
+      }
     }
+  });
+  process.stdin.on('end', () => {
+    try { server.close(); } catch {}
   });
   process.stdin.resume();
 }

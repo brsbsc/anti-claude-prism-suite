@@ -3364,6 +3364,7 @@
         const showPane = shouldShowRightInspectorPane();
         const wide = showPane && window.innerWidth >= WIDE_SPLIT_MIN_WIDTH;
         workspaceEl.classList.toggle('is-split-wide', wide);
+        previewDrawer.hidden = !showPane;
         if (previewResizer) {
           previewResizer.setAttribute('aria-orientation', wide ? 'vertical' : 'horizontal');
           previewResizer.setAttribute('aria-label', wide ? '拖拽调整预览面板宽度' : '拖拽调整预览面板高度');
@@ -5395,10 +5396,20 @@
         }
 
         if (pv.editing) {
+          const curEditPath = String(data.path || '');
+          const existingTa = previewBody.querySelector('#editor-textarea');
+          if (existingTa && existingTa.dataset.editPath === curEditPath) {
+            if (document.activeElement !== existingTa && existingTa.value !== pv.draft) {
+              existingTa.value = pv.draft;
+            }
+            if (!preserveFocus) existingTa.focus();
+            return;
+          }
           previewBody.innerHTML = '';
           const ta = document.createElement('textarea');
           ta.id = 'editor-textarea';
           ta.className = 'editor-textarea';
+          ta.dataset.editPath = curEditPath;
           ta.spellcheck = false;
           ta.value = pv.draft;
           ta.addEventListener('input', () => {
@@ -5566,7 +5577,7 @@
       }
 
       function buildZeroSecretAiSetupPrompt(profilePath) {
-        const targetPath = profilePath || '~/.gemini/antigravity/prism-files/prism-profile.json';
+        const targetPath = profilePath || '~/.gemini/antigravity/anti-claude/prism-profile.json';
         return [
           '请帮我配置 Prism Suite 模型会诊中枢（零明文密钥安全模式）：',
           `1. 读取并更新本机配置文件 \`${targetPath}\`（保持文件权限 0600，绝不写入任何明文 API Key，仅绑定环境变量名 \`apiKeyEnv\` 或免密本地端点 \`allowKeyless: true\`）；`,
@@ -5658,7 +5669,7 @@
         }
 
         const parts = [];
-        const profilePath = d?.profilePath || '~/.gemini/antigravity/prism-files/prism-profile.json';
+        const profilePath = d?.profilePath || '~/.gemini/antigravity/anti-claude/prism-profile.json';
         if (!isGuideDismissed('guide:models:v1')) {
           const hasHiddenAny = (appState.prefs.dismissedGuides || []).length > 0;
           parts.push(
@@ -8342,7 +8353,7 @@
             appState.models.probingIds[id] = true;
             renderModels();
             try {
-              const r = await callServerTool('model_hub_probe_speed', { modelId: id });
+              const r = await callServerTool('model_hub_probe_speed', { modelId: id }, 30000);
               if (r?.profile) appState.models.data = r.profile;
               if (r?.ok) okCnt++;
             } catch {}
@@ -8363,22 +8374,34 @@
           }
         }, true);
 
+        const applyDiscoverFilterInput = (t) => {
+          const pos = t.selectionStart;
+          appState.models.discoverQuery = t.value;
+          renderModels();
+          const nextIn = document.getElementById('mh-disc-filter');
+          if (nextIn) {
+            nextIn.focus();
+            if (typeof pos === 'number') {
+              try { nextIn.setSelectionRange(pos, pos); } catch {}
+            }
+          }
+        };
+
         modelsWrap.addEventListener('input', (event) => {
           const t = event.target;
           if (t && t.dataset && t.dataset.autofilled === '1') {
             t.dataset.autofilled = '0';
           }
           if (t && t.id === 'mh-disc-filter') {
-            const pos = t.selectionStart;
-            appState.models.discoverQuery = t.value;
-            renderModels();
-            const nextIn = document.getElementById('mh-disc-filter');
-            if (nextIn) {
-              nextIn.focus();
-              if (typeof pos === 'number') {
-                try { nextIn.setSelectionRange(pos, pos); } catch {}
-              }
-            }
+            if (event.isComposing) return;
+            applyDiscoverFilterInput(t);
+          }
+        });
+
+        modelsWrap.addEventListener('compositionend', (event) => {
+          const t = event.target;
+          if (t && t.id === 'mh-disc-filter') {
+            applyDiscoverFilterInput(t);
           }
         });
 
@@ -8445,6 +8468,7 @@
               if (klEl) klEl.checked = pKey === 'ollama-local';
             }
           } else if (t.id === 'mh-set-websearch' || t.id === 'mh-set-redact') {
+            const prevChecked = !t.checked;
             try {
               const ws = Boolean(document.getElementById('mh-set-websearch')?.checked);
               const rd = Boolean(document.getElementById('mh-set-redact')?.checked);
@@ -8455,6 +8479,7 @@
               if (res?.profile) appState.models.data = res.profile;
               showToast('已保存模型中枢安全护栏设置');
             } catch (err) {
+              t.checked = prevChecked;
               showToast(err?.message || '保存设置失败', true);
             }
           }
@@ -8475,7 +8500,7 @@
           const chip = event.target.closest('.mhub-fav-chip[data-fav-id]');
           if (!chip || !appState.models.draggingFavId) return;
           event.preventDefault();
-          event.dataTransfer.dropEffect = 'move';
+          if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
           modelsWrap.querySelectorAll('.mhub-fav-chip.is-drop-target').forEach((n) => {
             if (n !== chip) n.classList.remove('is-drop-target');
           });
@@ -8531,6 +8556,8 @@
             } else if (act === 'open-add-provider') {
               appState.models.showProviderForm = true;
               appState.models.editingProviderId = '';
+              appState.models.showModelForm = false;
+              appState.models.editingModelId = '';
               appState.models.showDiscoverPanel = false;
               renderModels();
             } else if (act === 'copy-ai-setup') {
@@ -8593,15 +8620,18 @@
               if (!batch.length) return;
               st.discoverImporting = true;
               renderModels();
-              const res = await callServerTool('model_hub_batch_import_models', { providerId: pid, items: batch });
-              st.discoverImporting = false;
-              if (res?.profile) st.data = res.profile;
-              st.discoverSelected = {};
-              st.showDiscoverPanel = false;
-              renderModels();
-              const addedCnt = Number(res?.added ?? (res?.importedIds || []).length) || 0;
-              const skippedCnt = Number(res?.skipped) || 0;
-              showToast(`批量导入完成：新增 ${addedCnt} 个模型${skippedCnt ? `（跳过已存在 ${skippedCnt} 个）` : ''}`);
+              try {
+                const res = await callServerTool('model_hub_batch_import_models', { providerId: pid, items: batch });
+                if (res?.profile) st.data = res.profile;
+                st.discoverSelected = {};
+                st.showDiscoverPanel = false;
+                const addedCnt = Number(res?.added ?? (res?.importedIds || []).length) || 0;
+                const skippedCnt = Number(res?.skipped) || 0;
+                showToast(`批量导入完成：新增 ${addedCnt} 个模型${skippedCnt ? `（跳过已存在 ${skippedCnt} 个）` : ''}`);
+              } finally {
+                st.discoverImporting = false;
+                renderModels();
+              }
             } else if (act === 'cancel-provider') {
               appState.models.showProviderForm = false;
               appState.models.editingProviderId = '';
@@ -8610,6 +8640,8 @@
               appState.models.showProviderForm = true;
               appState.models.editingProviderId = btn.dataset.id || '';
               appState.models.showModelForm = false;
+              appState.models.editingModelId = '';
+              appState.models.showDiscoverPanel = false;
               renderModels();
             } else if (act === 'save-provider') {
               const id = document.getElementById('mh-prov-id')?.value?.trim() || '';
@@ -8638,6 +8670,19 @@
               const id = btn.dataset.id;
               const res = await callServerTool('model_hub_remove_provider', { providerId: id });
               if (res?.profile) appState.models.data = res.profile;
+              if (appState.models.editingProviderId === id) {
+                appState.models.showProviderForm = false;
+                appState.models.editingProviderId = '';
+              }
+              if (appState.models.discoverProviderId === id) {
+                ++appState.models.discoverSeq;
+                appState.models.discoverLoading = false;
+                appState.models.discoverError = '';
+                appState.models.showDiscoverPanel = false;
+                appState.models.discoverProviderId = '';
+                appState.models.discoverItems = [];
+                appState.models.discoverSelected = {};
+              }
               renderModels();
               showToast(`已删除网关 ${id}`);
             } else if (act === 'cancel-model') {
@@ -8648,6 +8693,8 @@
               appState.models.showModelForm = true;
               appState.models.editingModelId = btn.dataset.id || '';
               appState.models.showProviderForm = false;
+              appState.models.editingProviderId = '';
+              appState.models.showDiscoverPanel = false;
               renderModels();
             } else if (act === 'save-model') {
               const providerId = document.getElementById('mh-mod-prov')?.value || '';
@@ -8704,14 +8751,17 @@
               if (!id) return;
               appState.models.probingIds[id] = true;
               renderModels();
-              const probe = await callServerTool('model_hub_probe_speed', { modelId: id });
-              delete appState.models.probingIds[id];
-              if (probe?.profile) appState.models.data = probe.profile;
-              renderModels();
-              showToast(
-                probe?.ok ? `${id} 测速通过：TTFT ${probe.ttftMs}ms` : `${id} 测速未通过：${probe?.error || '连接失败'}`,
-                !probe?.ok
-              );
+              try {
+                const probe = await callServerTool('model_hub_probe_speed', { modelId: id }, 30000);
+                if (probe?.profile) appState.models.data = probe.profile;
+                showToast(
+                  probe?.ok ? `${id} 测速通过：TTFT ${probe.ttftMs}ms` : `${id} 测速未通过：${probe?.error || '连接失败'}`,
+                  !probe?.ok
+                );
+              } finally {
+                delete appState.models.probingIds[id];
+                renderModels();
+              }
             } else if (act === 'copy-id') {
               const id = btn.dataset.id || '';
               if (id) {
@@ -8732,9 +8782,6 @@
               renderModels();
             }
           } catch (err) {
-            appState.models.probingIds = {};
-            appState.models.batchProbing = false;
-            renderModels();
             showToast(err?.message || '模型中枢操作失败', true);
           }
         });
@@ -9097,11 +9144,19 @@
         }
       }, { signal });
 
+      let lastResizeWide = window.innerWidth >= WIDE_SPLIT_MIN_WIDTH;
       window.addEventListener('resize', () => {
         if (appState.openTargets.menuOpen) closeOpenWithMenu();
         updateTabGroupOverflow();
         renderTopbar();
-        renderPreviewDrawer({ preserveFocus: true });
+        const nowWide = window.innerWidth >= WIDE_SPLIT_MIN_WIDTH;
+        if (nowWide !== lastResizeWide) {
+          lastResizeWide = nowWide;
+          renderPreviewDrawer({ preserveFocus: true });
+        } else {
+          syncWorkspaceSplitLayout();
+          renderPreviewHeaderOnly();
+        }
         if (appState.preview.visible && isFileTab(appState.activeTab) && appState.preview.data?.previewType === 'image' && appState.preview.imgScaleMode === '1:1') {
           applyActiveImagePreviewMode();
         }
@@ -9440,6 +9495,7 @@
         }
         if (!item || item.isDir || item.exists === false) return;
         if (window.innerWidth < WIDE_SPLIT_MIN_WIDTH && !appState.preview.visible) return;
+        if (window.innerWidth >= WIDE_SPLIT_MIN_WIDTH && !appState.preview.visible && appState.preview.userClosedInWideByTab?.[appState.activeTab]) return;
         if (appState.preview.editing && appState.preview.dirty) return;
         arrowPreviewTimer = setTimeout(() => {
           arrowPreviewTimer = 0;

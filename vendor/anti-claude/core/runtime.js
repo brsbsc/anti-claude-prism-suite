@@ -287,10 +287,11 @@
     const lightDecls = [];
     const darkDecls = [];
 
+    const CSS_VAR_NAME_RE = /^--[a-zA-Z0-9_-]{1,64}$/;
     for (let i = 0; i < keys.length; i++) {
       const k = keys[i];
       const v = varsObj[k];
-      if (!k.startsWith('--') || v === null || v === undefined || String(v).trim() === '') continue;
+      if (!CSS_VAR_NAME_RE.test(k) || v === null || v === undefined || String(v).trim() === '') continue;
       const cleanVal = String(v).trim().replace(/[;{}]/g, '');
       if (k.startsWith('--ag-dark-')) {
         darkDecls.push(`${k}: ${cleanVal} !important;`);
@@ -304,7 +305,7 @@
     for (let i = 0; i < darkKeys.length; i++) {
       const k = darkKeys[i];
       const v = darkVarsObj[k];
-      if (!k.startsWith('--') || v === null || v === undefined || String(v).trim() === '') continue;
+      if (!CSS_VAR_NAME_RE.test(k) || v === null || v === undefined || String(v).trim() === '') continue;
       const cleanVal = String(v).trim().replace(/[;{}]/g, '');
       darkDecls.push(`${k}: ${cleanVal} !important;`);
     }

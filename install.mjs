@@ -79,28 +79,9 @@ export const EXTENSION_FILES = [
   'prism-suite-workflow.js'
 ];
 
-function copyFileInPlace(srcPath, destPath, anchorDir = '') {
-  const dir = path.dirname(destPath);
-  assertSafeDirectory(dir, anchorDir);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  assertSafeDirectory(dir, anchorDir);
-  const existing = fs.lstatSync(destPath, { throwIfNoEntry: false });
-  if (existing && (existing.isSymbolicLink() || existing.isDirectory())) {
-    throw new Error(`Refusing to overwrite symlink or directory with file: ${destPath}`);
-  }
-  const tmpPath = path.join(dir, `.prism-inst-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`);
-  let createdTmp = false;
-  try {
-    fs.copyFileSync(srcPath, tmpPath, fs.constants.COPYFILE_EXCL);
-    createdTmp = true;
-    fs.renameSync(tmpPath, destPath);
-    createdTmp = false;
-  } catch (err) {
-    if (createdTmp) {
-      try { fs.rmSync(tmpPath, { force: true }); } catch {}
-    }
-    throw err;
-  }
+const SLEEP_BUF = new Int32Array(new SharedArrayBuffer(4));
+function sleepMsSync(ms) {
+  try { Atomics.wait(SLEEP_BUF, 0, 0, ms); } catch {}
 }
 
 function assertSafeDirectory(dirPath, anchorDir = '') {
@@ -147,7 +128,7 @@ function assertSafeDirectory(dirPath, anchorDir = '') {
   }
 }
 
-function writeTextInPlace(destPath, content, anchorDir = '') {
+function atomicWriteInPlace(destPath, anchorDir, prefix, writeTmpFn) {
   const dir = path.dirname(destPath);
   assertSafeDirectory(dir, anchorDir);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -156,28 +137,64 @@ function writeTextInPlace(destPath, content, anchorDir = '') {
   if (existing && (existing.isSymbolicLink() || existing.isDirectory())) {
     throw new Error(`Refusing to overwrite symlink or directory with file: ${destPath}`);
   }
-  const tmpPath = path.join(dir, `.prism-write-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`);
-  let createdTmp = false;
+  const tmpPath = path.join(dir, `${prefix}${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`);
+  let shouldCleanupTmp = true;
   try {
-    fs.writeFileSync(tmpPath, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-    createdTmp = true;
-    fs.renameSync(tmpPath, destPath);
-    createdTmp = false;
-  } catch (err) {
-    if (createdTmp) {
+    try {
+      writeTmpFn(tmpPath);
+    } catch (wErr) {
+      if (wErr && wErr.code === 'EEXIST') shouldCleanupTmp = false;
+      throw wErr;
+    }
+    const maxAttempts = process.platform === 'win32' ? 4 : 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const cur = fs.lstatSync(destPath, { throwIfNoEntry: false });
+        if (cur && (cur.isSymbolicLink() || cur.isDirectory())) {
+          throw new Error(`Refusing to overwrite symlink or directory with file: ${destPath}`);
+        }
+        fs.renameSync(tmpPath, destPath);
+        shouldCleanupTmp = false;
+        break;
+      } catch (renameErr) {
+        if (
+          attempt + 1 < maxAttempts &&
+          process.platform === 'win32' &&
+          (renameErr?.code === 'EPERM' || renameErr?.code === 'EACCES' || renameErr?.code === 'EBUSY')
+        ) {
+          sleepMsSync(25 * (attempt + 1));
+          continue;
+        }
+        throw renameErr;
+      }
+    }
+  } finally {
+    if (shouldCleanupTmp) {
       try { fs.rmSync(tmpPath, { force: true }); } catch {}
     }
-    throw err;
   }
+}
+
+function copyFileInPlace(srcPath, destPath, anchorDir = '') {
+  atomicWriteInPlace(destPath, anchorDir, '.prism-inst-', (tmpPath) => {
+    fs.copyFileSync(srcPath, tmpPath, fs.constants.COPYFILE_EXCL);
+  });
+}
+
+function writeTextInPlace(destPath, content, anchorDir = '') {
+  atomicWriteInPlace(destPath, anchorDir, '.prism-write-', (tmpPath) => {
+    fs.writeFileSync(tmpPath, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+  });
 }
 
 /**
  * Sync srcDir into destDir in-place WITHOUT deleting destDir itself,
  * preserving directory inodes so running MCP Server / Daemon processes never lose cwd.
  */
-function syncDirInPlace(srcDir, destDir, installed) {
-  assertSafeDirectory(destDir);
+function syncDirInPlace(srcDir, destDir, installed, anchorDir = '') {
+  assertSafeDirectory(destDir, anchorDir);
   fs.mkdirSync(destDir, { recursive: true });
+  assertSafeDirectory(destDir, anchorDir);
   const srcEntries = fs.readdirSync(srcDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
   const wantedNames = new Set();
   for (const entry of srcEntries) {
@@ -205,13 +222,13 @@ function syncDirInPlace(srcDir, destDir, installed) {
       if (curLst && !curLst.isDirectory()) {
         fs.rmSync(destPath, { force: true });
       }
-      syncDirInPlace(srcPath, destPath, installed);
+      syncDirInPlace(srcPath, destPath, installed, anchorDir);
     } else if (entry.isFile()) {
       const curLst = fs.lstatSync(destPath, { throwIfNoEntry: false });
       if (curLst && curLst.isDirectory()) {
         fs.rmSync(destPath, { recursive: true, force: true });
       }
-      copyFileInPlace(srcPath, destPath);
+      copyFileInPlace(srcPath, destPath, anchorDir);
       installed.push(destPath);
     }
   }
@@ -294,7 +311,7 @@ export function installKernel({
   assertSafeDirectory(resolvedUserDir, effectiveUserAnchor);
 
   const installed = [];
-  syncDirInPlace(resolvedSrc, runtimeDir, installed);
+  syncDirInPlace(resolvedSrc, runtimeDir, installed, stateAnchor);
 
   fs.mkdirSync(resolvedUserDir, { recursive: true });
   fs.mkdirSync(baseDir, { recursive: true });

@@ -21,17 +21,28 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Verify syntax, zero dependencies, and run tests
+      - name: Verify syntax, zero dependencies, tag/changelog parity, and run tests
+        shell: pwsh
         run: |
-          node --check install.mjs
-          node --check uninstall.mjs
+          $files = @('install.mjs', 'uninstall.mjs') + (Get-ChildItem -Path plugin/server, scripts, vendor/anti-claude/core -Filter *.mjs | ForEach-Object { $_.FullName }) + (Get-ChildItem -Path extensions, vendor/anti-claude/core, vendor/anti-claude/user -Filter *.js | ForEach-Object { $_.FullName })
+          foreach ($f in $files) { node --check $f; if ($LASTEXITCODE -ne 0) { throw "Syntax check failed: $f" } }
           node -e "const p=require('./package.json'); if(p.dependencies && Object.keys(p.dependencies).length) throw new Error('Must keep zero runtime npm dependencies');"
+          if ($env:GITHUB_REF -like 'refs/tags/*') {
+            node -e "const fs=require('fs');const pkg=JSON.parse(fs.readFileSync('package.json','utf8')).version;const tag=(process.env.GITHUB_REF_NAME||'').replace(/^v/i,'');if(pkg!==tag) throw new Error('Tag '+tag+' != package.json '+pkg);const cl=fs.readFileSync('CHANGELOG.md','utf8');if(!new RegExp('^## '+tag.replace(/\./g,'\\.')+'(?:\\s|$)','m').test(cl)) throw new Error('CHANGELOG.md missing section for '+tag);"
+          }
           npm test
 
-      - name: Build Windows 1-Click GUI Installer (.exe)
+      - name: Build Windows 1-Click GUI Installer (.exe) and Verified Source Tarball
         shell: powershell
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-win-exe.ps1 -OutDir dist
+          $ver = (Get-Content -Raw package.json | ConvertFrom-Json).version
+          $tarPath = "dist\Anti-Claude-Prism-Suite-Source.tar.gz"
+          $tarShaPath = "$tarPath.sha256"
+          git archive --format=tar.gz --prefix="anti-claude-prism-suite-v$ver/" HEAD -o $tarPath
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tarPath)) { throw "Failed to package source tarball" }
+          $tarHash = (Get-FileHash -LiteralPath $tarPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText($tarShaPath, "$tarHash  Anti-Claude-Prism-Suite-Source.tar.gz`n", (New-Object System.Text.UTF8Encoding($false)))
 
       - name: Smoke test Windows installer CLI (install / in-place update / uninstall)
         shell: powershell
@@ -44,7 +55,9 @@ jobs:
           if ($p1.ExitCode -ne 0) { throw "Silent install failed: $($p1.ExitCode)" }
           if (-not (Test-Path (Join-Path $userDir "extensions\prism-suite.js"))) { throw "Missing prism-suite.js" }
           if (-not (Test-Path (Join-Path $userDir "extensions\prism-suite.css"))) { throw "Missing prism-suite.css" }
-          if (-not (Test-Path (Join-Path $pluginsDir "prism-files\plugin.json"))) { throw "Missing plugin.json" }
+          foreach ($rel in @("plugin.json", "rules\AGENTS.md", "server\platform-utils.mjs", "server\prism-profile.mjs", "server\model-hub.mjs", "server\handoff-memory.mjs", "skills\prism-cross-model-council\SKILL.md")) {
+            if (-not (Test-Path (Join-Path $pluginsDir "prism-files\$rel"))) { throw "Missing deployed plugin file: $rel" }
+          }
           # Verify second in-place update prunes stale leftover files cleanly
           $stalePath = Join-Path $pluginsDir "prism-files\obsolete-stale-check.tmp"
           New-Item -ItemType File -Path $stalePath -Force | Out-Null
@@ -65,6 +78,8 @@ jobs:
           path: |
             dist/Anti-Claude-Prism-Suite-Setup.exe
             dist/Anti-Claude-Prism-Suite-Setup.exe.sha256
+            dist/Anti-Claude-Prism-Suite-Source.tar.gz
+            dist/Anti-Claude-Prism-Suite-Source.tar.gz.sha256
 
       - name: Extract Chinese changelog section for Release notes
         if: startsWith(github.ref, 'refs/tags/')
@@ -81,3 +96,5 @@ jobs:
           files: |
             dist/Anti-Claude-Prism-Suite-Setup.exe
             dist/Anti-Claude-Prism-Suite-Setup.exe.sha256
+            dist/Anti-Claude-Prism-Suite-Source.tar.gz
+            dist/Anti-Claude-Prism-Suite-Source.tar.gz.sha256

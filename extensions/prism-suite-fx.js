@@ -1313,6 +1313,7 @@
      * ======================================================================== */
     let sharedRafId = 0;
     let lastRafTs = 0;
+    let lastOrbStageCheckMs = 0;
     let lastBusy = safeIsBusy();
 
     function stopScheduler() {
@@ -1360,7 +1361,10 @@
       }
 
       if (prefs.thinkingOrb && orbCanvas && orbCanvas.isConnected) {
-        updateOrbStageLabel(nowMs);
+        if (nowMs - lastOrbStageCheckMs >= 300) {
+          lastOrbStageCheckMs = nowMs;
+          updateOrbStageLabel(nowMs);
+        }
         const orbWant = orbNeedsRaf(prefs, nowMs);
         if (orbWant) {
           renderThinkingOrbFrame(dt, nowMs, false);
@@ -3100,6 +3104,9 @@
       if (disposed) return;
       windowFocused = typeof document.hasFocus === 'function' ? document.hasFocus() : !document.hidden;
       if (document.hidden) {
+        orbHovering = false;
+        orbTargetTiltX = 0;
+        orbTargetTiltY = 0;
         stopScheduler();
         stopReturnCountdown();
         // Lightweight background poll ONLY when busy & unreadBadge enabled so hidden completion is never missed
@@ -3132,6 +3139,9 @@
     window.addEventListener('blur', () => {
       if (disposed) return;
       windowFocused = false;
+      orbHovering = false;
+      orbTargetTiltX = 0;
+      orbTargetTiltY = 0;
       if (!shouldRunScheduler(Date.now())) stopScheduler();
     }, { signal });
 

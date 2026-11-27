@@ -26,8 +26,19 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  assertPathNotSymlink,
+  isDangerousMetadataOrLinkLocalHost,
+  isLocalOrLanHost,
+  readResponseTextCapped,
+  redactSensitiveText,
+  validateEnvVarName,
+  writeFileAtomic
+} from './platform-utils.mjs';
 
 const MAX_ENTRY_BYTES = 8192;
+const MAX_REMOTE_RESPONSE_BYTES = 1024 * 1024;
+const EXTERNAL_UNTRUSTED_PREFIX = '[EXTERNAL_UNTRUSTED_MEMORY]';
 
 const UNSAFE_MOUNT_FS_TYPES = new Set([
   'drvfs',
@@ -49,40 +60,6 @@ const UNTRUSTED_SOURCES = new Set([
   'window-uia',
   'external-untrusted'
 ]);
-
-const DANGEROUS_AUTH_ENV_NAMES = new Set([
-  'PATH',
-  'HOME',
-  'USER',
-  'LOGNAME',
-  'SHELL',
-  'PWD',
-  'OLDPWD',
-  'TMP',
-  'TEMP',
-  'TMPDIR',
-  'USERPROFILE',
-  'APPDATA',
-  'LOCALAPPDATA',
-  'SYSTEMROOT',
-  'WINDIR',
-  'COMSPEC',
-  'PATHEXT',
-  'NODE_OPTIONS',
-  'NODE_PATH',
-  'NODE_EXTRA_CA_CERTS',
-  'LD_PRELOAD',
-  'LD_LIBRARY_PATH',
-  'DYLD_INSERT_LIBRARIES',
-  'DYLD_LIBRARY_PATH',
-  'SSL_CERT_FILE',
-  'SSL_CERT_DIR',
-  'SSH_AUTH_SOCK',
-  'WSL_DISTRO_NAME',
-  'WSL_INTEROP'
-]);
-
-const FTS_RESERVED_WORDS = new Set(['AND', 'OR', 'NOT', 'NEAR']);
 
 /* ---------------- Zero-Warning node:sqlite Loader ---------------- */
 
@@ -145,34 +122,7 @@ function loadNodeSqliteCapability() {
 /* ---------------- Secret Redaction ---------------- */
 
 export function redactMemoryText(text) {
-  let out = String(text ?? '');
-  if (!out) return '';
-  // Private keys
-  out = out.replace(
-    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g,
-    '[REDACTED_PRIVATE_KEY]'
-  );
-  // URL embedded credentials: https://user:pass@host -> https://[REDACTED_AUTH]@host
-  out = out.replace(
-    /\b([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^/\s@'"`]+(?::[^/\s@'"`]*)?)@(?=[A-Za-z0-9.-]|\[)/g,
-    '$1[REDACTED_AUTH]@'
-  );
-  // sk-... OpenAI / Anthropic / Stripe keys
-  out = out.replace(/\bsk-(?:proj-|ant-|live-|test-)?[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_API_KEY]');
-  // GitHub tokens
-  out = out.replace(/\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_GH_TOKEN]');
-  // Google API keys
-  out = out.replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, '[REDACTED_GOOGLE_KEY]');
-  // Standard 3-segment JWTs
-  out = out.replace(/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_JWT]');
-  // Bearer tokens
-  out = out.replace(/\b(Bearer[ \t]+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1[REDACTED_TOKEN]');
-  // key=value / key: value credential assignments (including x-api-key and quoted JSON keys)
-  out = out.replace(
-    /((?:["'])?\b[A-Za-z0-9_.-]*(?:x-api-key|api[_-]?key|password|passwd|token|secret|client[_-]?secret|access[_-]?key)(?:["'])?[ \t]*[:=][ \t]*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;'"`}\]]+)/gi,
-    '$1[REDACTED]'
-  );
-  return out;
+  return redactSensitiveText(text);
 }
 
 /* ---------------- 9P / DrvFS / Network Mount Guard ---------------- */
@@ -401,7 +351,6 @@ export function buildSafeFtsMatchQuery(rawQuery) {
   const addToken = (tok) => {
     const safe = String(tok || '').replace(/["\0\s]/g, '').toLowerCase();
     if (!safe) return;
-    if (FTS_RESERVED_WORDS.has(safe.toUpperCase()) && !/^[a-z0-9]+$/.test(safe)) return;
     if (seen.has(safe)) return;
     seen.add(safe);
     tokens.push(safe);
@@ -428,6 +377,9 @@ export function buildSafeFtsMatchQuery(rawQuery) {
         if (tokens.length >= 32) break;
         addToken(sp);
       }
+      if (subParts.length > 1 && tokens.length < 32) {
+        addToken(subParts.join(''));
+      }
     }
   }
 
@@ -437,11 +389,20 @@ export function buildSafeFtsMatchQuery(rawQuery) {
 
 /* ---------------- Helpers & Sanitizers ---------------- */
 
-function normalizeSlug(val, fallback = 'default', maxLen = 40) {
+const MIN_VALID_TS_MS = 1;
+const MAX_VALID_TS_MS = 8_640_000_000_000_000;
+
+function clampValidTimestampMs(rawMs, fallbackMs = Date.now()) {
+  const n = Number(rawMs);
+  if (!Number.isFinite(n) || n < MIN_VALID_TS_MS || n > MAX_VALID_TS_MS) return fallbackMs;
+  return Math.round(n);
+}
+
+export function normalizeSlug(val, fallback = 'default', maxLen = 40) {
   const s = String(val || '')
     .trim()
     .toLowerCase()
-    .replace(/[^\w.-]+/g, '-')
+    .replace(/[^\p{L}\p{N}_.-]+/gu, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, maxLen);
   return s || fallback;
@@ -497,18 +458,12 @@ function normalizeTags(rawTags, project, slot, tainted = false) {
 }
 
 function writeJsonAtomic0600(targetPath, payloadStr) {
-  const dir = path.dirname(targetPath);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const tmpPath = path.join(dir, `.prism-mem-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
-  try {
-    fs.writeFileSync(tmpPath, payloadStr, { encoding: 'utf8', mode: 0o600 });
-    try { fs.chmodSync(tmpPath, 0o600); } catch {}
-    fs.renameSync(tmpPath, targetPath);
-    try { fs.chmodSync(targetPath, 0o600); } catch {}
-  } catch (err) {
-    try { fs.rmSync(tmpPath, { force: true }); } catch {}
-    throw err;
-  }
+  writeFileAtomic(targetPath, payloadStr, {
+    mode: 0o600,
+    dirMode: 0o700,
+    prefix: '.prism-mem-',
+    rejectSymlink: true
+  });
 }
 
 function writeJsonlAtomic0600(filePath, entries) {
@@ -535,7 +490,7 @@ function parseJsonlTextLenient(rawText) {
 }
 
 function sanitizeStoredEntry(raw) {
-  const nowMs = Number(raw?.createdAtMs) || Date.parse(raw?.createdAt || '') || Date.now();
+  const nowMs = clampValidTimestampMs(Number(raw?.createdAtMs) || Date.parse(raw?.createdAt || ''), Date.now());
   const createdAt = String(raw?.createdAt || new Date(nowMs).toISOString());
   const project = normalizeSlug(raw?.project || (raw?.cwd ? path.basename(String(raw.cwd)) : 'workspace'), 'workspace', 48);
   const slot = normalizeSlug(raw?.slot || 'default', 'default', 32);
@@ -643,7 +598,7 @@ function rowToCatalogSlot(row) {
 function computeCombinedSearchScore(entry, cleanQueryLower, queryTokens, ftsRawScore, nowMs) {
   const haySummary = `${entry.summary} ${entry.nextAction}`.toLowerCase();
   const hayTags = (Array.isArray(entry.tags) ? entry.tags.join(' ') : '').toLowerCase();
-  const hayBody = `${entry.verified} ${entry.content} ${entry.cwd} ${entry.gitBranch}`.toLowerCase();
+  const hayBody = `${entry.verified} ${entry.content} ${entry.cwd} ${entry.gitBranch} ${entry.gitHead} ${entry.conversationPath}`.toLowerCase();
 
   let score = Math.max(0, Number(ftsRawScore) || 0) * 8;
   let matched = Number(ftsRawScore) > 0;
@@ -739,10 +694,30 @@ function resolveValidatedRemoteConfig(getRemoteConfigFn, staticRemoteConfig) {
     };
   }
 
+  if (isDangerousMetadataOrLinkLocalHost(parsed.hostname)) {
+    return {
+      enabled: true,
+      valid: false,
+      code: 'UNSAFE_REMOTE_HOST',
+      error: '安全拦截：远程 Memory URL 禁止指向云元数据或链路本地保留地址'
+    };
+  }
+
+  if (parsed.protocol === 'http:' && !isLocalOrLanHost(parsed.hostname)) {
+    return {
+      enabled: true,
+      valid: false,
+      code: 'UNSAFE_REMOTE_PROTOCOL',
+      error: '安全拦截：公网远程 Memory 服务必须使用 https://（仅本机或局域网允许明文 http://）'
+    };
+  }
+
   let bearerToken = '';
   const authEnv = String(raw.authEnv || '').trim();
   if (authEnv) {
-    if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(authEnv) || DANGEROUS_AUTH_ENV_NAMES.has(authEnv)) {
+    try {
+      validateEnvVarName(authEnv);
+    } catch {
       return {
         enabled: true,
         valid: false,
@@ -766,6 +741,124 @@ function resolveValidatedRemoteConfig(getRemoteConfigFn, staticRemoteConfig) {
   };
 }
 
+function buildMemoryContentLines(entry) {
+  return [
+    `[${entry.slotTag}] (${entry.createdAt})`,
+    `工作目录：${entry.cwd || '(未指定)'}`,
+    `Git：${entry.gitBranch ? `${entry.gitBranch} @ ${entry.gitHead || '-'} (改动 ${entry.gitDirtyCount} 项)` : '非 Git 目录'}`,
+    `已验证进度：${entry.verified || entry.summary}`,
+    `下一步：${entry.nextAction || '继续推进'}`
+  ];
+}
+
+function isSqliteTransientLockError(err) {
+  const primaryCode = Number(err?.errcode) & 0xff;
+  if (primaryCode === 5 || primaryCode === 6) return true;
+  return /SQLITE_BUSY|SQLITE_LOCKED|database (?:table |schema )?is locked/i.test(String(err?.message || err || ''));
+}
+
+async function readRemoteSsePayload(res, rpcId, maxBytes = MAX_REMOTE_RESPONSE_BYTES) {
+  const parseEventData = (dataLines) => {
+    if (!dataLines.length) return null;
+    const data = dataLines.join('\n').trim();
+    if (!data || data === '[DONE]') return null;
+    try {
+      const obj = JSON.parse(data);
+      if (obj && typeof obj === 'object') return obj;
+    } catch {}
+    return null;
+  };
+  const isTargetFrame = (obj) =>
+    Boolean(
+      obj &&
+      !obj.method &&
+      (obj.id === rpcId || (obj.id == null && (obj.result !== undefined || obj.error !== undefined)))
+    );
+
+  if (res?.body && typeof res.body.getReader === 'function') {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let totalBytes = 0;
+    let buf = '';
+    let dataLines = [];
+    let fallbackObj = null;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunkLen = value ? (value.byteLength ?? value.length ?? 0) : 0;
+        totalBytes += chunkLen;
+        if (totalBytes > maxBytes) {
+          throw new Error(`远程 MCP SSE 响应体积超过上限 (${maxBytes} 字节)`);
+        }
+        buf += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, nl).replace(/\r$/, '');
+          buf = buf.slice(nl + 1);
+          if (line === '') {
+            const parsed = parseEventData(dataLines);
+            dataLines = [];
+            if (parsed) {
+              if (parsed.id === rpcId && !parsed.method) return parsed;
+              if (isTargetFrame(parsed)) fallbackObj = parsed;
+            }
+          } else if (line.startsWith('data:')) {
+            const rawVal = line.slice(5);
+            dataLines.push(rawVal.startsWith(' ') ? rawVal.slice(1) : rawVal);
+          }
+        }
+      }
+      buf += decoder.decode();
+      if (buf) {
+        for (const tailLine of buf.split(/\r?\n/)) {
+          if (tailLine === '') {
+            const parsed = parseEventData(dataLines);
+            dataLines = [];
+            if (parsed) {
+              if (parsed.id === rpcId && !parsed.method) return parsed;
+              if (isTargetFrame(parsed)) fallbackObj = parsed;
+            }
+          } else if (tailLine.startsWith('data:')) {
+            const rawVal = tailLine.slice(5);
+            dataLines.push(rawVal.startsWith(' ') ? rawVal.slice(1) : rawVal);
+          }
+        }
+      }
+      const trailing = parseEventData(dataLines);
+      if (trailing) {
+        if (trailing.id === rpcId && !trailing.method) return trailing;
+        if (isTargetFrame(trailing)) fallbackObj = trailing;
+      }
+      return fallbackObj;
+    } finally {
+      try { await reader.cancel(); } catch {}
+      try { reader.releaseLock(); } catch {}
+    }
+  }
+
+  const sseText = await readResponseTextCapped(res, maxBytes, {
+    rejectOnOverflow: true,
+    errorPrefix: '远程 MCP SSE 响应体积超过上限'
+  });
+  let dataLines = [];
+  let fallbackObj = null;
+  for (const line of `${sseText}\n`.split(/\r?\n/)) {
+    if (line === '') {
+      const parsed = parseEventData(dataLines);
+      dataLines = [];
+      if (parsed) {
+        if (parsed.id === rpcId && !parsed.method) return parsed;
+        if (isTargetFrame(parsed)) fallbackObj = parsed;
+      }
+    } else if (line.startsWith('data:')) {
+      const rawVal = line.slice(5);
+      dataLines.push(rawVal.startsWith(' ') ? rawVal.slice(1) : rawVal);
+    }
+  }
+  return fallbackObj;
+}
+
 async function invokeRemoteMcpRpc(fetchFn, cfg, toolName, toolArgs) {
   if (typeof fetchFn !== 'function') {
     throw new Error('当前运行环境未提供可用的 fetch 实现');
@@ -777,9 +870,10 @@ async function invokeRemoteMcpRpc(fetchFn, cfg, toolName, toolArgs) {
   if (cfg.bearerToken) {
     headers.Authorization = `Bearer ${cfg.bearerToken}`;
   }
+  const rpcId = `prism-rpc-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   const body = JSON.stringify({
     jsonrpc: '2.0',
-    id: `prism-rpc-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+    id: rpcId,
     method: 'tools/call',
     params: {
       name: toolName,
@@ -791,6 +885,7 @@ async function invokeRemoteMcpRpc(fetchFn, cfg, toolName, toolArgs) {
     method: 'POST',
     headers,
     body,
+    redirect: 'error',
     signal: AbortSignal.timeout(4500)
   });
 
@@ -804,27 +899,30 @@ async function invokeRemoteMcpRpc(fetchFn, cfg, toolName, toolArgs) {
     : '';
 
   let payload = null;
-  if (contentType.includes('text/event-stream') && typeof res.text === 'function') {
-    const sseText = await res.text();
-    const dataLines = sseText
-      .split(/\r?\n/)
-      .filter((l) => l.startsWith('data:'))
-      .map((l) => l.slice(5).trim())
-      .filter((l) => l && l !== '[DONE]');
-    if (dataLines.length) {
-      payload = JSON.parse(dataLines[dataLines.length - 1]);
+  if (contentType.includes('text/event-stream')) {
+    payload = await readRemoteSsePayload(res, rpcId, MAX_REMOTE_RESPONSE_BYTES);
+    if (!payload) {
+      throw new Error('远程 MCP SSE 流未返回匹配的 JSON-RPC 响应帧');
     }
-  } else if (typeof res.json === 'function') {
-    payload = await res.json();
-  } else if (typeof res.text === 'function') {
-    const raw = await res.text();
+  } else {
+    const raw = await readResponseTextCapped(res, MAX_REMOTE_RESPONSE_BYTES, {
+      rejectOnOverflow: true,
+      errorPrefix: '远程 MCP 响应体积超过上限'
+    });
     payload = raw ? JSON.parse(raw) : {};
   }
 
   if (payload?.error) {
     throw new Error(String(payload.error?.message || '远程 MCP tools/call 返回错误'));
   }
-  return payload?.result !== undefined ? payload.result : payload;
+  const result = payload?.result !== undefined ? payload.result : payload;
+  if (result && typeof result === 'object' && result.isError === true) {
+    const errText = Array.isArray(result.content)
+      ? result.content.map((b) => (typeof b?.text === 'string' ? b.text : '')).filter(Boolean).join(' ')
+      : '';
+    throw new Error(errText || '远程 MCP 工具返回 isError');
+  }
+  return result;
 }
 
 function extractRemoteEntriesFromResult(result) {
@@ -884,12 +982,13 @@ function parseSlotAndProjectFromTags(tags = []) {
 
 export function createHandoffMemoryStore(options = {}) {
   const platform = options.platform || process.platform;
-  const homeDir = path.resolve(options.homeDir || os.homedir());
-  const requestedStateDir = path.resolve(
-    options.stateDir || path.join(homeDir, '.gemini', 'antigravity', 'prism-suite')
+  const pathMod = platform === process.platform ? path : (platform === 'win32' ? path.win32 : path.posix);
+  const homeDir = pathMod.resolve(options.homeDir || os.homedir());
+  const requestedStateDir = pathMod.resolve(
+    options.stateDir || pathMod.join(homeDir, '.gemini', 'antigravity', 'prism-suite')
   );
-  const filePath = path.join(requestedStateDir, 'handoff-memories.jsonl');
-  const catalogJsonPath = path.join(requestedStateDir, 'handoff-catalog.json');
+  const filePath = pathMod.join(requestedStateDir, 'handoff-memories.jsonl');
+  const catalogJsonPath = pathMod.join(requestedStateDir, 'handoff-catalog.json');
   const maxEntries = Math.max(2, Math.min(5000, Math.floor(Number(options.maxEntries)) || 500));
 
   const mountInfo = detectNonNativeSqliteMount(requestedStateDir, {
@@ -906,20 +1005,36 @@ export function createHandoffMemoryStore(options = {}) {
 
   function resolveNativeFallbackDir() {
     if (options.nativeFallbackDir) {
-      return path.resolve(options.nativeFallbackDir);
+      return pathMod.resolve(options.nativeFallbackDir);
     }
-    // Prefer options.homeDir if safe; otherwise os.homedir(); otherwise os.tmpdir()
-    const homeCheck = detectNonNativeSqliteMount(homeDir, { platform });
-    if (!homeCheck.unsafe) {
-      return path.join(homeDir, '.gemini', 'antigravity', 'prism-suite', 'native-db', dirHash);
-    }
-    const osHome = path.resolve(os.homedir());
-    const osHomeCheck = detectNonNativeSqliteMount(osHome, { platform });
-    if (!osHomeCheck.unsafe) {
-      return path.join(osHome, '.gemini', 'antigravity', 'prism-suite', 'native-db', dirHash);
+    const mountCheckOpts = {
+      platform,
+      mountsText: options.mountsText ?? null,
+      realpathFn: options.realpathFn ?? null
+    };
+    const osHome = pathMod.resolve(os.homedir());
+    const xdgData = process.env.XDG_DATA_HOME ? pathMod.resolve(process.env.XDG_DATA_HOME) : '';
+    const candidates = platform === 'win32'
+      ? [
+          pathMod.join(homeDir, '.gemini', 'antigravity', 'prism-suite', 'native-db', dirHash),
+          pathMod.join(osHome, '.gemini', 'antigravity', 'prism-suite', 'native-db', dirHash)
+        ]
+      : [
+          ...(xdgData ? [pathMod.join(xdgData, 'prism-suite', 'native-db', dirHash)] : []),
+          pathMod.join(homeDir, '.local', 'share', 'prism-suite', 'native-db', dirHash),
+          pathMod.join(osHome, '.local', 'share', 'prism-suite', 'native-db', dirHash)
+        ];
+    for (const cand of new Set(candidates)) {
+      if (!detectNonNativeSqliteMount(cand, mountCheckOpts).unsafe) {
+        return cand;
+      }
     }
     const uidSuffix = typeof process.getuid === 'function' ? String(process.getuid()) : 'local';
-    return path.join(os.tmpdir(), `prism-suite-native-db-${uidSuffix}`, dirHash);
+    const tmpCand = pathMod.join(os.tmpdir(), `prism-suite-native-db-${uidSuffix}`, dirHash);
+    if (!detectNonNativeSqliteMount(tmpCand, mountCheckOpts).unsafe) {
+      return tmpCand;
+    }
+    return '';
   }
 
   const sqliteCap = options.forceJsonl === true
@@ -931,7 +1046,11 @@ export function createHandoffMemoryStore(options = {}) {
   const effectiveDbDir = backend === 'sqlite'
     ? (mountInfo.unsafe ? resolveNativeFallbackDir() : requestedStateDir)
     : '';
-  let dbPath = backend === 'sqlite' ? path.join(effectiveDbDir, 'handoff-memory.sqlite') : '';
+  if (backend === 'sqlite' && !effectiveDbDir) {
+    backend = 'jsonl';
+    fts5Enabled = false;
+  }
+  let dbPath = backend === 'sqlite' ? pathMod.join(effectiveDbDir, 'handoff-memory.sqlite') : '';
 
   let db = null;
   let txDepth = 0;
@@ -955,19 +1074,29 @@ export function createHandoffMemoryStore(options = {}) {
     if (backend !== 'sqlite') return null;
     if (db) return db;
 
+    let opened = null;
     try {
+      assertPathNotSymlink(effectiveDbDir, 'SQLite 目录');
       fs.mkdirSync(effectiveDbDir, { recursive: true, mode: 0o700 });
-      if (mountInfo.unsafe || options.nativeFallbackDir) {
-        try { fs.chmodSync(effectiveDbDir, 0o700); } catch {}
+      const dirStat = assertPathNotSymlink(effectiveDbDir, 'SQLite 目录');
+      if (platform !== 'win32' && process.platform !== 'win32' && typeof process.getuid === 'function') {
+        if (dirStat && typeof dirStat.uid === 'number' && dirStat.uid !== process.getuid()) {
+          throw new Error('SQLite 目录属主与当前进程 UID 不匹配');
+        }
       }
+      try { fs.chmodSync(effectiveDbDir, 0o700); } catch {}
+      assertPathNotSymlink(dbPath, 'SQLite 数据库文件');
 
-      const opened = withSqliteWarningSuppressed(() => new sqliteCap.DatabaseSync(dbPath));
+      opened = withSqliteWarningSuppressed(() => new sqliteCap.DatabaseSync(dbPath));
       try { fs.chmodSync(dbPath, 0o600); } catch {}
 
       opened.exec('PRAGMA busy_timeout = 2500;');
       try {
         opened.exec('PRAGMA journal_mode = WAL;');
-      } catch {
+      } catch (walErr) {
+        if (isSqliteTransientLockError(walErr)) {
+          throw walErr;
+        }
         try { opened.exec('PRAGMA journal_mode = DELETE;'); } catch {}
       }
       opened.exec('PRAGMA synchronous = NORMAL;');
@@ -1050,13 +1179,23 @@ export function createHandoffMemoryStore(options = {}) {
       });
 
       try { fs.chmodSync(dbPath, 0o600); } catch {}
+      for (const sidecar of [`${dbPath}-wal`, `${dbPath}-shm`]) {
+        try { if (fs.existsSync(sidecar)) fs.chmodSync(sidecar, 0o600); } catch {}
+      }
       return db;
-    } catch {
-      // Unrecoverable SQLite initialization error -> graceful fallback to atomic 0600 JSONL
+    } catch (err) {
+      if (opened && opened !== db) {
+        try { opened.close(); } catch {}
+      }
       if (db) {
         try { db.close(); } catch {}
         db = null;
       }
+      if (isSqliteTransientLockError(err)) {
+        // Transient multi-process lock: never silently split-brain to JSONL
+        throw err;
+      }
+      // Unrecoverable SQLite initialization error -> graceful fallback to atomic 0600 JSONL
       backend = 'jsonl';
       fts5Enabled = false;
       dbPath = '';
@@ -1125,7 +1264,7 @@ export function createHandoffMemoryStore(options = {}) {
       }
       const titleSeg = segmentForFts(`${entry.summary} ${entry.nextAction}`);
       const tagsSeg = segmentForFts(`${entry.slotTag} ${entry.tags.join(' ')} ${entry.project} ${entry.slot}`);
-      const bodySeg = segmentForFts(`${entry.verified} ${entry.content} ${entry.cwd} ${entry.gitBranch}`);
+      const bodySeg = segmentForFts(`${entry.verified} ${entry.content} ${entry.cwd} ${entry.gitBranch} ${entry.gitHead} ${entry.conversationPath}`);
       database
         .prepare('INSERT INTO memories_fts (id, title_seg, tags_seg, body_seg) VALUES (?, ?, ?, ?)')
         .run(entry.id, titleSeg, tagsSeg, bodySeg);
@@ -1376,13 +1515,7 @@ export function createHandoffMemoryStore(options = {}) {
     if (!cfg.url) return;
 
     remoteState.inFlight += 1;
-    const contentLines = [
-      `[${entry.slotTag}] (${entry.createdAt})`,
-      `工作目录：${entry.cwd || '(未指定)'}`,
-      `Git：${entry.gitBranch ? `${entry.gitBranch} @ ${entry.gitHead || '-'} (改动 ${entry.gitDirtyCount} 项)` : '非 Git 目录'}`,
-      `已验证进度：${entry.verified || entry.summary}`,
-      `下一步：${entry.nextAction || '继续推进'}`
-    ];
+    const contentLines = buildMemoryContentLines(entry);
     const remoteTags = cfg.syncCatalog && !entry.tags.includes('catalog:master')
       ? [...entry.tags, 'catalog:master']
       : entry.tags;
@@ -1432,7 +1565,7 @@ export function createHandoffMemoryStore(options = {}) {
       throwTaintedBlockedError();
     }
 
-    const nowMs = Number(input.createdAtMs) || Date.now();
+    const nowMs = clampValidTimestampMs(input.createdAtMs, Date.now());
     const createdAt = input.createdAt ? redactMemoryText(String(input.createdAt).slice(0, 64)) : new Date(nowMs).toISOString();
     const project = normalizeSlug(
       input.project || (input.cwd ? path.basename(String(input.cwd)) : 'workspace'),
@@ -1529,11 +1662,16 @@ export function createHandoffMemoryStore(options = {}) {
     return entry;
   }
 
-  function list({ project = '', slot = '', tag = '', limit = 10, includeTainted = false } = {}) {
-    const cleanProject = project ? normalizeSlug(project, '', 48) : '';
-    const cleanSlot = slot ? normalizeSlug(slot, '', 32) : '';
+  function listInternal({ project = '', slot = '', tag = '', limit = 10, includeTainted = false, maxCap = 200 } = {}) {
+    const hasProjectFilter = String(project ?? '').trim() !== '';
+    const hasSlotFilter = String(slot ?? '').trim() !== '';
+    const cleanProject = hasProjectFilter ? normalizeSlug(project, '', 48) : '';
+    const cleanSlot = hasSlotFilter ? normalizeSlug(slot, '', 32) : '';
+    if ((hasProjectFilter && !cleanProject) || (hasSlotFilter && !cleanSlot)) {
+      return { ok: true, total: 0, entries: [] };
+    }
     const cleanTag = String(tag || '').trim().toLowerCase();
-    const cap = Math.max(1, Math.min(200, Number(limit) || 10));
+    const cap = Math.max(1, Math.min(maxCap, Number(limit) || 10));
     const allowTainted = includeTainted === true;
 
     const database = ensureDb();
@@ -1597,14 +1735,23 @@ export function createHandoffMemoryStore(options = {}) {
     };
   }
 
+  function list(opts = {}) {
+    return listInternal({ ...opts, maxCap: 200 });
+  }
+
   function search({ query = '', project = '', slot = '', tag = '', limit = 10, includeTainted = false } = {}) {
-    const cleanRaw = redactMemoryText(String(query ?? '').replace(/\0/g, '').trim());
+    const cleanRaw = String(query ?? '').replace(/\0/g, '').trim();
     if (!cleanRaw) {
       return list({ project, slot, tag, limit, includeTainted });
     }
 
-    const cleanProject = project ? normalizeSlug(project, '', 48) : '';
-    const cleanSlot = slot ? normalizeSlug(slot, '', 32) : '';
+    const hasProjectFilter = String(project ?? '').trim() !== '';
+    const hasSlotFilter = String(slot ?? '').trim() !== '';
+    const cleanProject = hasProjectFilter ? normalizeSlug(project, '', 48) : '';
+    const cleanSlot = hasSlotFilter ? normalizeSlug(slot, '', 32) : '';
+    if ((hasProjectFilter && !cleanProject) || (hasSlotFilter && !cleanSlot)) {
+      return { ok: true, total: 0, entries: [] };
+    }
     const cleanTag = String(tag || '').trim().toLowerCase();
     const cap = Math.max(1, Math.min(50, Number(limit) || 10));
     const allowTainted = includeTainted === true;
@@ -1616,55 +1763,66 @@ export function createHandoffMemoryStore(options = {}) {
 
     const database = ensureDb();
     if (database && fts5Enabled && ftsMatchExpr) {
-      const rows = database
-        .prepare(
-          `SELECT m.*, (-bm25(memories_fts, 0.0, 10.0, 6.0, 2.0)) AS fts_score
-           FROM memories_fts
-           JOIN memories m ON m.id = memories_fts.id
-           WHERE memories_fts MATCH ?
-             AND (? = 1 OR m.tainted = 0)
-             AND (? = '' OR m.project = ?)
-             AND (? = '' OR m.slot = ?)`
-        )
-        .all(
-          ftsMatchExpr,
-          allowTainted ? 1 : 0,
-          cleanProject,
-          cleanProject,
-          cleanSlot,
-          cleanSlot
-        );
+      try {
+        const rows = database
+          .prepare(
+            `SELECT m.*, (-bm25(memories_fts, 0.0, 10.0, 6.0, 2.0)) AS fts_score
+             FROM memories_fts
+             JOIN memories m ON m.id = memories_fts.id
+             WHERE memories_fts MATCH ?
+               AND (? = 1 OR m.tainted = 0)
+               AND (? = '' OR m.project = ?)
+               AND (? = '' OR m.slot = ?)`
+          )
+          .all(
+            ftsMatchExpr,
+            allowTainted ? 1 : 0,
+            cleanProject,
+            cleanProject,
+            cleanSlot,
+            cleanSlot
+          );
 
-      const scored = [];
-      for (const row of rows) {
-        const entry = rowToEntry(row);
-        if (cleanTag) {
-          const hasTag = Array.isArray(entry.tags) && entry.tags.some((t) => String(t).toLowerCase() === cleanTag);
-          if (!hasTag && String(entry.slotTag || '').toLowerCase() !== cleanTag) continue;
+        const scored = [];
+        for (const row of rows) {
+          const entry = rowToEntry(row);
+          if (cleanTag) {
+            const hasTag = Array.isArray(entry.tags) && entry.tags.some((t) => String(t).toLowerCase() === cleanTag);
+            if (!hasTag && String(entry.slotTag || '').toLowerCase() !== cleanTag) continue;
+          }
+          const ftsRaw = Math.max(0.0001, Number(row.fts_score) || 0.0001);
+          const totalScore = computeCombinedSearchScore(entry, cleanQueryLower, segmentedTokens, ftsRaw, nowMs);
+          if (totalScore !== null) {
+            scored.push({ entry, score: totalScore });
+          }
         }
-        const ftsRaw = Math.max(0.0001, Number(row.fts_score) || 0.0001);
-        const totalScore = computeCombinedSearchScore(entry, cleanQueryLower, segmentedTokens, ftsRaw, nowMs);
-        if (totalScore !== null) {
-          scored.push({ entry, score: totalScore });
-        }
+
+        scored.sort((a, b) => {
+          if (b.score !== a.score) return b.score - a.score;
+          const diffTs = (Number(b.entry.createdAtMs) || 0) - (Number(a.entry.createdAtMs) || 0);
+          if (diffTs !== 0) return diffTs;
+          return String(b.entry.id).localeCompare(String(a.entry.id));
+        });
+
+        return {
+          ok: true,
+          total: scored.length,
+          entries: scored.slice(0, cap).map((s) => s.entry)
+        };
+      } catch {
+        // Fall back to full scan below if FTS5 query fails
       }
-
-      scored.sort((a, b) => {
-        if (b.score !== a.score) return b.score - a.score;
-        const diffTs = (Number(b.entry.createdAtMs) || 0) - (Number(a.entry.createdAtMs) || 0);
-        if (diffTs !== 0) return diffTs;
-        return String(b.entry.id).localeCompare(String(a.entry.id));
-      });
-
-      return {
-        ok: true,
-        total: scored.length,
-        entries: scored.slice(0, cap).map((s) => s.entry)
-      };
     }
 
     // Fallback search when FTS5 unavailable, JSONL mode, or query contains only punctuation operators
-    const { entries: pool } = list({ project, slot, tag, limit: 200, includeTainted: allowTainted });
+    const { entries: pool } = listInternal({
+      project,
+      slot,
+      tag,
+      limit: maxEntries,
+      includeTainted: allowTainted,
+      maxCap: maxEntries
+    });
     const scored = [];
     for (const entry of pool) {
       const totalScore = computeCombinedSearchScore(entry, cleanQueryLower, segmentedTokens, 0, nowMs);
@@ -1694,6 +1852,7 @@ export function createHandoffMemoryStore(options = {}) {
         if (fts5Enabled) {
           txDb.prepare('DELETE FROM memories_fts WHERE id = ?').run(cleanId);
         }
+        txDb.prepare("UPDATE catalog_slots SET last_memory_id = '' WHERE last_memory_id = ?").run(cleanId);
         return Number(res?.changes) > 0;
       });
       return { ok: true, removed };
@@ -1705,6 +1864,17 @@ export function createHandoffMemoryStore(options = {}) {
       return { ok: true, removed: false };
     }
     writeJsonlAtomic0600(filePath, filtered);
+    if (fs.existsSync(catalogJsonPath)) {
+      const slots = readCatalogSlotsJsonl();
+      let changed = false;
+      for (const s of slots) {
+        if (s.lastMemoryId === cleanId) {
+          s.lastMemoryId = '';
+          changed = true;
+        }
+      }
+      if (changed) writeCatalogSlotsJsonl(slots);
+    }
     return { ok: true, removed: true };
   }
 
@@ -1740,7 +1910,11 @@ export function createHandoffMemoryStore(options = {}) {
   }
 
   function getMasterCatalog({ project = '', limit = 30, includeTainted = false } = {}) {
-    const cleanProject = project ? normalizeSlug(project, '', 48) : '';
+    const hasProjectFilter = String(project ?? '').trim() !== '';
+    const cleanProject = hasProjectFilter ? normalizeSlug(project, '', 48) : '';
+    if (hasProjectFilter && !cleanProject) {
+      return { ok: true, tag: 'catalog:master', total: 0, slots: [], entries: [] };
+    }
     const cap = Math.max(1, Math.min(200, Number(limit) || 30));
     const allowTainted = includeTainted === true;
 
@@ -1821,28 +1995,56 @@ export function createHandoffMemoryStore(options = {}) {
       let updatedSlots = 0;
       let importedMemories = 0;
 
+      const markExternal = (val, maxLen) => {
+        const clean = redactMemoryText(String(val || '').trim());
+        if (!clean) return '';
+        const tagged = clean.startsWith(EXTERNAL_UNTRUSTED_PREFIX)
+          ? clean
+          : `${EXTERNAL_UNTRUSTED_PREFIX} ${clean}`;
+        return tagged.slice(0, maxLen);
+      };
+
       const database = ensureDb();
       const applyItems = (txDb) => {
         for (const item of rawItems) {
           if (!item || typeof item !== 'object') continue;
-          if (item.tainted === true || isTaintedInput(item)) continue;
-
           const meta = item.metadata && typeof item.metadata === 'object' ? item.metadata : {};
+          if (
+            item.tainted === true ||
+            item.tainted === 1 ||
+            meta.tainted === true ||
+            meta.tainted === 1 ||
+            item.visibility === 'quarantine' ||
+            meta.visibility === 'quarantine' ||
+            isTaintedInput(item) ||
+            isTaintedInput(meta)
+          ) {
+            continue;
+          }
+
           const rawTags = Array.isArray(item.tags)
             ? item.tags
             : Array.isArray(meta.tags)
               ? meta.tags
               : [];
           const cleanTags = rawTags.map((t) => redactMemoryText(String(t || '').trim())).filter(Boolean);
+          if (cleanTags.some((t) => {
+            const lower = t.toLowerCase();
+            return lower === 'tainted:quarantine' || lower.startsWith('quarantine:');
+          })) {
+            continue;
+          }
           const tagInfo = parseSlotAndProjectFromTags(cleanTags);
+          const parsedFromSlotTag = parseSlotAndProjectFromTags([item.slotTag || meta.slotTag || '']);
 
-          const hasRelevantTag =
+          const isCatalogOrSlotRelevant =
             tagInfo.isCatalog ||
             tagInfo.isHandoff ||
-            Boolean(item.project || meta.project || item.slot || meta.slot || item.slotTag || meta.slotTag);
+            parsedFromSlotTag.isHandoff ||
+            Boolean(item.slot || meta.slot || item.slotTag || meta.slotTag);
+          const hasRelevantTag = isCatalogOrSlotRelevant || Boolean(item.project || meta.project);
           if (!hasRelevantTag) continue;
 
-          const parsedFromSlotTag = parseSlotAndProjectFromTags([item.slotTag || meta.slotTag || '']);
           const project = normalizeSlug(
             item.project || meta.project || tagInfo.project || parsedFromSlotTag.project || 'workspace',
             'workspace',
@@ -1853,13 +2055,16 @@ export function createHandoffMemoryStore(options = {}) {
             'default',
             32
           );
-          const tsMs =
-            Number(item.updatedAtMs || item.createdAtMs || meta.createdAtMs) ||
-            Date.parse(item.updatedAt || item.createdAt || meta.createdAt || '') ||
-            Date.now();
-          const summary = redactMemoryText(
-            String(item.summary || meta.summary || item.content || '').trim().slice(0, 600)
-          );
+          const parsedTs =
+            Number(item.updatedAtMs || item.createdAtMs || meta.updatedAtMs || meta.createdAtMs) ||
+            Date.parse(item.updatedAt || item.createdAt || meta.updatedAt || meta.createdAt || '') ||
+            0;
+          // Clamp future timestamps to now and dateless items to epoch+1ms so remote clocks can never pin top rank
+          const nowClampMs = Date.now();
+          const tsMs = Number.isFinite(parsedTs) && parsedTs > 0
+            ? Math.min(nowClampMs, Math.round(parsedTs))
+            : 1;
+          const summary = markExternal(item.summary || meta.summary || item.content || '', 600);
           const cwd = redactMemoryText(String(item.cwd || meta.cwd || '').trim().slice(0, 300));
           const gitBranch = redactMemoryText(String(item.gitBranch || meta.gitBranch || '').trim().slice(0, 96));
           const activeAccount = redactMemoryText(
@@ -1867,38 +2072,48 @@ export function createHandoffMemoryStore(options = {}) {
           );
           const status = redactMemoryText(String(item.status || meta.status || 'active').trim().toLowerCase().slice(0, 24)) || 'active';
 
-          if (txDb) {
-            upsertCatalogSlotRowSqlite(
-              txDb,
-              { project, slot, cwd, summary, gitBranch, activeAccount, status, updatedAtMs: tsMs },
-              { respectNewerExisting: true }
-            );
-          } else {
-            upsertCatalogSlotJsonl(
-              { project, slot, cwd, summary, gitBranch, activeAccount, status, updatedAtMs: tsMs },
-              { respectNewerExisting: true }
-            );
+          if (isCatalogOrSlotRelevant) {
+            if (txDb) {
+              upsertCatalogSlotRowSqlite(
+                txDb,
+                { project, slot, cwd, summary, gitBranch, activeAccount, status, updatedAtMs: tsMs },
+                { respectNewerExisting: true }
+              );
+            } else {
+              upsertCatalogSlotJsonl(
+                { project, slot, cwd, summary, gitBranch, activeAccount, status, updatedAtMs: tsMs },
+                { respectNewerExisting: true }
+              );
+            }
+            updatedSlots += 1;
           }
-          updatedSlots += 1;
 
           if (tagInfo.isHandoff || parsedFromSlotTag.isHandoff || item.verified || item.nextAction || meta.verified || meta.nextAction) {
+            const rawContent = String(item.content || '');
+            const deterministicHash = crypto
+              .createHash('sha256')
+              .update(`${project}\0${slot}\0${summary}\0${rawContent}`)
+              .digest('hex')
+              .slice(0, 12);
+            const remoteId = item.id || meta.id || `remote-${project}-${slot}-${deterministicHash}`;
+            const isolatedTags = Array.from(new Set(['external:untrusted', ...cleanTags]));
             const candidate = boundEntryBytes(
               sanitizeStoredEntry({
-                id: item.id || meta.id || `remote-${project}-${slot}-${tsMs}`,
+                id: remoteId,
                 createdAtMs: tsMs,
-                createdAt: item.createdAt || meta.createdAt || new Date(tsMs).toISOString(),
+                createdAt: new Date(tsMs).toISOString(),
                 project,
                 slot,
-                tags: cleanTags,
+                tags: isolatedTags,
                 source: 'remote-mcp',
                 summary,
                 cwd,
                 gitBranch,
                 gitHead: item.gitHead || meta.gitHead || '',
                 gitDirtyCount: item.gitDirtyCount ?? meta.gitDirtyCount ?? 0,
-                verified: item.verified || meta.verified || '',
-                nextAction: item.nextAction || meta.nextAction || '',
-                content: item.content || '',
+                verified: markExternal(item.verified || meta.verified || '', 1200),
+                nextAction: markExternal(item.nextAction || meta.nextAction || '', 800),
+                content: markExternal(rawContent, 2400),
                 tainted: false
               })
             );
@@ -1910,7 +2125,10 @@ export function createHandoffMemoryStore(options = {}) {
               } else {
                 const existing = readAllNewestFirstJsonl();
                 if (!existing.some((e) => e.id === candidate.id)) {
-                  writeJsonlAtomic0600(filePath, [candidate, ...existing].slice(0, maxEntries));
+                  const merged = [candidate, ...existing].sort(
+                    (a, b) => (Number(b.createdAtMs) || 0) - (Number(a.createdAtMs) || 0)
+                  );
+                  writeJsonlAtomic0600(filePath, merged.slice(0, maxEntries));
                   importedMemories += 1;
                 }
               }
@@ -2000,13 +2218,7 @@ export function createHandoffMemoryStore(options = {}) {
 
   function formatExternalMemoryStorePrompt(entry) {
     if (!entry) return '';
-    const contentLines = [
-      `[${entry.slotTag}] (${entry.createdAt})`,
-      `工作目录：${entry.cwd || '(未指定)'}`,
-      `Git：${entry.gitBranch ? `${entry.gitBranch} @ ${entry.gitHead || '-'} (改动 ${entry.gitDirtyCount} 项)` : '非 Git 目录'}`,
-      `已验证进度：${entry.verified || entry.summary}`,
-      `下一步：${entry.nextAction || '继续推进'}`
-    ];
+    const contentLines = buildMemoryContentLines(entry);
     return [
       '请调用 memory_store（或写入你外部的 memory-mcp）记录以下 4 要素交接记忆：',
       `- tags: ${JSON.stringify(entry.tags)}`,

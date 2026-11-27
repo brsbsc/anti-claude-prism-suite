@@ -16,20 +16,25 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
+  acquireFileLock,
   detectIsWsl,
   listWslWindowsUserDirs,
   resolvePowerShellExe,
   resolveSafeExecCwd,
-  resolveWslInteropEnv
+  resolveWslInteropEnv,
+  writeJsonAtomic
 } from './platform-utils.mjs';
 
 const execFileAsync = promisify(execFile);
 
 export const UPSTREAM_SCHEMA_VERSION = 2;
 const RADAR_CACHE_SCHEMA_VERSION = 4;
-export const PRISM_OFFICIAL_REPO = 'wushuai0802/anti-claude-prism-suite';
+const PRISM_OFFICIAL_REPO = 'wushuai0802/anti-claude-prism-suite';
+const REPO_SLUG_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const DEFAULT_CACHE_TTL_MS = 10 * 60 * 1000;
 const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_TAR_ENTRIES = 2000;
+const MAX_TAR_UNCOMPRESSED_BYTES = 100 * 1024 * 1024;
 const ALLOWED_DOWNLOAD_HOSTS = new Set([
   'github.com',
   'objects.githubusercontent.com',
@@ -38,69 +43,42 @@ const ALLOWED_DOWNLOAD_HOSTS = new Set([
 ]);
 
 const UPSTREAM_ZH_META = {
-  antiClaude: {
-    displayNameZh: 'Anti-Claude（主界面核心）',
-    roleZh: 'Antigravity 界面美化与守护进程上游'
-  },
   'anti-claude': {
     displayNameZh: 'Anti-Claude（主界面核心）',
     roleZh: 'Antigravity 界面美化与守护进程上游'
-  },
-  agyPowertools: {
-    displayNameZh: 'agy-powertools（启动器与效率参考）',
-    roleZh: '快捷方式启动、多账号与多语言思路参考'
   },
   'agy-powertools': {
     displayNameZh: 'agy-powertools（启动器与效率参考）',
     roleZh: '快捷方式启动、多账号与多语言思路参考'
   },
-  obsidianPrism: {
-    displayNameZh: 'obsidian-prism（视觉特效参考）',
-    roleZh: '粒子球与动效交互参考（GPL 仅借思路不搬代码）'
-  },
   'obsidian-prism': {
     displayNameZh: 'obsidian-prism（视觉特效参考）',
     roleZh: '粒子球与动效交互参考（GPL 仅借思路不搬代码）'
-  },
-  agySwitch: {
-    displayNameZh: 'agy-switch（切号机制参考）',
-    roleZh: '多账号切换流程与安全边界参考'
   },
   'agy-switch': {
     displayNameZh: 'agy-switch（切号机制参考）',
     roleZh: '多账号切换流程与安全边界参考'
   },
-  windowsMcp: {
-    displayNameZh: 'Windows-MCP（桌面无障碍操控参考）',
-    roleZh: 'UIA 无障碍树压缩、操控状态浮层与显式授权机制参考'
-  },
   'windows-mcp': {
     displayNameZh: 'Windows-MCP（桌面无障碍操控参考）',
     roleZh: 'UIA 无障碍树压缩、操控状态浮层与显式授权机制参考'
   },
-  playwrightMcp: {
-    displayNameZh: 'Playwright-MCP（浏览器无障碍操控参考）',
-    roleZh: '浏览器扩展桥协议与无障碍快照压缩策略参考（Apache-2.0）'
-  },
   'playwright-mcp': {
     displayNameZh: 'Playwright-MCP（浏览器无障碍操控参考）',
     roleZh: '浏览器扩展桥协议与无障碍快照压缩策略参考（Apache-2.0）'
-  },
-  macCodexCua: {
-    displayNameZh: 'antigravity-codex-computer-control（安全策略与增量对比参考）',
-    roleZh: '操控安全拦截策略与动作前后增量 diff 思路参考（禁二进制）'
   },
   'antigravity-codex-computer-control': {
     displayNameZh: 'antigravity-codex-computer-control（安全策略与增量对比参考）',
     roleZh: '操控安全拦截策略与动作前后增量 diff 思路参考（禁二进制）'
   }
 };
+UPSTREAM_ZH_META['mac-codex-cua'] = UPSTREAM_ZH_META['antigravity-codex-computer-control'];
 
 function resolveUpstreamZhMeta(key, entry = {}) {
+  const kebabKey = String(key || '').replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
   const repoSlug = String(entry?.repo || '').split('/').pop()?.toLowerCase() || '';
   return (
-    UPSTREAM_ZH_META[key] ||
-    UPSTREAM_ZH_META[String(key || '').toLowerCase()] ||
+    UPSTREAM_ZH_META[kebabKey] ||
     UPSTREAM_ZH_META[repoSlug] || {
       displayNameZh: entry?.repo || key,
       roleZh: entry?.role || ''
@@ -109,10 +87,38 @@ function resolveUpstreamZhMeta(key, entry = {}) {
 }
 
 export function compareSemver(a, b) {
-  const pa = String(a || '').replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
-  const pb = String(b || '').replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
+  const parse = (v) => {
+    const clean = String(v || '').replace(/^v/i, '').trim().split('+')[0];
+    const dashIdx = clean.indexOf('-');
+    const core = (dashIdx === -1 ? clean : clean.slice(0, dashIdx)).split('.').map((n) => parseInt(n, 10) || 0);
+    const pre = dashIdx === -1 ? [] : clean.slice(dashIdx + 1).split('.').filter(Boolean);
+    return { core, pre };
+  };
+  const pa = parse(a);
+  const pb = parse(b);
   for (let i = 0; i < 3; i++) {
-    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+    if ((pa.core[i] || 0) !== (pb.core[i] || 0)) return (pa.core[i] || 0) - (pb.core[i] || 0);
+  }
+  if (pa.pre.length === 0 && pb.pre.length === 0) return 0;
+  if (pa.pre.length === 0) return 1;
+  if (pb.pre.length === 0) return -1;
+  const len = Math.max(pa.pre.length, pb.pre.length);
+  for (let i = 0; i < len; i++) {
+    if (i >= pa.pre.length) return -1;
+    if (i >= pb.pre.length) return 1;
+    const sa = pa.pre[i];
+    const sb = pb.pre[i];
+    const na = /^\d+$/.test(sa) ? Number(sa) : null;
+    const nb = /^\d+$/.test(sb) ? Number(sb) : null;
+    if (na !== null && nb !== null) {
+      if (na !== nb) return na - nb;
+    } else if (na !== null) {
+      return -1;
+    } else if (nb !== null) {
+      return 1;
+    } else if (sa !== sb) {
+      return sa < sb ? -1 : 1;
+    }
   }
   return 0;
 }
@@ -364,7 +370,7 @@ function classifyCommitMessage(msg, role = '') {
   return 'other';
 }
 
-export function loadUpstreamConfig(configPath) {
+function loadUpstreamConfig(configPath) {
   const resolved = path.resolve(configPath);
   const raw = JSON.parse(fs.readFileSync(resolved, 'utf8'));
   return { configPath: resolved, config: raw };
@@ -594,7 +600,10 @@ export async function checkUpstreams({
   const results = await Promise.all(
     keys.map(async (key) => {
       const entry = upstreams[key];
-      const repo = entry.repo;
+      const repo = String(entry?.repo || '').trim();
+      if (!REPO_SLUG_RE.test(repo)) {
+        return evaluateRepoUpdate(key, entry || {}, { error: `非法上游仓库标识: ${repo || '(空)'}` });
+      }
       try {
         const fetchReleasesWithFallback = async () => {
           try {
@@ -712,8 +721,7 @@ export async function checkUpstreams({
 
   if (cacheFile && summary.errors === 0) {
     try {
-      fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
-      fs.writeFileSync(cacheFile, JSON.stringify({ cacheKey, checkedAtMs: report.checkedAtMs, report }, null, 2), 'utf8');
+      writeJsonAtomic(cacheFile, { cacheKey, checkedAtMs: report.checkedAtMs, report }, { mode: 0o600, dirMode: 0o700, rejectSymlink: true });
     } catch {
       // non-fatal cache write
     }
@@ -809,14 +817,18 @@ export function syncUpstreamBaseline(configPath, { keys = [], report = null } = 
     if (keys.length && !keys.includes(k)) continue;
     const hit = byKey.get(k);
     if (!hit || hit.impactLevel === 'ERROR') continue;
-    if (hit.latestTag) entry.baselineTag = hit.latestTag;
-    if (hit.latestCommit) entry.baselineCommit = hit.latestCommit.slice(0, 7);
-    updatedKeys.push(k);
+    const nextTag = hit.latestTag || entry.baselineTag;
+    const nextCommit = hit.latestCommit ? hit.latestCommit.slice(0, 7) : entry.baselineCommit;
+    if (nextTag !== entry.baselineTag || nextCommit !== entry.baselineCommit) {
+      entry.baselineTag = nextTag;
+      entry.baselineCommit = nextCommit;
+      updatedKeys.push(k);
+    }
   }
 
   if (updatedKeys.length) {
     config.updatedAt = new Date().toISOString().slice(0, 10);
-    fs.writeFileSync(resolvedCfg, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+    writeJsonAtomic(resolvedCfg, config, { mode: null, dirMode: 0o755 });
   }
 
   return { ok: true, configPath: resolvedCfg, updatedKeys, config };
@@ -831,13 +843,16 @@ export function syncUpstreamBaseline(configPath, { keys = [], report = null } = 
 function isAllowedPrismReleaseAssetUrl(url, repo = PRISM_OFFICIAL_REPO) {
   const s = String(url || '').trim();
   const escaped = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^https://github\\.com/${escaped}/releases/download/v\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?/[A-Za-z0-9._-]+$`).test(s);
+  return new RegExp(`^https://github\\.com/${escaped}/releases/download/v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?/[A-Za-z0-9._-]+$`).test(s);
 }
 
 function isAllowedPrismTarballUrl(url, repo = PRISM_OFFICIAL_REPO) {
   const s = String(url || '').trim();
   const escaped = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^https://github\\.com/${escaped}/archive/refs/tags/v\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?\\.tar\\.gz$`).test(s);
+  return (
+    new RegExp(`^https://github\\.com/${escaped}/archive/refs/tags/v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?\\.tar\\.gz$`).test(s) ||
+    new RegExp(`^https://github\\.com/${escaped}/releases/download/v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?/[A-Za-z0-9._-]+\\.tar\\.gz$`).test(s)
+  );
 }
 
 function extractReleaseHighlights(body) {
@@ -862,17 +877,33 @@ function extractReleaseHighlights(body) {
   return out;
 }
 
-function resolveWindowsNtfsTempDirForUpdate() {
+function createWindowsNtfsTempDirForUpdate() {
+  const mkSecureDir = (baseDir) => {
+    const dir = fs.mkdtempSync(path.join(baseDir, 'prism-suite-update-'));
+    try { fs.chmodSync(dir, 0o700); } catch {}
+    return dir;
+  };
   if (process.platform === 'win32') {
-    return path.join(os.tmpdir(), `prism-suite-update-${Date.now()}`);
+    return mkSecureDir(os.tmpdir());
   }
-  for (const userDir of listWslWindowsUserDirs()) {
+  const userDirs = listWslWindowsUserDirs();
+  let curUser = '';
+  try { curUser = String(os.userInfo().username || '').toLowerCase(); } catch {}
+  const prioritized = curUser
+    ? [
+        ...userDirs.filter((d) => path.basename(d).toLowerCase() === curUser),
+        ...userDirs.filter((d) => path.basename(d).toLowerCase() !== curUser)
+      ]
+    : userDirs;
+  for (const userDir of prioritized) {
     const t = path.join(userDir, 'AppData', 'Local', 'Temp');
     if (fs.existsSync(t)) {
-      return path.join(t, `prism-suite-update-${Date.now()}`);
+      try {
+        return mkSecureDir(t);
+      } catch {}
     }
   }
-  return path.join(os.tmpdir(), `prism-suite-update-${Date.now()}`);
+  return mkSecureDir(os.tmpdir());
 }
 
 function assertAllowedDownloadHost(urlStr) {
@@ -966,92 +997,127 @@ function parseStrictSha256File(text, expectedFileName = 'Anti-Claude-Prism-Suite
 }
 
 function acquireSelfUpdateLock(lockDir = path.join(os.homedir(), '.gemini', 'antigravity', 'prism-suite')) {
-  fs.mkdirSync(lockDir, { recursive: true });
-  const lockFile = path.join(lockDir, 'self-update.lock');
-  const token = crypto.randomBytes(12).toString('hex');
-  const STALE_MS = 3 * 60 * 1000;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, createdAt: Date.now(), token }), { flag: 'wx', mode: 0o600 });
-      return () => {
-        try {
-          if (!fs.existsSync(lockFile)) return;
-          const cur = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
-          if (cur && cur.token === token) fs.rmSync(lockFile, { force: true });
-        } catch {}
-      };
-    } catch (err) {
-      if (!err || err.code !== 'EEXIST') throw err;
-      let stale = false;
-      try {
-        const cur = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
-        const age = Date.now() - Number(cur?.createdAt || 0);
-        let alive = false;
-        try {
-          if (Number(cur?.pid) > 0) {
-            process.kill(Number(cur.pid), 0);
-            alive = true;
-          }
-        } catch (e) {
-          alive = e && e.code === 'EPERM';
-        }
-        if (age > STALE_MS || !alive) stale = true;
-      } catch {
-        stale = true;
-      }
-      if (stale && attempt === 0) {
-        try { fs.rmSync(lockFile, { force: true }); } catch {}
-        continue;
-      }
-      throw Object.assign(new Error('已有更新任务正在进行中，请勿重复点击'), { code: 'UPDATE_IN_PROGRESS' });
-    }
-  }
-  throw Object.assign(new Error('无法获取更新互斥锁'), { code: 'UPDATE_IN_PROGRESS' });
+  return acquireFileLock(path.join(lockDir, 'self-update.lock'), {
+    staleMs: 3 * 60 * 1000,
+    errorCode: 'UPDATE_IN_PROGRESS',
+    errorMessage: '已有更新任务正在进行中，请勿重复点击'
+  });
 }
 
-function assertSafeTarEntryPath(entryPath) {
-  const clean = String(entryPath || '').replace(/\r$/, '').trim();
-  if (!clean) return;
+export function assertSafeTarEntryPath(entryPath) {
+  const clean = String(entryPath || '').replace(/\r$/, '');
+  if (!clean || !clean.trim()) {
+    throw Object.assign(new Error('归档包含空白路径条目，已中止解压'), { code: 'UNSAFE_TAR_ENTRY' });
+  }
   if (clean.includes('\0') || clean.startsWith('/') || clean.startsWith('\\') || /^[A-Za-z]:/.test(clean)) {
     throw Object.assign(new Error(`归档包含绝对路径，已中止解压: ${clean}`), { code: 'UNSAFE_TAR_ENTRY' });
   }
   const segs = clean.split(/[\\/]+/);
-  if (segs.includes('..')) {
-    throw Object.assign(new Error(`归档包含路径穿越条目，已中止解压: ${clean}`), { code: 'UNSAFE_TAR_ENTRY' });
+  if (segs.some((s) => s === '..' || /^[A-Za-z]:/.test(s))) {
+    throw Object.assign(new Error(`归档包含路径穿越或盘符段条目，已中止解压: ${clean}`), { code: 'UNSAFE_TAR_ENTRY' });
   }
 }
 
-async function auditTarEntriesSafe(tarPath, execFn) {
+export function parseTarVerboseSize(line) {
+  // Match integer byte size immediately preceding GNU ("2026-11-26 09:00") or BSD ("Nov 26 09:00" / "Nov 26 2026") timestamp,
+  // regardless of whether owner/group columns are names or numeric UIDs (e.g. 0/0 or 0 0).
+  const m = String(line || '').match(
+    /\s(\d+)\s+(?:\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?|[A-Za-z]{3}\s+\d{1,2}\s+(?:\d{1,2}:\d{2}(?::\d{2})?|\d{4})|\d{1,2}\s+[A-Za-z]{3}\s+(?:\d{1,2}:\d{2}(?::\d{2})?|\d{4}))\s+/
+  );
+  if (m) {
+    const n = Number(m[1]);
+    if (Number.isSafeInteger(n) && n >= 0) return n;
+  }
+  throw Object.assign(new Error(`无法解析归档条目体积，已拒绝解压: ${String(line || '').slice(0, 80)}`), {
+    code: 'UNSAFE_TAR_ENTRY'
+  });
+}
+
+export async function auditTarEntriesSafe(tarPath, execFn) {
   const listed = await execFn('tar', ['-tvzf', tarPath], { timeout: 20000, maxBuffer: 4 * 1024 * 1024 });
   const verboseLines = String(listed?.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (verboseLines.length === 0) {
+    throw Object.assign(new Error('归档条目列表为空，已中止解压'), { code: 'UNSAFE_TAR_ENTRY' });
+  }
+  if (verboseLines.length > MAX_TAR_ENTRIES) {
+    throw Object.assign(new Error(`归档条目数超限 (${verboseLines.length} > ${MAX_TAR_ENTRIES})，已中止解压`), { code: 'UNSAFE_TAR_ENTRY' });
+  }
+  let totalBytes = 0;
   for (const line of verboseLines) {
     const typeChar = line[0];
-    if (typeChar === 'l' || typeChar === 'h' || typeChar === 'c' || typeChar === 'b' || typeChar === 'p' || typeChar === 's' || typeChar === 'D') {
-      throw Object.assign(new Error(`归档包含不安全链接或设备项，已中止解压: ${line.slice(0, 80)}`), { code: 'UNSAFE_TAR_ENTRY' });
+    // Strict allowlist: regular files ('-') and directories ('d') only
+    if (typeChar !== '-' && typeChar !== 'd') {
+      throw Object.assign(new Error(`归档包含非普通文件/目录项，已中止解压: ${line.slice(0, 80)}`), { code: 'UNSAFE_TAR_ENTRY' });
+    }
+    if (typeChar === '-') {
+      totalBytes += parseTarVerboseSize(line);
+      if (totalBytes > MAX_TAR_UNCOMPRESSED_BYTES) {
+        throw Object.assign(
+          new Error(`归档解压体积超限 (> ${MAX_TAR_UNCOMPRESSED_BYTES} bytes)，已中止解压`),
+          { code: 'TAR_BOMB_DETECTED' }
+        );
+      }
     }
   }
 
   const plainListed = await execFn('tar', ['-tzf', tarPath], { timeout: 20000, maxBuffer: 4 * 1024 * 1024 });
-  const plainLines = String(plainListed?.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  if (plainLines.length === 0) {
-    throw Object.assign(new Error('归档条目列表为空，已中止解压'), { code: 'UNSAFE_TAR_ENTRY' });
+  const plainLines = String(plainListed?.stdout || '').split(/\r?\n/).map((l) => l.replace(/\r$/, '')).filter((l) => l.length > 0);
+  if (plainLines.length === 0 || plainLines.length > MAX_TAR_ENTRIES) {
+    throw Object.assign(new Error('归档条目列表为空或超限，已中止解压'), { code: 'UNSAFE_TAR_ENTRY' });
   }
   for (const entryPath of plainLines) {
     assertSafeTarEntryPath(entryPath);
   }
 }
 
-async function installPluginFromTarballSafely({ tarballUrl, fetchImpl, token, execFn, pluginDir = '', extensionsOnly = false, pluginOnly = false }) {
+async function fetchAndVerifyTarballBuffer({
+  tarballUrl,
+  tarballSha256Url = '',
+  tarballAssetName = '',
+  requireTarballSha256 = false,
+  fetchImpl,
+  token
+}) {
   if (!tarballUrl) {
     throw Object.assign(new Error('缺少官方源码包下载地址'), { code: 'MISSING_TARBALL' });
   }
-  const tarBuf = await fetchBinaryBounded(tarballUrl, { fetchImpl, token, maxBytes: MAX_DOWNLOAD_BYTES });
+  if (requireTarballSha256 && !tarballSha256Url) {
+    throw Object.assign(new Error('官方 Release 缺少源码包 SHA-256 校验文件，已中止自动升级'), { code: 'MISSING_TARBALL_SHA256' });
+  }
+  const [tarBuf, shaBuf] = await Promise.all([
+    fetchBinaryBounded(tarballUrl, { fetchImpl, token, maxBytes: MAX_DOWNLOAD_BYTES }),
+    tarballSha256Url
+      ? fetchBinaryBounded(tarballSha256Url, { fetchImpl, token, maxBytes: 4096 })
+      : Promise.resolve(null)
+  ]);
+  const actualSha = crypto.createHash('sha256').update(tarBuf).digest('hex').toLowerCase();
+  let sha256Verified = false;
+  if (shaBuf) {
+    const expectedName = tarballAssetName || path.basename(new URL(tarballUrl).pathname);
+    const expectedSha = parseStrictSha256File(shaBuf.toString('utf8'), expectedName);
+    if (actualSha !== expectedSha) {
+      throw Object.assign(new Error('下载的官方源码包 SHA-256 校验不匹配，已中止更新'), { code: 'SHA256_MISMATCH' });
+    }
+    sha256Verified = true;
+  }
+  return {
+    tarBuf,
+    sha256Verified,
+    sha256Prefix: actualSha.slice(0, 16)
+  };
+}
+
+async function extractAndInstallVerifiedTarball(
+  verifiedTar,
+  { execFn, pluginDir = '', pluginOnly = false }
+) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-suite-tar-'));
+  try { fs.chmodSync(tmpDir, 0o700); } catch {}
   const tarPath = path.join(tmpDir, 'release.tar.gz');
   const extractDir = path.join(tmpDir, 'src');
   try {
-    fs.mkdirSync(extractDir, { recursive: true });
-    fs.writeFileSync(tarPath, tarBuf);
+    fs.mkdirSync(extractDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(tarPath, verifiedTar.tarBuf, { mode: 0o600 });
     await auditTarEntriesSafe(tarPath, execFn);
     await execFn('tar', ['-xzf', tarPath, '-C', extractDir, '--strip-components=1'], { timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
     const installScript = path.join(extractDir, 'install.mjs');
@@ -1060,9 +1126,13 @@ async function installPluginFromTarballSafely({ tarballUrl, fetchImpl, token, ex
     }
     const args = [installScript];
     if (pluginOnly) args.push('--plugin-only');
-    else if (extensionsOnly) args.push('--extensions-only');
     if (pluginDir) args.push('--plugin-dir', pluginDir);
-    return await execFn(process.execPath, args, { cwd: extractDir, timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
+    const execRes = await execFn(process.execPath, args, { cwd: extractDir, timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
+    return {
+      ...execRes,
+      sha256Verified: verifiedTar.sha256Verified,
+      sha256Prefix: verifiedTar.sha256Prefix
+    };
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   }
@@ -1139,8 +1209,12 @@ export async function checkPrismSelfUpdate({
   fetchImpl = globalThis.fetch,
   token = process.env.GITHUB_TOKEN || ''
 } = {}) {
+  const cleanRepo = String(repo || PRISM_OFFICIAL_REPO).trim();
+  if (!REPO_SLUG_RE.test(cleanRepo)) {
+    throw Object.assign(new Error(`非法更新仓库标识: ${cleanRepo}`), { code: 'INVALID_REPO' });
+  }
   const cur = String(currentVersion || '0.0.0').replace(/^v/i, '').trim();
-  const rel = await defaultFetchJson(`https://api.github.com/repos/${repo}/releases/latest`, { fetchImpl, token });
+  const rel = await defaultFetchJson(`https://api.github.com/repos/${cleanRepo}/releases/latest`, { fetchImpl, token });
   const latestTag = String(rel?.tag_name || '').trim();
   if (!latestTag || !/^v?\d+\.\d+\.\d+/.test(latestTag)) {
     throw new Error('未获取到有效的官方发布版本号');
@@ -1149,16 +1223,21 @@ export async function checkPrismSelfUpdate({
   const assets = Array.isArray(rel?.assets) ? rel.assets : [];
   const exeRaw = assets.find((a) => /^Anti-Claude-Prism-Suite-Setup\.exe$/i.test(String(a?.name || ''))) || null;
   const shaRaw = assets.find((a) => /^Anti-Claude-Prism-Suite-Setup\.exe\.sha256$/i.test(String(a?.name || ''))) || null;
-  const exeUrl = exeRaw && isAllowedPrismReleaseAssetUrl(exeRaw.browser_download_url, repo) ? exeRaw.browser_download_url : '';
-  const shaUrl = shaRaw && isAllowedPrismReleaseAssetUrl(shaRaw.browser_download_url, repo) ? shaRaw.browser_download_url : '';
-  const tarballUrl = `https://github.com/${repo}/archive/refs/tags/${latestTag}.tar.gz`;
-  const releaseUrl = typeof rel?.html_url === 'string' && rel.html_url.startsWith(`https://github.com/${repo}/`)
+  const tarAssetRaw = assets.find((a) => /^Anti-Claude-Prism-Suite-Source\.tar\.gz$/i.test(String(a?.name || ''))) || null;
+  const tarShaRaw = assets.find((a) => /^Anti-Claude-Prism-Suite-Source\.tar\.gz\.sha256$/i.test(String(a?.name || ''))) || null;
+  const exeUrl = exeRaw && isAllowedPrismReleaseAssetUrl(exeRaw.browser_download_url, cleanRepo) ? exeRaw.browser_download_url : '';
+  const shaUrl = shaRaw && isAllowedPrismReleaseAssetUrl(shaRaw.browser_download_url, cleanRepo) ? shaRaw.browser_download_url : '';
+  const tarAssetUrl = tarAssetRaw && isAllowedPrismTarballUrl(tarAssetRaw.browser_download_url, cleanRepo) ? tarAssetRaw.browser_download_url : '';
+  const tarShaUrl = tarAssetUrl && tarShaRaw && isAllowedPrismReleaseAssetUrl(tarShaRaw.browser_download_url, cleanRepo) ? tarShaRaw.browser_download_url : '';
+  const archiveTarballUrl = `https://github.com/${cleanRepo}/archive/refs/tags/${latestTag}.tar.gz`;
+  const effectiveTarballUrl = tarAssetUrl || (isAllowedPrismTarballUrl(archiveTarballUrl, cleanRepo) ? archiveTarballUrl : '');
+  const releaseUrl = typeof rel?.html_url === 'string' && rel.html_url.startsWith(`https://github.com/${cleanRepo}/`)
     ? rel.html_url
-    : `https://github.com/${repo}/releases/tag/${latestTag}`;
+    : `https://github.com/${cleanRepo}/releases/tag/${latestTag}`;
 
   return {
     ok: true,
-    repo,
+    repo: cleanRepo,
     currentVersion: cur,
     latestTag,
     latestVersion,
@@ -1169,7 +1248,9 @@ export async function checkPrismSelfUpdate({
     highlights: extractReleaseHighlights(rel?.body || ''),
     exeAsset: exeUrl ? { name: exeRaw.name, url: exeUrl, size: Number(exeRaw.size) || 0 } : null,
     sha256Asset: shaUrl ? { name: shaRaw.name, url: shaUrl } : null,
-    tarballUrl: isAllowedPrismTarballUrl(tarballUrl, repo) ? tarballUrl : '',
+    tarballAsset: tarAssetUrl ? { name: tarAssetRaw.name, url: tarAssetUrl, size: Number(tarAssetRaw.size) || 0 } : null,
+    tarballSha256Asset: tarShaUrl ? { name: tarShaRaw.name, url: tarShaUrl } : null,
+    tarballUrl: effectiveTarballUrl,
     checkedAt: new Date().toISOString()
   };
 }
@@ -1184,7 +1265,8 @@ export async function applyPrismSelfUpdate({
   token = process.env.GITHUB_TOKEN || '',
   runExecFile = null,
   platform = process.platform,
-  isWsl = null
+  isWsl = null,
+  requireTarballSha256 = false
 } = {}) {
   const releaseLock = acquireSelfUpdateLock(lockDir || undefined);
   try {
@@ -1216,9 +1298,26 @@ export async function applyPrismSelfUpdate({
           code: 'MISSING_RELEASE_ASSET'
         });
       }
-      const [shaBuf, exeBuf] = await Promise.all([
+      if (wsl && !info.tarballUrl) {
+        throw Object.assign(new Error(`最新正式版 ${info.latestTag} 缺少 WSL 源码包下载地址，无法安全升级 WSL 端插件`), {
+          code: 'MISSING_TARBALL'
+        });
+      }
+      const mustVerifyTarSha = Boolean(requireTarballSha256 || info.tarballAsset);
+      // Download & SHA-256 verify BOTH the Windows Setup.exe AND (in WSL2) the source tarball BEFORE executing Setup.exe
+      const [shaBuf, exeBuf, verifiedWslTar] = await Promise.all([
         fetchBinaryBounded(info.sha256Asset.url, { fetchImpl, token, maxBytes: 4096 }),
-        fetchBinaryBounded(info.exeAsset.url, { fetchImpl, token, maxBytes: MAX_DOWNLOAD_BYTES })
+        fetchBinaryBounded(info.exeAsset.url, { fetchImpl, token, maxBytes: MAX_DOWNLOAD_BYTES }),
+        wsl
+          ? fetchAndVerifyTarballBuffer({
+              tarballUrl: info.tarballUrl,
+              tarballSha256Url: info.tarballSha256Asset?.url || '',
+              tarballAssetName: info.tarballAsset?.name || '',
+              requireTarballSha256: mustVerifyTarSha,
+              fetchImpl,
+              token
+            })
+          : Promise.resolve(null)
       ]);
       const expectedSha = parseStrictSha256File(shaBuf.toString('utf8'), info.exeAsset.name || 'Anti-Claude-Prism-Suite-Setup.exe');
       const actualSha = crypto.createHash('sha256').update(exeBuf).digest('hex').toLowerCase();
@@ -1226,26 +1325,24 @@ export async function applyPrismSelfUpdate({
         throw Object.assign(new Error('下载的安装包 SHA-256 校验不匹配，已中止更新以保障安全'), { code: 'SHA256_MISMATCH' });
       }
 
-      const tmpDir = resolveWindowsNtfsTempDirForUpdate();
-      fs.mkdirSync(tmpDir, { recursive: true });
+      const tmpDir = createWindowsNtfsTempDirForUpdate();
       const exePath = path.join(tmpDir, 'Anti-Claude-Prism-Suite-Setup.exe');
       let cleanupPending = false;
       let runRes = null;
       let wslLog = '';
+      let tarballSha256Verified = false;
       try {
-        fs.writeFileSync(exePath, exeBuf);
+        fs.writeFileSync(exePath, exeBuf, { mode: 0o700 });
         // Critical: inside WSL2 pass --no-wsl to avoid recursive WSL -> Windows -> wsl.exe deadlock; update WSL plugin natively below
         const installerArgs = wsl ? ['--silent-install', '--no-wsl'] : ['--silent-install'];
         runRes = await runWindowsInstallerWithFallback(exePath, installerArgs, { execFn, wsl, tmpDir });
-        if (wsl && info.tarballUrl) {
-          const wslRes = await installPluginFromTarballSafely({
-            tarballUrl: info.tarballUrl,
-            fetchImpl,
-            token,
+        if (wsl && verifiedWslTar) {
+          const wslRes = await extractAndInstallVerifiedTarball(verifiedWslTar, {
             execFn,
             pluginDir: pluginDir || path.join(os.homedir(), '.gemini', 'config', 'plugins'),
             pluginOnly: true
           });
+          tarballSha256Verified = Boolean(wslRes?.sha256Verified);
           wslLog = String(wslRes?.stdout || '').trim().slice(0, 400);
         }
       } finally {
@@ -1260,7 +1357,9 @@ export async function applyPrismSelfUpdate({
         updatedTo: info.latestTag,
         latestVersion: info.latestVersion,
         previousVersion: info.currentVersion,
-        sha256Verified: true,
+        sha256Verified: wsl ? tarballSha256Verified : true,
+        exeSha256Verified: true,
+        tarballSha256Verified,
         sha256Prefix: actualSha.slice(0, 16),
         method: wsl ? 'wsl-split-safe-update' : 'win-silent-installer',
         needsRestart: true,
@@ -1273,20 +1372,24 @@ export async function applyPrismSelfUpdate({
       };
     }
 
-    // macOS / native Linux: download official release tag tarball, audit entries, and run install.mjs
-    const runRes = await installPluginFromTarballSafely({
+    // macOS / native Linux: download official release tarball, verify SHA-256 when provided, audit entries, and run install.mjs
+    const verifiedPosixTar = await fetchAndVerifyTarballBuffer({
       tarballUrl: info.tarballUrl,
+      tarballSha256Url: info.tarballSha256Asset?.url || '',
+      tarballAssetName: info.tarballAsset?.name || '',
+      requireTarballSha256: Boolean(requireTarballSha256 || info.tarballAsset),
       fetchImpl,
-      token,
-      execFn,
-      pluginDir
+      token
     });
+    const runRes = await extractAndInstallVerifiedTarball(verifiedPosixTar, { execFn, pluginDir });
     return {
       ok: true,
       updatedTo: info.latestTag,
       latestVersion: info.latestVersion,
       previousVersion: info.currentVersion,
-      sha256Verified: false,
+      sha256Verified: Boolean(runRes?.sha256Verified),
+      tarballSha256Verified: Boolean(runRes?.sha256Verified),
+      sha256Prefix: runRes?.sha256Prefix || '',
       method: 'posix-tarball-installer',
       needsRestart: true,
       releaseUrl: info.releaseUrl,

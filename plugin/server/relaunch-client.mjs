@@ -11,13 +11,14 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import {
   cleanPowerShellError,
   detectIsWsl,
   resolvePowerShellExe,
   resolveSafeExecCwd,
-  resolveWslInteropEnv
+  resolveWslInteropEnv,
+  runCmdSync
 } from './platform-utils.mjs';
 
 const STRIPPED_RELAUNCH_ENV_KEYS = new Set([
@@ -44,26 +45,6 @@ function buildCleanUnixRelaunchEnv(baseEnv = process.env) {
     out[k] = v;
   }
   return out;
-}
-
-function defaultRunCmd(bin, args, { input = '', timeoutMs = 10000, cwd, env } = {}) {
-  const res = spawnSync(bin, args, {
-    input,
-    encoding: 'utf8',
-    shell: false,
-    windowsHide: true,
-    timeout: timeoutMs,
-    maxBuffer: 1024 * 1024,
-    ...(cwd ? { cwd } : {}),
-    ...(env ? { env } : {})
-  });
-  if (res.error) throw res.error;
-  return {
-    status: res.status ?? (res.signal ? 1 : 0),
-    signal: res.signal || '',
-    stdout: res.stdout || '',
-    stderr: res.stderr || ''
-  };
 }
 
 function defaultSpawnDetached(bin, args, options = {}) {
@@ -177,7 +158,8 @@ export function buildWinRelaunchWorkerScript({
     '  Start-Process -FilePath $target -WorkingDirectory $targetDir',
     '}',
     'Start-Sleep -Milliseconds 1200',
-    'if ((Get-AgyTargetProcs).Count -eq 0) {',
+    '$newTargetProcs = @(Get-CimInstance Win32_Process -Filter "Name=\'Antigravity.exe\'" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($target, [System.StringComparison]::OrdinalIgnoreCase) -and ($origPids -notcontains [int]$_.ProcessId) })',
+    'if ($newTargetProcs.Count -eq 0) {',
     '  try {',
     "    $sw = [Activator]::CreateInstance([Type]::GetTypeFromCLSID([Guid]'9BA05972-F6A8-11CF-A442-00A0C90A8F39'))",
     '    $h = 0; $d = $sw.FindWindowSW(0, 0, 8, [ref]$h, 1)',
@@ -220,7 +202,7 @@ export function resolveLocalAntigravityTarget({
   isWsl = detectIsWsl({ platform }),
   homeDir = os.homedir(),
   env = process.env,
-  runCmd = defaultRunCmd,
+  runCmd = runCmdSync,
   existsSync = fs.existsSync
 } = {}) {
   const antiClaudeLocal = existsSync(path.join(homeDir, '.gemini', 'antigravity', 'anti-claude'));
@@ -299,7 +281,7 @@ export function createClientRelauncher(options = {}) {
   const isWsl = options.isWsl !== undefined ? Boolean(options.isWsl) : detectIsWsl({ platform });
   const homeDir = path.resolve(options.homeDir || os.homedir());
   const env = options.env || process.env;
-  const runCmd = options.runCmd || defaultRunCmd;
+  const runCmd = options.runCmd || runCmdSync;
   const spawnDetached = options.spawnDetached || defaultSpawnDetached;
   const existsSync = options.existsSync || fs.existsSync;
 
@@ -402,10 +384,14 @@ export function createClientRelauncher(options = {}) {
 
     if (platform === 'linux') {
       const argsPart = targetInfo.preserveDebugPort ? ` ${unixDebugFlag}` : '';
+      const escapedTargetRe = targetInfo.targetPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const selfSafePattern = shSingleQuote(`[${escapedTargetRe[0]}]${escapedTargetRe.slice(1)}`);
       const script = [
         `sleep ${delaySec}`,
-        'pkill -TERM -x antigravity >/dev/null 2>&1 || true',
-        'sleep 1.2',
+        `pkill -TERM -x antigravity >/dev/null 2>&1 || pkill -TERM -x Antigravity >/dev/null 2>&1 || pkill -TERM -f ${selfSafePattern} >/dev/null 2>&1 || true`,
+        `for i in 1 2 3 4 5 6 7 8 9 10; do (pgrep -x antigravity >/dev/null 2>&1 || pgrep -x Antigravity >/dev/null 2>&1 || pgrep -f ${selfSafePattern} >/dev/null 2>&1) || break; sleep 0.3; done`,
+        `pkill -KILL -x antigravity >/dev/null 2>&1 || pkill -KILL -x Antigravity >/dev/null 2>&1 || pkill -KILL -f ${selfSafePattern} >/dev/null 2>&1 || true`,
+        'sleep 0.3',
         `nohup ${shSingleQuote(targetInfo.targetPath)}${argsPart} >/dev/null 2>&1 &`
       ].join('; ');
       spawnDetached('/bin/sh', ['-c', script], { cwd: homeDir, env: cleanUnixEnv });
@@ -424,7 +410,6 @@ export function createClientRelauncher(options = {}) {
   }
 
   return {
-    resolveTarget: () => resolveLocalAntigravityTarget({ platform, isWsl, homeDir, env, runCmd, existsSync }),
     scheduleRelaunch
   };
 }

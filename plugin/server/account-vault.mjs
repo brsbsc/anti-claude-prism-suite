@@ -16,28 +16,27 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import {
   cleanPowerShellError,
   detectIsWsl,
   resolvePowerShellExe,
   resolveSafeExecCwd,
   resolveWslInteropEnv,
+  runCmdSync,
   writeFileAtomic
 } from './platform-utils.mjs';
 
 export {
   cleanPowerShellError,
-  detectIsWsl,
   resolveSafeExecCwd,
   resolveWslInteropEnv
 };
 
-export const ACTIVE_WIN_TARGET = 'gemini:antigravity';
-export const PRISM_WIN_PREFIX = 'prism-suite:account:';
-export const PRISM_WSL_PREFIX = 'prism-suite:wsl:';
-export const PRISM_PROVIDER_PREFIX = 'prism-suite:provider:';
-export const WSL_CRED_ENVELOPE_KIND = 'prism-wsl-cred-v1';
+const ACTIVE_WIN_TARGET = 'gemini:antigravity';
+const PRISM_WIN_PREFIX = 'prism-suite:account:';
+const PRISM_WSL_PREFIX = 'prism-suite:wsl:';
+const PRISM_PROVIDER_PREFIX = 'prism-suite:provider:';
+const WSL_CRED_ENVELOPE_KIND = 'prism-wsl-cred-v1';
 const ACCOUNT_ID_RE = /^[a-z0-9][a-z0-9_-]{1,47}$/;
 const PROVIDER_SECRET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
@@ -173,7 +172,11 @@ if ($op -eq 'batch') {
   $list = New-Object System.Collections.ArrayList
   if ($null -ne $req.ops) {
     foreach ($item in @($req.ops)) {
-      [void]$list.Add((Invoke-PrismCredOp $item))
+      $stepRes = Invoke-PrismCredOp $item
+      [void]$list.Add($stepRes)
+      if (([string]$item.op -eq 'read') -and ([bool]$item.abortBatchIfMissing) -and (-not [bool]$stepRes.found)) {
+        break
+      }
     }
   }
   $arr = $list.ToArray()
@@ -206,7 +209,7 @@ export function deriveAccountIdFromEmail(email) {
   return sanitizeAccountId(candidate.slice(0, 48));
 }
 
-export function fingerprintBuffer(buf) {
+function fingerprintBuffer(buf) {
   if (!buf || !buf.length) return '';
   return crypto.createHash('sha256').update(buf).digest('hex').slice(0, 16);
 }
@@ -325,7 +328,7 @@ export function extractCredentialEmail(rawInput, depth = 0) {
   return '';
 }
 
-export function detectVaultBackend({ platform = process.platform, isWsl = detectIsWsl({ platform }), distro = process.env.WSL_DISTRO_NAME || '' } = {}) {
+function detectVaultBackend({ platform = process.platform, isWsl = detectIsWsl({ platform }), distro = process.env.WSL_DISTRO_NAME || '' } = {}) {
   if (platform === 'win32') {
     return {
       backend: 'win32-credman',
@@ -372,29 +375,6 @@ export function detectVaultBackend({ platform = process.platform, isWsl = detect
   };
 }
 
-function defaultRunCmd(bin, args, { input = '', timeoutMs = 15000, cwd, env } = {}) {
-  const spawnOpts = {
-    input,
-    encoding: 'utf8',
-    shell: false,
-    windowsHide: true,
-    timeout: timeoutMs,
-    maxBuffer: 2 * 1024 * 1024
-  };
-  if (cwd) spawnOpts.cwd = cwd;
-  if (env) spawnOpts.env = env;
-  const res = spawnSync(bin, args, spawnOpts);
-  if (res.error) {
-    throw res.error;
-  }
-  return {
-    status: res.status ?? (res.signal ? 1 : 0),
-    signal: res.signal || '',
-    stdout: res.stdout || '',
-    stderr: res.stderr || ''
-  };
-}
-
 function isValidUtf8TextBuffer(buf, { allowNewlines = false } = {}) {
   if (!Buffer.isBuffer(buf) || !buf.length) return false;
   const text = buf.toString('utf8');
@@ -411,7 +391,7 @@ export function createAccountVault(options = {}) {
   const isWsl = options.isWsl !== undefined ? Boolean(options.isWsl) : detectIsWsl({ platform });
   const wslDistro = options.wslDistro || process.env.WSL_DISTRO_NAME || 'Ubuntu';
   const homeDir = path.resolve(options.homeDir || os.homedir());
-  const runCmd = options.runCmd || defaultRunCmd;
+  const runCmd = options.runCmd || ((bin, args, opts = {}) => runCmdSync(bin, args, { maxBuffer: 2 * 1024 * 1024, ...opts }));
   const allowBatch = options.enableBatch !== undefined ? Boolean(options.enableBatch) : !options.runCmd;
 
   const backendInfo = detectVaultBackend({ platform, isWsl, distro: wslDistro });
@@ -420,14 +400,30 @@ export function createAccountVault(options = {}) {
 
   const PROBE_TTL_MS = 120 * 1000;
   const SAVED_META_TTL_MS = 60 * 1000;
+  const PROVIDER_SECRET_TTL_MS = 60 * 1000;
   let probeCache = null; // { value, expiresAt }
   let savedCacheRev = 0;
   const savedMetaCache = new Map(); // cleanId -> { value, expiresAt, rev }
+  const providerSecretCache = new Map(); // cleanId -> { buf, expiresAt, rev }
+
+  function clearProviderSecretCacheEntry(cleanId) {
+    const old = providerSecretCache.get(cleanId);
+    if (old?.buf) old.buf.fill(0);
+    providerSecretCache.delete(cleanId);
+  }
+
+  function clearAllProviderSecretCache() {
+    for (const entry of providerSecretCache.values()) {
+      if (entry?.buf) entry.buf.fill(0);
+    }
+    providerSecretCache.clear();
+  }
 
   function invalidateCache() {
     savedCacheRev += 1;
     probeCache = null;
     savedMetaCache.clear();
+    clearAllProviderSecretCache();
   }
 
   function updateSavedCacheEntry(cleanId, meta) {
@@ -528,16 +524,10 @@ export function createAccountVault(options = {}) {
     let val;
     let cmdLine;
     if (raw) {
-      if (isValidUtf8TextBuffer(buf, { allowNewlines: false })) {
-        flag = '-w';
-        val = buf.toString('utf8');
-        cmdLine = `add-generic-password -U -s ${JSON.stringify(service)} -a ${JSON.stringify(account)} -w ${JSON.stringify(val)}\n`;
-      } else {
-        // Use macOS Keychain native -X <hex> for non-printable/multiline raw blobs so active slots never get prism-b64: prefixed
-        flag = '-X';
-        val = buf.toString('hex');
-        cmdLine = `add-generic-password -U -s ${JSON.stringify(service)} -a ${JSON.stringify(account)} -X ${val}\n`;
-      }
+      // Always use macOS Keychain native -X <hex> for raw active credentials so `security -i` never corrupts \" quotes or prefixes prism-b64:
+      flag = '-X';
+      val = buf.toString('hex');
+      cmdLine = `add-generic-password -U -s ${JSON.stringify(service)} -a ${JSON.stringify(account)} -X ${val}\n`;
     } else {
       flag = '-w';
       val = `prism-b64:${buf.toString('base64')}`;
@@ -669,9 +659,9 @@ export function createAccountVault(options = {}) {
         ? Buffer.from(envelope.userScopeB64, 'base64')
         : null;
       try {
-        writeFileAtomic(wslTokenPath, tokenBuf, { mode: 0o600 });
+        writeFileAtomic(wslTokenPath, tokenBuf, { mode: 0o600, rejectSymlink: true });
         if (scopeBuf) {
-          writeFileAtomic(wslUserScopePath, scopeBuf, { mode: 0o600 });
+          writeFileAtomic(wslUserScopePath, scopeBuf, { mode: 0o600, rejectSymlink: true });
         } else if (fs.existsSync(wslUserScopePath)) {
           fs.rmSync(wslUserScopePath, { force: true });
         }
@@ -752,9 +742,15 @@ export function createAccountVault(options = {}) {
       if (backendInfo.backend === 'win32-credman' || backendInfo.backend === 'wsl-wincred') {
         invokeWinCred({ op: 'probe' });
       } else if (backendInfo.backend === 'darwin-keychain') {
-        runCmd('security', ['-h'], { timeoutMs: 5000 });
+        const res = runCmd('security', ['-h'], { timeoutMs: 5000 });
+        if (!res || (res.status !== 0 && !/Usage:/i.test(`${res.stdout || ''}\n${res.stderr || ''}`))) {
+          throw new Error('macOS security CLI 不可用');
+        }
       } else if (backendInfo.backend === 'linux-secret-service') {
-        runCmd('secret-tool', ['--help'], { timeoutMs: 5000 });
+        const res = runCmd('secret-tool', ['--help'], { timeoutMs: 5000 });
+        if (!res || res.status !== 0) {
+          throw new Error('Linux secret-tool CLI 不可用');
+        }
       }
       const res = {
         ok: true,
@@ -960,66 +956,90 @@ export function createAccountVault(options = {}) {
     }
   }
 
-  function swapActiveFromSaved(accountId, { expectedTargetEmail = '', backupCurrentToId = '' } = {}) {
+  function swapActiveFromSaved(accountId, { expectedTargetEmail = '', backupCurrentToId = '', expectedBackupEmail = '' } = {}) {
     const cleanTargetId = sanitizeAccountId(accountId);
+    const cleanBackupId = backupCurrentToId ? sanitizeAccountId(backupCurrentToId) : '';
+    if (cleanBackupId && cleanBackupId === cleanTargetId) {
+      throw Object.assign(new Error('目标槽位与当前备份槽位不能相同'), { code: 'SAME_TARGET_AND_BACKUP' });
+    }
     const prevRaw = readActiveRaw();
     let targetBuf = null;
     let verifyActiveBuf = null;
     let verifyBackupBuf = null;
+    let backupHashPrefix = '';
     let swapped = false;
+    let backedUp = false;
 
     try {
+      if (cleanBackupId) {
+        if (!prevRaw.exists || !prevRaw.buf) {
+          throw Object.assign(new Error('当前无活跃凭据可备份'), { code: 'NO_ACTIVE_CREDENTIAL' });
+        }
+        const wantBackupEmail = normalizeEmailCandidate(expectedBackupEmail);
+        if (wantBackupEmail) {
+          const actualBackupEmail = extractCredentialEmail(prevRaw.buf);
+          if (!actualBackupEmail || actualBackupEmail !== wantBackupEmail) {
+            throw Object.assign(
+              new Error(`当前活跃凭据邮箱 (${actualBackupEmail || '未知'}) 与待备份槽位 (${wantBackupEmail}) 不一致，已中止切换以防覆盖串号`),
+              { code: 'BACKUP_EMAIL_MISMATCH', activeEmail: actualBackupEmail, expectedBackupEmail: wantBackupEmail }
+            );
+          }
+        }
+      }
+
+      const wantEmail = normalizeEmailCandidate(expectedTargetEmail);
       const isWinCred = backendInfo.backend === 'win32-credman' || backendInfo.backend === 'wsl-wincred';
       if (isWinCred && allowBatch) {
-        const ops = [];
-        let cleanBackupId = '';
+        // Read target first in the single batch with abortBatchIfMissing so missing target aborts before touching backup in real CredMan
+        const ops = [{ op: 'read', target: savedTargetName(cleanTargetId), abortBatchIfMissing: true }];
         let prevHash = '';
-        if (backupCurrentToId) {
-          cleanBackupId = sanitizeAccountId(backupCurrentToId);
-          if (!prevRaw.exists || !prevRaw.buf) {
-            throw Object.assign(new Error('当前无活跃凭据可备份'), { code: 'NO_ACTIVE_CREDENTIAL' });
-          }
+        if (cleanBackupId) {
           prevHash = fingerprintBuffer(prevRaw.buf);
           const backupTarget = savedTargetName(cleanBackupId);
           ops.push({ op: 'write', target: backupTarget, blobB64: prevRaw.buf.toString('base64') });
           ops.push({ op: 'read', target: backupTarget });
         }
-        ops.push({ op: 'read', target: savedTargetName(cleanTargetId) });
         const batchRes = invokeWinCredBatch(ops);
-        let idx = 0;
+        const tRead = batchRes[0];
+        targetBuf = tRead && tRead.found ? Buffer.from(String(tRead.blobB64 || ''), 'base64') : null;
+        if (!targetBuf || !targetBuf.length) {
+          throw Object.assign(new Error(`隔离凭据槽 ${cleanTargetId} 不存在或为空`), { code: 'TARGET_CREDENTIAL_MISSING' });
+        }
         if (cleanBackupId) {
-          idx += 1; // skip write result
-          const bRead = batchRes[idx++];
+          const bRead = batchRes[2];
           verifyBackupBuf = bRead && bRead.found ? Buffer.from(String(bRead.blobB64 || ''), 'base64') : null;
           if (!verifyBackupBuf || fingerprintBuffer(verifyBackupBuf) !== prevHash) {
             throw Object.assign(new Error('切换前备份当前活跃凭据校验失败，已中止切换'), { code: 'BACKUP_VERIFY_FAILED' });
           }
+          backupHashPrefix = prevHash;
+          backedUp = true;
         }
-        const tRead = batchRes[idx];
-        targetBuf = tRead && tRead.found ? Buffer.from(String(tRead.blobB64 || ''), 'base64') : null;
       } else {
-        if (backupCurrentToId) {
-          const cleanBackupId = sanitizeAccountId(backupCurrentToId);
-          if (!prevRaw.exists || !prevRaw.buf) {
-            throw Object.assign(new Error('当前无活跃凭据可备份'), { code: 'NO_ACTIVE_CREDENTIAL' });
-          }
+        // Non-batch backends (macOS/Linux/custom runner): read & verify target BEFORE touching backup slot
+        targetBuf = readSavedRaw(cleanTargetId);
+        if (!targetBuf || !targetBuf.length) {
+          throw Object.assign(new Error(`隔离凭据槽 ${cleanTargetId} 不存在或为空`), { code: 'TARGET_CREDENTIAL_MISSING' });
+        }
+        const earlyTargetEmail = extractCredentialEmail(targetBuf);
+        if (wantEmail && earlyTargetEmail !== wantEmail) {
+          throw Object.assign(
+            new Error(`目标槽位凭据邮箱 (${earlyTargetEmail || '未知'}) 与期望 (${wantEmail}) 不符，已拦截串号切换`),
+            { code: 'TARGET_EMAIL_MISMATCH', targetEmail: earlyTargetEmail, expectedTargetEmail: wantEmail }
+          );
+        }
+        if (cleanBackupId) {
           const prevHash = fingerprintBuffer(prevRaw.buf);
           writeSavedRaw(cleanBackupId, prevRaw.buf);
           verifyBackupBuf = readSavedRaw(cleanBackupId);
           if (!verifyBackupBuf || fingerprintBuffer(verifyBackupBuf) !== prevHash) {
             throw Object.assign(new Error('切换前备份当前活跃凭据校验失败，已中止切换'), { code: 'BACKUP_VERIFY_FAILED' });
           }
+          backupHashPrefix = prevHash;
+          backedUp = true;
         }
-
-        targetBuf = readSavedRaw(cleanTargetId);
-      }
-
-      if (!targetBuf || !targetBuf.length) {
-        throw Object.assign(new Error(`隔离凭据槽 ${cleanTargetId} 不存在或为空`), { code: 'TARGET_CREDENTIAL_MISSING' });
       }
 
       const targetEmail = extractCredentialEmail(targetBuf);
-      const wantEmail = normalizeEmailCandidate(expectedTargetEmail);
       if (wantEmail && targetEmail !== wantEmail) {
         throw Object.assign(
           new Error(`目标槽位凭据邮箱 (${targetEmail || '未知'}) 与期望 (${wantEmail}) 不符，已拦截串号切换`),
@@ -1039,14 +1059,13 @@ export function createAccountVault(options = {}) {
         throw Object.assign(new Error('写入活跃凭据后回读核验未通过，正在执行原子回滚'), { code: 'ACTIVE_VERIFY_FAILED' });
       }
 
-      if (backupCurrentToId && verifyBackupBuf) {
-        const cleanBackupId = sanitizeAccountId(backupCurrentToId);
+      if (cleanBackupId && verifyBackupBuf) {
         updateSavedCacheEntry(cleanBackupId, {
           ok: true,
           exists: true,
           accountId: cleanBackupId,
           email: extractCredentialEmail(verifyBackupBuf),
-          hashPrefix: fingerprintBuffer(verifyBackupBuf),
+          hashPrefix: backupHashPrefix,
           byteLength: verifyBackupBuf.length,
           backend: backendInfo.backend
         });
@@ -1058,10 +1077,14 @@ export function createAccountVault(options = {}) {
         targetEmail: targetEmail || wantEmail,
         hashPrefix: afterHash,
         byteLength: verifyActiveBuf.length,
-        backedUpTo: backupCurrentToId ? sanitizeAccountId(backupCurrentToId) : '',
+        backedUpTo: cleanBackupId,
+        backupHashPrefix,
         rolledBack: false
       };
     } catch (err) {
+      if (backedUp && cleanBackupId) {
+        savedMetaCache.delete(cleanBackupId);
+      }
       let rolledBack = false;
       if (swapped && prevRaw.exists && prevRaw.buf) {
         try {
@@ -1071,7 +1094,11 @@ export function createAccountVault(options = {}) {
           rolledBack = false;
         }
       }
-      throw Object.assign(err instanceof Error ? err : new Error(String(err)), { rolledBack });
+      throw Object.assign(err instanceof Error ? err : new Error(String(err)), {
+        rolledBack,
+        activeTouched: swapped,
+        backedUp
+      });
     } finally {
       if (prevRaw.buf) prevRaw.buf.fill(0);
       if (targetBuf) targetBuf.fill(0);
@@ -1098,12 +1125,23 @@ export function createAccountVault(options = {}) {
 
   function providerSecretTargetName(cleanId) {
     return backendInfo.backend === 'wsl-wincred'
-      ? `${PRISM_WSL_PREFIX}${wslDistro}:provider:${cleanId}`
+      ? `${PRISM_WSL_PREFIX}${backendInfo.wslDistro}:provider:${cleanId}`
       : `${PRISM_PROVIDER_PREFIX}${cleanId}`;
   }
 
-  function getProviderSecret(providerId) {
+  function getProviderSecret(providerId, { force = false } = {}) {
     const cleanId = sanitizeProviderSecretId(providerId);
+    const now = Date.now();
+    if (!force) {
+      const cached = providerSecretCache.get(cleanId);
+      if (cached) {
+        if (cached.rev === savedCacheRev && now < cached.expiresAt) {
+          return cached.buf.toString('utf8');
+        }
+        clearProviderSecretCacheEntry(cleanId);
+      }
+    }
+    const reqRev = savedCacheRev;
     let buf = null;
     try {
       if (backendInfo.backend === 'win32-credman' || backendInfo.backend === 'wsl-wincred') {
@@ -1115,7 +1153,18 @@ export function createAccountVault(options = {}) {
       } else {
         return '';
       }
-      return buf && buf.length ? buf.toString('utf8') : '';
+      const value = buf && buf.length ? buf.toString('utf8') : '';
+      if (reqRev === savedCacheRev) {
+        clearProviderSecretCacheEntry(cleanId);
+        if (value) {
+          providerSecretCache.set(cleanId, {
+            buf: Buffer.from(buf),
+            expiresAt: now + PROVIDER_SECRET_TTL_MS,
+            rev: savedCacheRev
+          });
+        }
+      }
+      return value;
     } finally {
       if (buf) buf.fill(0);
     }
@@ -1129,19 +1178,28 @@ export function createAccountVault(options = {}) {
     }
     const buf = Buffer.from(str, 'utf8');
     try {
+      let written = false;
       if (backendInfo.backend === 'win32-credman' || backendInfo.backend === 'wsl-wincred') {
         writeWinCredBuffer(providerSecretTargetName(cleanId), buf);
-        return true;
-      }
-      if (backendInfo.backend === 'darwin-keychain') {
+        written = true;
+      } else if (backendInfo.backend === 'darwin-keychain') {
         writeKeychainBuffer('prism-suite-provider', cleanId, buf);
-        return true;
-      }
-      if (backendInfo.backend === 'linux-secret-service') {
+        written = true;
+      } else if (backendInfo.backend === 'linux-secret-service') {
         writeSecretToolBuffer('prism-suite-provider', cleanId, `Prism Model Hub (${cleanId})`, buf);
-        return true;
+        written = true;
+      } else {
+        throw Object.assign(new Error(`当前系统不支持原生凭据库: ${backendInfo.backend}`), { code: 'UNSUPPORTED_VAULT' });
       }
-      throw Object.assign(new Error(`当前系统不支持原生凭据库: ${backendInfo.backend}`), { code: 'UNSUPPORTED_VAULT' });
+      if (written) {
+        clearProviderSecretCacheEntry(cleanId);
+        providerSecretCache.set(cleanId, {
+          buf: Buffer.from(buf),
+          expiresAt: Date.now() + PROVIDER_SECRET_TTL_MS,
+          rev: savedCacheRev
+        });
+      }
+      return written;
     } finally {
       buf.fill(0);
     }
@@ -1149,6 +1207,7 @@ export function createAccountVault(options = {}) {
 
   function deleteProviderSecret(providerId) {
     const cleanId = sanitizeProviderSecretId(providerId);
+    clearProviderSecretCacheEntry(cleanId);
     if (backendInfo.backend === 'win32-credman' || backendInfo.backend === 'wsl-wincred') {
       return deleteWinCred(providerSecretTargetName(cleanId));
     }
@@ -1165,7 +1224,8 @@ export function createAccountVault(options = {}) {
     return {
       getSecret: getProviderSecret,
       setSecret: setProviderSecret,
-      deleteSecret: deleteProviderSecret
+      deleteSecret: deleteProviderSecret,
+      invalidateCache: clearAllProviderSecretCache
     };
   }
 

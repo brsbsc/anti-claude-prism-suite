@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.0 - 2026-11-27
+
+- **跨厂商统一模型会诊中枢（Model Hub）与双模记忆引擎（SQLite + FTS5）**：
+  - 新增纯 Node.js 零依赖跨厂商模型中枢（[model-hub.mjs](plugin/server/model-hub.mjs) / [prism-profile.mjs](plugin/server/prism-profile.mjs)）：支持 T1–T4 四级能力梯队、`/v1/models` 探测批量导入、TTFT / tok/s 测速、SSE 流式会诊与 1 跳自动降级；`prism-profile.json` 强制 `0600` 权限、跨进程互斥锁与 Origin 绑定凭据信封防串域泄露；
+  - 升级双模交接记忆库（[handoff-memory.mjs](plugin/server/handoff-memory.mjs)）：原生 `node:sqlite` WAL + 中英双语 FTS5 索引 + WSL 9P/DrvFS 符号链接安全重定向 + 可选远程 MCP 同步污点隔离（`[EXTERNAL_UNTRUSTED_MEMORY]`）；
+  - 随包内置 3 项工程协作 Skill（`prism-cross-model-council`、`prism-slot-relay`、`prism-upstream-absorb`）与 `rules/AGENTS.md`。
+- **全仓安全、并发与性能专项加固**：
+  - **模型中枢与档案**：禁用出站 HTTP 3xx 自动重定向、拦截云元数据与公网明文 HTTP、保留 `?api-version` 查询参数、封顶响应体积并修复 SSE 超时/取消与计时器泄漏、Provider 密钥 60s 内存缓存消除高频 PowerShell 阻塞；
+  - **账号接力与记忆引擎**：修复自动备份回滚失败误删唯一备份与切换前邮箱 TOCTOU、Git 只读命令禁用 `core.fsmonitor`、SQLite 瞬态锁不再永久降级 JSONL、`ui-prefs.json` 与内核 15 款像素桌宠枚举全对齐；
+  - **MCP 服务端、内核 CDP 与自更新**：拒绝管道/设备特殊文件防阻塞、文件预览改用 `fstatSync` 限流防 OOM、POSIX 含冒号文件名免误杀、stdin 超限帧精准跳过恢复、`transcriptParseCache` 按字节封顶防内存膨胀、CDP `verifyElectronNativeViaCdp` 改为 fail-closed 并拦截 `.bind()`/JS 伪造、tar 归档严格白名单与防炸弹上限、支持源码包 `.tar.gz.sha256` 校验；
+  - **工作台 UI、扩展停帧与安装器**：修复 Model Hub 表单校验失败清空用户输入与导入锁死、窗口缩放复用 `#editor-textarea` 保留焦点与光标、ThinkingOrb 阶段检测 300ms 节流、隐藏页硬停桌宠 CSS 动画、滚轮监听下沉至 `.bg-sidebar` 容器、Windows 安装器改用 `MoveFileExW` 原子替换与 CI 发布流水线补全校验。
+
 ## 0.6.1 - 2026-11-26
 
 - **无损接管修复 WSL 模式下原生「在文件资源管理器中显示」无法打开本地盘符（`C:/D:/E:/F:`）的问题**：

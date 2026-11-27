@@ -9,13 +9,12 @@
  * - Read-only verifyDataIntegrity() inspects workspace/brain health without ever writing SQLite or brain transcripts.
  */
 import { execFileSync } from 'node:child_process';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createAccountVault, deriveAccountIdFromEmail, sanitizeAccountId } from './account-vault.mjs';
-import { redactMemoryText } from './handoff-memory.mjs';
-import { listWslWindowsUserDirs, writeFileAtomic, writeJsonAtomic } from './platform-utils.mjs';
+import { normalizeSlug, redactMemoryText } from './handoff-memory.mjs';
+import { acquireFileLock, listWslWindowsUserDirs, writeFileAtomic, writeJsonAtomic } from './platform-utils.mjs';
 
 const STALE_LOCK_MS = 120000;
 const PENDING_SWITCH_TTL_MS = 5 * 60 * 1000;
@@ -41,28 +40,13 @@ function defaultAccountState(stateDir) {
   };
 }
 
-function writeJsonAtomic0600(filePath, obj) {
-  writeJsonAtomic(filePath, obj, { mode: 0o600 });
-}
-
-function isPidAliveLocal(pid) {
-  const p = Number(pid);
-  if (!Number.isInteger(p) || p <= 0) return false;
-  try {
-    process.kill(p, 0);
-    return true;
-  } catch (err) {
-    return err && err.code !== 'ESRCH';
-  }
-}
-
 function readGitSummaryReadOnly(cwd) {
   const cleanCwd = cwd ? path.resolve(cwd) : '';
   if (!cleanCwd || !fs.existsSync(cleanCwd)) {
     return { isRepo: false, branch: '', head: '', dirtyCount: 0 };
   }
   const runGit = (args) =>
-    execFileSync('git', ['-C', cleanCwd, ...args], {
+    execFileSync('git', ['-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-C', cleanCwd, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 3000,
@@ -350,9 +334,11 @@ function resolveAntigravityLocalStorageDirs({ localStorageDir = '', platform = p
     pushUnique(path.join(homeDir, 'Library', 'Application Support', 'Antigravity', 'Local Storage', 'leveldb'));
     return dirs;
   }
-  // Linux / WSL2: check Windows host AppData first when running in WSL, then native Linux config
-  for (const userDir of listWslWindowsUserDirs()) {
-    pushUnique(path.join(userDir, 'AppData', 'Roaming', 'Antigravity', 'Local Storage', 'leveldb'));
+  // Linux / WSL2: check Windows host AppData first when using default host homeDir in WSL, then native Linux config
+  if (path.resolve(homeDir) === path.resolve(os.homedir())) {
+    for (const userDir of listWslWindowsUserDirs()) {
+      pushUnique(path.join(userDir, 'AppData', 'Roaming', 'Antigravity', 'Local Storage', 'leveldb'));
+    }
   }
   pushUnique(path.join(homeDir, '.config', 'Antigravity', 'Local Storage', 'leveldb'));
   return dirs;
@@ -596,16 +582,17 @@ export function sanitizePrismUiPrefs(raw) {
       recognized++;
     }
   }
-  if (Object.prototype.hasOwnProperty.call(raw, 'mascotMinCount') && Number.isFinite(Number(raw.mascotMinCount))) {
+  const isNumericInput = (v) => typeof v === 'number' || (typeof v === 'string' && v.trim() !== '');
+  if (Object.prototype.hasOwnProperty.call(raw, 'mascotMinCount') && isNumericInput(raw.mascotMinCount) && Number.isFinite(Number(raw.mascotMinCount))) {
     out.mascotMinCount = clampInt(raw.mascotMinCount, 1, 3, 1);
     recognized++;
   }
-  if (Object.prototype.hasOwnProperty.call(raw, 'mascotSize') && Number.isFinite(Number(raw.mascotSize))) {
+  if (Object.prototype.hasOwnProperty.call(raw, 'mascotSize') && isNumericInput(raw.mascotSize) && Number.isFinite(Number(raw.mascotSize))) {
     const stepped = Math.round(Number(raw.mascotSize) / 2) * 2;
     out.mascotSize = Math.max(16, Math.min(36, stepped));
     recognized++;
   }
-  if (Object.prototype.hasOwnProperty.call(raw, 'bubbleTintStrength') && Number.isFinite(Number(raw.bubbleTintStrength))) {
+  if (Object.prototype.hasOwnProperty.call(raw, 'bubbleTintStrength') && isNumericInput(raw.bubbleTintStrength) && Number.isFinite(Number(raw.bubbleTintStrength))) {
     out.bubbleTintStrength = clampInt(raw.bubbleTintStrength, 10, 100, 22);
     recognized++;
   }
@@ -750,7 +737,7 @@ function resolveAntiClaudeExtensionDirs({ homeDir = os.homedir(), platform = pro
     for (const d of extraExtensionDirs) pushUnique(d);
   }
   pushUnique(path.join(homeDir, '.gemini', 'antigravity', 'anti-claude', 'user', 'extensions'));
-  if (platform !== 'win32' && platform !== 'darwin') {
+  if (platform !== 'win32' && platform !== 'darwin' && path.resolve(homeDir) === path.resolve(os.homedir())) {
     for (const userDir of listWslWindowsUserDirs()) {
       pushUnique(path.join(userDir, '.gemini', 'antigravity', 'anti-claude', 'user', 'extensions'));
     }
@@ -937,7 +924,11 @@ export function createAccountManager(options = {}) {
     let saved = null;
     if (fs.existsSync(uiPrefsFile)) {
       try {
-        const parsed = sanitizePrismUiPrefs(JSON.parse(fs.readFileSync(uiPrefsFile, 'utf8')));
+        const rawJson = JSON.parse(fs.readFileSync(uiPrefsFile, 'utf8'));
+        const unwrapped = rawJson && typeof rawJson === 'object' && rawJson.prefs && typeof rawJson.prefs === 'object'
+          ? rawJson.prefs
+          : rawJson;
+        const parsed = sanitizePrismUiPrefs(unwrapped);
         if (parsed) {
           const explicit = parsed._tsOrigin === 'explicit' && parsed._ts > 0;
           const mtimeMs = Number.isFinite(parsed._legacyMtime)
@@ -980,7 +971,7 @@ export function createAccountManager(options = {}) {
     }
 
     if (!saved || JSON.stringify(saved.prefs) !== JSON.stringify(diskPayload)) {
-      try { writeJsonAtomic0600(uiPrefsFile, diskPayload); } catch {}
+      try { writeJsonAtomic(uiPrefsFile, diskPayload, { mode: 0o600, dirMode: 0o700, rejectSymlink: true }); } catch {}
     }
 
     const seedPayload = { ...diskPayload };
@@ -1000,15 +991,12 @@ export function createAccountManager(options = {}) {
           // Only drop seed next to an installed Prism Suite unless explicitly requested in tests
           if (!allowBareExtensionDir && !fs.statSync(path.join(extDir, 'prism-suite.js'), { throwIfNoEntry: false })?.isFile()) continue;
           const seedPath = path.join(extDir, 'prism-suite-00-prefs.js');
-          if (fs.existsSync(seedPath) && fs.readFileSync(seedPath, 'utf8') === jsText) {
+          const seedLst = fs.lstatSync(seedPath, { throwIfNoEntry: false });
+          if (seedLst && !seedLst.isSymbolicLink() && seedLst.isFile() && fs.readFileSync(seedPath, 'utf8') === jsText) {
             writtenSeedFiles.push(seedPath);
             continue;
           }
-          try {
-            writeFileAtomic(seedPath, jsText, { mode: null, encoding: 'utf8', prefix: '.prism-prefs-' });
-          } catch {
-            fs.writeFileSync(seedPath, jsText, 'utf8');
-          }
+          writeFileAtomic(seedPath, jsText, { mode: null, encoding: 'utf8', prefix: '.prism-prefs-', rejectSymlink: true });
           writtenSeedFiles.push(seedPath);
         } catch {}
       }
@@ -1036,7 +1024,11 @@ export function createAccountManager(options = {}) {
         primaryHysteresisPct: clampInt(parsed.primaryHysteresisPct, 5, 50, 20),
         autoRelaunchAfterSwitch: parsed.autoRelaunchAfterSwitch === undefined ? true : Boolean(parsed.autoRelaunchAfterSwitch),
         activeAccountId: typeof parsed.activeAccountId === 'string' ? parsed.activeAccountId : '',
-        accounts: Array.isArray(parsed.accounts) ? parsed.accounts.filter((a) => a && typeof a.id === 'string') : [],
+        accounts: Array.isArray(parsed.accounts)
+          ? parsed.accounts
+              .filter((a) => a && typeof a.id === 'string')
+              .map((a) => ({ ...a, email: String(a.email || '').trim().toLowerCase() }))
+          : [],
         pendingSwitch: parsed.pendingSwitch && typeof parsed.pendingSwitch === 'object' ? parsed.pendingSwitch : null,
         lastSnapshotAt: typeof parsed.lastSnapshotAt === 'string' ? parsed.lastSnapshotAt : ''
       };
@@ -1061,7 +1053,7 @@ export function createAccountManager(options = {}) {
       pendingSwitch: nextState.pendingSwitch || null,
       lastSnapshotAt: String(nextState.lastSnapshotAt || '')
     };
-    writeJsonAtomic0600(accountsFile, clean);
+    writeJsonAtomic(accountsFile, clean, { mode: 0o600, dirMode: 0o700, rejectSymlink: true });
     try {
       lastAccountsMtimeMs = Math.round(Number(fs.statSync(accountsFile).mtimeMs) || 0);
     } catch {}
@@ -1069,48 +1061,12 @@ export function createAccountManager(options = {}) {
   }
 
   function acquireSwitchLock(targetId) {
-    fs.mkdirSync(stateDir, { recursive: true });
-    const lockToken = crypto.randomBytes(16).toString('hex');
-    const payload = JSON.stringify({
-      pid: process.pid,
-      hostname: os.hostname(),
-      createdAt: Date.now(),
-      targetId: String(targetId || ''),
-      lockToken
+    return acquireFileLock(lockFile, {
+      staleMs: STALE_LOCK_MS,
+      meta: { targetId: String(targetId || '') },
+      errorCode: 'SWITCH_IN_PROGRESS',
+      errorMessage: '已有切换事务正在进行中，请稍后再试'
     });
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        fs.writeFileSync(lockFile, payload, { flag: 'wx', mode: 0o600 });
-        return () => {
-          try {
-            if (!fs.existsSync(lockFile)) return;
-            const cur = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
-            if (cur && cur.lockToken === lockToken) {
-              fs.rmSync(lockFile, { force: true });
-            }
-          } catch {}
-        };
-      } catch (err) {
-        if (!err || err.code !== 'EEXIST') throw err;
-        let stale = false;
-        try {
-          const existing = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
-          const age = Date.now() - Number(existing.createdAt || 0);
-          const sameHost = !existing.hostname || existing.hostname === os.hostname();
-          if (age > STALE_LOCK_MS || (sameHost && !isPidAliveLocal(existing.pid))) {
-            stale = true;
-          }
-        } catch {
-          stale = true;
-        }
-        if (stale && attempt === 0) {
-          try { fs.rmSync(lockFile, { force: true }); } catch {}
-          continue;
-        }
-        throw Object.assign(new Error('已有切换事务正在进行中，请稍后再试'), { code: 'SWITCH_IN_PROGRESS' });
-      }
-    }
-    throw Object.assign(new Error('无法获取切换互斥锁'), { code: 'SWITCH_IN_PROGRESS' });
   }
 
   function loadLastSnapshot() {
@@ -1330,20 +1286,25 @@ export function createAccountManager(options = {}) {
   }
 
   function setEnabled(enabled, { countdownSeconds, primaryHysteresisPct, autoRelaunchAfterSwitch } = {}) {
-    const state = loadState();
-    if (enabled !== undefined && enabled !== null) {
-      state.enabled = Boolean(enabled);
+    const releaseLock = acquireSwitchLock('set-enabled');
+    try {
+      const state = loadState();
+      if (enabled !== undefined && enabled !== null) {
+        state.enabled = Boolean(enabled);
+      }
+      if (countdownSeconds !== undefined) {
+        state.countdownSeconds = clampInt(countdownSeconds, 3, 15, state.countdownSeconds);
+      }
+      if (primaryHysteresisPct !== undefined) {
+        state.primaryHysteresisPct = clampInt(primaryHysteresisPct, 5, 50, state.primaryHysteresisPct);
+      }
+      if (autoRelaunchAfterSwitch !== undefined) {
+        state.autoRelaunchAfterSwitch = Boolean(autoRelaunchAfterSwitch);
+      }
+      return saveState(state);
+    } finally {
+      releaseLock();
     }
-    if (countdownSeconds !== undefined) {
-      state.countdownSeconds = clampInt(countdownSeconds, 3, 15, state.countdownSeconds);
-    }
-    if (primaryHysteresisPct !== undefined) {
-      state.primaryHysteresisPct = clampInt(primaryHysteresisPct, 5, 50, state.primaryHysteresisPct);
-    }
-    if (autoRelaunchAfterSwitch !== undefined) {
-      state.autoRelaunchAfterSwitch = Boolean(autoRelaunchAfterSwitch);
-    }
-    return saveState(state);
   }
 
   function assertEnabled(state) {
@@ -1411,7 +1372,7 @@ export function createAccountManager(options = {}) {
     }
   }
 
-  function updateAccount(accountId, { alias, role, priority, modelsSupported, quota } = {}) {
+  function updateAccountUnlocked(accountId, { alias, role, priority, modelsSupported, quota } = {}) {
     const cleanId = sanitizeAccountId(accountId);
     const state = loadState();
     const idx = state.accounts.findIndex((a) => a.id === cleanId);
@@ -1445,91 +1406,108 @@ export function createAccountManager(options = {}) {
     return { ok: true, account: { ...target, effectiveQuota: computeEffectiveQuota(target.lastQuota) } };
   }
 
-  function syncActiveAccountQuota(quotaInput = {}) {
-    const state = loadState();
-    const expectedEmail = typeof quotaInput?.expectedEmail === 'string'
-      ? quotaInput.expectedEmail.trim().toLowerCase()
-      : '';
-    let activeEmail = '';
-    let target = null;
+  function updateAccount(accountId, patch = {}) {
+    const cleanId = sanitizeAccountId(accountId);
+    const releaseLock = acquireSwitchLock(`update:${cleanId}`);
     try {
-      const active = vault.inspectActive();
-      if (active.exists && active.email) {
-        activeEmail = active.email.trim().toLowerCase();
-        target = state.accounts.find((a) => a.email === activeEmail) || null;
+      return updateAccountUnlocked(cleanId, patch);
+    } finally {
+      releaseLock();
+    }
+  }
+
+  function syncActiveAccountQuota(quotaInput = {}) {
+    const releaseLock = acquireSwitchLock('sync-quota');
+    try {
+      const state = loadState();
+      const expectedEmail = typeof quotaInput?.expectedEmail === 'string'
+        ? quotaInput.expectedEmail.trim().toLowerCase()
+        : '';
+      let activeEmail = '';
+      let target = null;
+      try {
+        const active = vault.inspectActive();
+        if (active.exists && active.email) {
+          activeEmail = active.email.trim().toLowerCase();
+          target = state.accounts.find((a) => a.email === activeEmail) || null;
+        }
+      } catch {}
+      // Guard against writing stale quota cache from a previous account right after switching before restart
+      if (expectedEmail && activeEmail && expectedEmail !== activeEmail) {
+        return {
+          ok: true,
+          skipped: true,
+          reason: 'EMAIL_MISMATCH_SKIPPED',
+          expectedEmail,
+          activeEmail
+        };
       }
-    } catch {}
-    // Guard against writing stale quota cache from a previous account right after switching before restart
-    if (expectedEmail && activeEmail && expectedEmail !== activeEmail) {
+      if (!target && expectedEmail) {
+        target = state.accounts.find((a) => a.email === expectedEmail) || null;
+      }
+      if (!target && state.activeAccountId) {
+        target = state.accounts.find((a) => a.id === state.activeAccountId) || null;
+      }
+      if (!target) {
+        return {
+          ok: false,
+          code: 'NO_CAPTURED_ACTIVE_ACCOUNT',
+          error: '当前活跃账号尚未在「Prism 工作台 → 账号接力」捕获，暂无法同步额度快照'
+        };
+      }
+
+      const incoming = classifyQuotaWindow(quotaInput);
+      const hasAnyIncoming =
+        incoming.window5hPct !== null ||
+        incoming.window7dPct !== null ||
+        Boolean(incoming.reset5hAt) ||
+        Boolean(incoming.reset7dAt) ||
+        Boolean(incoming.families);
+      if (!hasAnyIncoming) {
+        return {
+          ok: true,
+          skipped: true,
+          accountId: target.id,
+          alias: target.alias,
+          role: target.role,
+          email: target.email,
+          effectiveQuota: computeEffectiveQuota(target.lastQuota)
+        };
+      }
+
+      // Preserve still-valid (non-expired) fields from previous snapshot when partial live telemetry arrives
+      const nowMs = Date.now();
+      const prev = target.lastQuota && typeof target.lastQuota === 'object' ? target.lastQuota : {};
+      const prevR5Ms = Date.parse(prev.reset5hAt || '');
+      const prevR7Ms = Date.parse(prev.reset7dAt || '');
+      const prevR5Valid = Number.isFinite(prevR5Ms) && prevR5Ms > nowMs;
+      const prevR7Valid = Number.isFinite(prevR7Ms) && prevR7Ms > nowMs;
+      const prevEff = computeEffectiveQuota(prev, nowMs);
+      const mergedInput = {
+        window5hPct: incoming.window5hPct !== null ? incoming.window5hPct : (prevEff && !prevEff.reset5hPassed ? (prev.window5hPct ?? null) : null),
+        window7dPct: incoming.window7dPct !== null ? incoming.window7dPct : (prevEff && !prevEff.reset7dPassed ? (prev.window7dPct ?? null) : null),
+        reset5hAt: incoming.reset5hAt || (prevR5Valid ? prev.reset5hAt : ''),
+        reset7dAt: incoming.reset7dAt || (prevR7Valid ? prev.reset7dAt : ''),
+        resetsAt: incoming.resetsAt || '',
+        modelFamily: incoming.modelFamily || prev.modelFamily || '',
+        tierName: incoming.tierName || prev.tierName || '',
+        families: incoming.families || prev.families || undefined,
+        source: incoming.source || prev.source || 'live-bridge',
+        observedAt: incoming.observedAt
+      };
+
+      const upd = updateAccountUnlocked(target.id, { quota: mergedInput });
       return {
         ok: true,
-        skipped: true,
-        reason: 'EMAIL_MISMATCH_SKIPPED',
-        expectedEmail,
-        activeEmail
+        accountId: upd.account.id,
+        alias: upd.account.alias,
+        role: upd.account.role,
+        email: upd.account.email,
+        effectiveQuota: upd.account.effectiveQuota
       };
+    } finally {
+      releaseLock();
     }
-    if (!target && expectedEmail) {
-      target = state.accounts.find((a) => a.email === expectedEmail) || null;
-    }
-    if (!target && state.activeAccountId) {
-      target = state.accounts.find((a) => a.id === state.activeAccountId) || null;
-    }
-    if (!target) {
-      return {
-        ok: false,
-        code: 'NO_CAPTURED_ACTIVE_ACCOUNT',
-        error: '当前活跃账号尚未在「Prism 工作台 → 账号接力」捕获，暂无法同步额度快照'
-      };
-    }
-
-    const incoming = classifyQuotaWindow(quotaInput);
-    const hasAnyIncoming =
-      incoming.window5hPct !== null ||
-      incoming.window7dPct !== null ||
-      Boolean(incoming.reset5hAt) ||
-      Boolean(incoming.reset7dAt) ||
-      Boolean(incoming.families);
-    if (!hasAnyIncoming) {
-      return {
-        ok: true,
-        skipped: true,
-        accountId: target.id,
-        alias: target.alias,
-        role: target.role,
-        email: target.email,
-        effectiveQuota: computeEffectiveQuota(target.lastQuota)
-      };
-    }
-
-    // Preserve still-valid (non-expired) fields from previous snapshot when partial live telemetry arrives
-    const nowMs = Date.now();
-    const prev = target.lastQuota && typeof target.lastQuota === 'object' ? target.lastQuota : {};
-    const prevR5Ms = Date.parse(prev.reset5hAt || '');
-    const prevR7Ms = Date.parse(prev.reset7dAt || '');
-    const prevR5Valid = Number.isFinite(prevR5Ms) && prevR5Ms > nowMs;
-    const prevR7Valid = Number.isFinite(prevR7Ms) && prevR7Ms > nowMs;
-    const prevEff = computeEffectiveQuota(prev, nowMs);
-    const mergedInput = {
-      window5hPct: incoming.window5hPct !== null ? incoming.window5hPct : (prevEff && !prevEff.reset5hPassed ? (prev.window5hPct ?? null) : null),
-      window7dPct: incoming.window7dPct !== null ? incoming.window7dPct : (prevEff && !prevEff.reset7dPassed ? (prev.window7dPct ?? null) : null),
-      reset5hAt: incoming.reset5hAt || (prevR5Valid ? prev.reset5hAt : ''),
-      reset7dAt: incoming.reset7dAt || (prevR7Valid ? prev.reset7dAt : ''),
-      resetsAt: incoming.resetsAt || '',
-      modelFamily: incoming.modelFamily || prev.modelFamily || '',
-      tierName: incoming.tierName || prev.tierName || '',
-      families: incoming.families || prev.families || undefined
-    };
-
-    const upd = updateAccount(target.id, { quota: mergedInput });
-    return {
-      ok: true,
-      accountId: upd.account.id,
-      alias: upd.account.alias,
-      role: upd.account.role,
-      email: upd.account.email,
-      effectiveQuota: upd.account.effectiveQuota
-    };
   }
 
   function saveHandoffSnapshot({
@@ -1541,16 +1519,14 @@ export function createAccountManager(options = {}) {
     nextAction = '',
     fromAccount = '',
     toAccount = '',
+    activeAccount = '',
     alsoRecordMemory = true,
     skipStateWrite = false
   } = {}) {
     const resolvedCwd = cwd ? path.resolve(cwd) : '';
     const git = readGitSummaryReadOnly(resolvedCwd);
-    const projectName = String(project || (resolvedCwd ? path.basename(resolvedCwd) : 'workspace') || 'workspace')
-      .trim()
-      .replace(/[^\w.-]+/g, '-')
-      .slice(0, 48) || 'workspace';
-    const cleanSlot = String(slot || 'default').trim().replace(/[^\w.-]+/g, '-').slice(0, 32) || 'default';
+    const projectName = normalizeSlug(project || (resolvedCwd ? path.basename(resolvedCwd) : 'workspace'), 'workspace', 48);
+    const cleanSlot = normalizeSlug(slot || 'default', 'default', 32);
     const createdAt = new Date().toISOString();
 
     const safeSnapshot = {
@@ -1580,11 +1556,16 @@ export function createAccountManager(options = {}) {
     ];
     safeSnapshot.markdown = mdLines.join('\n');
 
-    writeJsonAtomic0600(snapshotFile, safeSnapshot);
+    writeJsonAtomic(snapshotFile, safeSnapshot, { mode: 0o600, dirMode: 0o700, rejectSymlink: true });
     if (!skipStateWrite) {
-      const state = loadState();
-      state.lastSnapshotAt = createdAt;
-      saveState(state);
+      const releaseLock = acquireSwitchLock('snapshot');
+      try {
+        const state = loadState();
+        state.lastSnapshotAt = createdAt;
+        saveState(state);
+      } finally {
+        releaseLock();
+      }
     }
 
     let memoryEntry = null;
@@ -1600,6 +1581,7 @@ export function createAccountManager(options = {}) {
         conversationPath: safeSnapshot.conversationPath,
         verified: safeSnapshot.verifiedSummary,
         nextAction: safeSnapshot.nextAction,
+        activeAccount: activeAccount || safeSnapshot.toAccount || '',
         source: 'account-relay'
       });
     }
@@ -1699,18 +1681,9 @@ export function createAccountManager(options = {}) {
         };
       }
 
-      let snapshotRes = null;
-      if (saveSnapshot) {
-        snapshotRes = saveHandoffSnapshot({
-          ...handoff,
-          fromAccount: active.email || state.activeAccountId || '当前账号',
-          toAccount: target.email,
-          skipStateWrite: true
-        });
-        if (snapshotRes?.snapshot?.createdAt) {
-          state.lastSnapshotAt = snapshotRes.snapshot.createdAt;
-        }
-      }
+      const hadPreexistingAutoSlot = autoCapturePlan
+        ? Boolean(vault.inspectSaved(autoCapturePlan.id)?.exists)
+        : false;
 
       // Phase 1 intent log BEFORE touching OS active credential slot
       const prepMs = Date.now();
@@ -1725,18 +1698,55 @@ export function createAccountManager(options = {}) {
 
       let swapRes;
       const effectiveBackupId = backupOwner ? backupOwner.id : (autoCapturePlan ? autoCapturePlan.id : '');
+      const effectiveBackupEmail = backupOwner ? backupOwner.email : (autoCapturePlan ? autoCapturePlan.email : '');
       try {
         swapRes = vault.swapActiveFromSaved(cleanTargetId, {
           expectedTargetEmail: target.email,
-          backupCurrentToId: effectiveBackupId
+          backupCurrentToId: effectiveBackupId,
+          expectedBackupEmail: effectiveBackupEmail
         });
       } catch (err) {
-        if (autoCapturePlan) {
-          try { vault.deleteSaved(autoCapturePlan.id); } catch {}
+        const safeToDiscardAutoCapture = err?.activeTouched !== true || err?.rolledBack === true;
+        if (autoCapturePlan && err?.backedUp) {
+          if (safeToDiscardAutoCapture) {
+            if (!hadPreexistingAutoSlot) {
+              try { vault.deleteSaved(autoCapturePlan.id); } catch {}
+            }
+          } else {
+            const failIso = new Date().toISOString();
+            if (!state.accounts.some((a) => a.id === autoCapturePlan.id)) {
+              state.accounts.push({ ...autoCapturePlan, capturedAt: failIso, lastUsedAt: failIso });
+            }
+          }
         }
-        state.pendingSwitch = null;
+        if (safeToDiscardAutoCapture) {
+          state.pendingSwitch = null;
+        } else if (state.pendingSwitch) {
+          state.pendingSwitch = {
+            ...state.pendingSwitch,
+            phase: 'rollback-failed',
+            failedAt: new Date().toISOString()
+          };
+        }
         try { saveState(state); } catch {}
         throw err;
+      }
+
+      // Record handoff snapshot & memory ONLY after credential swap succeeds so aborted switches never pollute memory
+      let snapshotRes = null;
+      if (saveSnapshot) {
+        try {
+          snapshotRes = saveHandoffSnapshot({
+            ...handoff,
+            fromAccount: active.email || state.activeAccountId || '当前账号',
+            toAccount: target.email,
+            activeAccount: target.email,
+            skipStateWrite: true
+          });
+          if (snapshotRes?.snapshot?.createdAt) {
+            state.lastSnapshotAt = snapshotRes.snapshot.createdAt;
+          }
+        } catch {}
       }
 
       const nowMs = Date.now();
@@ -1744,8 +1754,19 @@ export function createAccountManager(options = {}) {
       let autoCapturedActive = null;
       if (autoCapturePlan && swapRes.backedUpTo === autoCapturePlan.id) {
         if (!state.accounts.some((a) => a.id === autoCapturePlan.id)) {
-          autoCapturedActive = { ...autoCapturePlan, capturedAt: nowIso, lastUsedAt: nowIso };
+          autoCapturedActive = {
+            ...autoCapturePlan,
+            credHash: swapRes.backupHashPrefix || autoCapturePlan.credHash,
+            capturedAt: nowIso,
+            lastUsedAt: nowIso
+          };
           state.accounts.push(autoCapturedActive);
+        }
+      }
+      if (backupOwner && swapRes.backupHashPrefix) {
+        const bIdx = state.accounts.findIndex((a) => a.id === backupOwner.id);
+        if (bIdx !== -1) {
+          state.accounts[bIdx] = { ...state.accounts[bIdx], credHash: swapRes.backupHashPrefix };
         }
       }
       state.activeAccountId = target.id;

@@ -11,17 +11,62 @@
  *   node scripts/prism-accounts.mjs <command> [options]
  */
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAccountManager } from '../plugin/server/account-manager.mjs';
 import { createHandoffMemoryStore } from '../plugin/server/handoff-memory.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 
+const VALUE_FLAGS = new Set([
+  '--state-dir',
+  '--role',
+  '--alias',
+  '--models',
+  '--slot',
+  '--cwd',
+  '--next',
+  '--project',
+  '--verified'
+]);
+
+const BOOL_FLAGS = new Set([
+  '--json',
+  '--dry-run',
+  '--no-snapshot',
+  '--allow-uncaptured',
+  '--help',
+  '-h'
+]);
+
+const KNOWN_COMMANDS = new Set([
+  'status',
+  'enable',
+  'disable',
+  'capture',
+  'set-role',
+  'snapshot',
+  'memories',
+  'switch',
+  'delete',
+  'verify'
+]);
+
+function isKnownCliFlag(token) {
+  if (typeof token !== 'string' || !token.startsWith('-')) return false;
+  if (VALUE_FLAGS.has(token) || BOOL_FLAGS.has(token)) return true;
+  for (const vf of VALUE_FLAGS) {
+    if (token.startsWith(`${vf}=`)) return true;
+  }
+  return false;
+}
+
 function readFlagValue(argv, flag) {
   const idx = argv.indexOf(flag);
-  if (idx !== -1 && idx + 1 < argv.length) return argv[idx + 1];
+  if (idx !== -1 && idx + 1 < argv.length) {
+    const next = argv[idx + 1];
+    if (typeof next === 'string' && !isKnownCliFlag(next)) return next;
+    return '';
+  }
   const prefix = `${flag}=`;
   const eq = argv.find((a) => a.startsWith(prefix));
   return eq ? eq.slice(prefix.length) : '';
@@ -62,75 +107,85 @@ export async function runAccountsCli(argv = process.argv.slice(2), deps = {}) {
     return { help: true, ok: true };
   }
 
-  const cmd = argv.find((a) => !a.startsWith('-')) || 'status';
-  const asJson = argv.includes('--json');
-  const stateDir = readFlagValue(argv, '--state-dir') || undefined;
-  const handoffMemory = deps.handoffMemory || createHandoffMemoryStore({ stateDir });
-  const manager = deps.manager || createAccountManager({ stateDir, handoffMemory });
-
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--state-dir' || a === '--role' || a === '--alias' || a === '--models' || a === '--slot' || a === '--cwd' || a === '--next' || a === '--project' || a === '--verified') {
-      i++;
+    if (VALUE_FLAGS.has(a)) {
+      if (i + 1 < argv.length && !isKnownCliFlag(argv[i + 1])) i++;
       continue;
     }
     if (a.startsWith('-')) continue;
     positional.push(a);
   }
 
-  let data;
-  if (cmd === 'status') {
-    data = manager.getStatus();
-  } else if (cmd === 'enable') {
-    data = { ok: true, state: manager.setEnabled(true) };
-  } else if (cmd === 'disable') {
-    data = { ok: true, state: manager.setEnabled(false) };
-  } else if (cmd === 'capture') {
-    const role = readFlagValue(argv, '--role') || undefined;
-    const alias = readFlagValue(argv, '--alias') || '';
-    const modelsRaw = readFlagValue(argv, '--models');
-    const modelsSupported = modelsRaw ? modelsRaw.split(',').map((s) => s.trim()).filter(Boolean) : [];
-    data = manager.captureCurrentAccount({ role, alias, modelsSupported });
-  } else if (cmd === 'set-role') {
-    const id = positional[1];
-    const role = positional[2];
-    data = manager.updateAccount(id, { role });
-  } else if (cmd === 'snapshot') {
-    data = manager.saveHandoffSnapshot({
-      slot: readFlagValue(argv, '--slot') || 'default',
-      project: readFlagValue(argv, '--project') || '',
-      cwd: readFlagValue(argv, '--cwd') || process.cwd(),
-      verifiedSummary: readFlagValue(argv, '--verified') || '',
-      nextAction: readFlagValue(argv, '--next') || ''
-    });
-  } else if (cmd === 'memories') {
-    data = handoffMemory.list({
-      slot: readFlagValue(argv, '--slot') || '',
-      project: readFlagValue(argv, '--project') || '',
-      limit: 10
-    });
-  } else if (cmd === 'switch') {
-    const targetId = positional[1];
-    const dryRun = argv.includes('--dry-run');
-    const saveSnapshot = !argv.includes('--no-snapshot');
-    const allowUncapturedActive = argv.includes('--allow-uncaptured');
-    data = manager.switchAccount(targetId, {
-      dryRun,
-      saveSnapshot,
-      allowUncapturedActive,
-      handoff: { cwd: readFlagValue(argv, '--cwd') || process.cwd() }
-    });
-  } else if (cmd === 'delete') {
-    const targetId = positional[1];
-    data = manager.deleteAccount(targetId);
-  } else if (cmd === 'verify') {
-    data = manager.verifyDataIntegrity();
-  } else {
+  const cmd = positional[0] || 'status';
+  if (!KNOWN_COMMANDS.has(cmd)) {
     throw Object.assign(new Error(`未知命令: ${cmd}`), { code: 'UNKNOWN_COMMAND' });
   }
+  const asJson = argv.includes('--json');
+  const stateDir = readFlagValue(argv, '--state-dir') || undefined;
+  const ownsMemory = !deps.handoffMemory;
+  const handoffMemory = deps.handoffMemory || createHandoffMemoryStore({ stateDir });
+  const manager = deps.manager || createAccountManager({ stateDir, handoffMemory });
 
-  return { help: false, asJson, cmd, data };
+  try {
+    let data;
+    if (cmd === 'status') {
+      data = manager.getStatus();
+    } else if (cmd === 'enable') {
+      data = { ok: true, state: manager.setEnabled(true) };
+    } else if (cmd === 'disable') {
+      data = { ok: true, state: manager.setEnabled(false) };
+    } else if (cmd === 'capture') {
+      const role = readFlagValue(argv, '--role') || undefined;
+      const alias = readFlagValue(argv, '--alias') || '';
+      const modelsRaw = readFlagValue(argv, '--models');
+      const modelsSupported = modelsRaw ? modelsRaw.split(',').map((s) => s.trim()).filter(Boolean) : [];
+      data = manager.captureCurrentAccount({ role, alias, modelsSupported });
+    } else if (cmd === 'set-role') {
+      const id = positional[1];
+      const role = positional[2];
+      data = manager.updateAccount(id, { role });
+    } else if (cmd === 'snapshot') {
+      data = manager.saveHandoffSnapshot({
+        slot: readFlagValue(argv, '--slot') || 'default',
+        project: readFlagValue(argv, '--project') || '',
+        cwd: readFlagValue(argv, '--cwd') || process.cwd(),
+        verifiedSummary: readFlagValue(argv, '--verified') || '',
+        nextAction: readFlagValue(argv, '--next') || ''
+      });
+    } else if (cmd === 'memories') {
+      data = handoffMemory.list({
+        slot: readFlagValue(argv, '--slot') || '',
+        project: readFlagValue(argv, '--project') || '',
+        limit: 10
+      });
+    } else if (cmd === 'switch') {
+      const targetId = positional[1];
+      const dryRun = argv.includes('--dry-run');
+      const saveSnapshot = !argv.includes('--no-snapshot');
+      const allowUncapturedActive = argv.includes('--allow-uncaptured');
+      data = manager.switchAccount(targetId, {
+        dryRun,
+        saveSnapshot,
+        allowUncapturedActive,
+        handoff: { cwd: readFlagValue(argv, '--cwd') || process.cwd() }
+      });
+    } else if (cmd === 'delete') {
+      const targetId = positional[1];
+      data = manager.deleteAccount(targetId);
+    } else if (cmd === 'verify') {
+      data = manager.verifyDataIntegrity();
+    } else {
+      throw Object.assign(new Error(`未知命令: ${cmd}`), { code: 'UNKNOWN_COMMAND' });
+    }
+
+    return { help: false, asJson, cmd, data };
+  } finally {
+    if (ownsMemory) {
+      try { handoffMemory.close?.(); } catch {}
+    }
+  }
 }
 
 const isMain = (() => {

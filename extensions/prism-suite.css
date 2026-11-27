@@ -1083,14 +1083,19 @@ html[data-ag-ps-dark="marine"] body.dark {
   transform-origin: center center;
 }
 
+/* Hard-pause all mascot CSS animations when window/tab is hidden (zero GPU burn) */
+#ag-ps-mascot-dock[data-page-hidden="1"] * {
+  animation: none !important;
+}
+
 /* Stationary busy hop (when roam is disabled or container is narrow) */
-#ag-ps-mascot-dock[data-mood="busy"]:not([data-roaming="1"]) .ag-ps-actor[data-busy="1"] .ag-ps-actor-body {
+#ag-ps-mascot-dock[data-mood="busy"]:not([data-roaming="1"]):not([data-page-hidden="1"]) .ag-ps-actor[data-busy="1"] .ag-ps-actor-body {
   animation: agPsHop 0.72s ease-in-out infinite;
 }
-#ag-ps-mascot-dock[data-mood="busy"]:not([data-roaming="1"]) .ag-ps-actor[data-busy="1"]:nth-of-type(2) .ag-ps-actor-body {
+#ag-ps-mascot-dock[data-mood="busy"]:not([data-roaming="1"]):not([data-page-hidden="1"]) .ag-ps-actor[data-busy="1"]:nth-of-type(2) .ag-ps-actor-body {
   animation-delay: 0.14s;
 }
-#ag-ps-mascot-dock[data-mood="busy"]:not([data-roaming="1"]) .ag-ps-actor[data-busy="1"]:nth-of-type(3) .ag-ps-actor-body {
+#ag-ps-mascot-dock[data-mood="busy"]:not([data-roaming="1"]):not([data-page-hidden="1"]) .ag-ps-actor[data-busy="1"]:nth-of-type(3) .ag-ps-actor-body {
   animation-delay: 0.28s;
 }
 

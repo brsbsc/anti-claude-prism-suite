@@ -8,17 +8,27 @@
  * - Never persists plaintext API keys, tokens, or passwords to disk.
  * - Never scans or reads any external CLI/editor configuration directories.
  * - Rejects symbolic links on profile directories and target files; writes
- *   atomically via same-directory 0o600 wx temp files + renameSync.
+ *   atomically via same-directory 0o600 wx temp files + non-destructive retry.
+ * - Cross-process atomic lockfile prevents multi-window lost updates.
  * - Blocks system/runtime environment variables from being bound as credential sources.
  */
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  acquireFileLock,
+  assertPathNotSymlink,
+  isLocalOrLanHost,
+  redactSensitiveText,
+  validateEnvVarName,
+  writeJsonAtomic
+} from './platform-utils.mjs';
 
-export const PRISM_PROFILE_SCHEMA_VERSION = 1;
+export { validateEnvVarName };
 
-export const VALID_PROTOCOLS = Object.freeze([
+const PRISM_PROFILE_SCHEMA_VERSION = 1;
+
+const VALID_PROTOCOLS = Object.freeze([
   'openai-chat',
   'openai-responses',
   'anthropic-messages'
@@ -26,7 +36,7 @@ export const VALID_PROTOCOLS = Object.freeze([
 
 export const VALID_TIERS = Object.freeze(['T1', 'T2', 'T3', 'T4']);
 
-export const VALID_VENDORS = Object.freeze([
+const VALID_VENDORS = Object.freeze([
   'openai',
   'anthropic',
   'google',
@@ -99,92 +109,9 @@ export const TIER_DEFINITIONS = Object.freeze({
   })
 });
 
-const ENV_VAR_NAME_RE = /^[A-Z][A-Z0-9_]{1,63}$/;
 const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,95}$/;
-
-export const BLOCKED_ENV_VAR_NAMES = new Set([
-  'PATH',
-  'HOME',
-  'USERPROFILE',
-  'APPDATA',
-  'LOCALAPPDATA',
-  'TEMP',
-  'TMP',
-  'SHELL',
-  'COMSPEC',
-  'NODE_OPTIONS',
-  'LD_PRELOAD',
-  'WSL_INTEROP',
-  'ANTIGRAVITY_CSRF_TOKEN',
-  'ANTIGRAVITY_LS_ADDRESS',
-  // Additional OS / dynamic-linker / runtime process variables
-  'LD_LIBRARY_PATH',
-  'DYLD_INSERT_LIBRARIES',
-  'DYLD_LIBRARY_PATH',
-  'NODE_PATH',
-  'NODE_EXTRA_CA_CERTS',
-  'NODE_TLS_REJECT_UNAUTHORIZED',
-  'ELECTRON_RUN_AS_NODE',
-  'PYTHONPATH',
-  'IFS',
-  'PWD',
-  'OLDPWD',
-  'USER',
-  'LOGNAME',
-  'USERNAME',
-  'HOSTNAME',
-  'COMPUTERNAME',
-  'SYSTEMROOT',
-  'WINDIR',
-  'PROGRAMFILES',
-  'PROGRAMDATA',
-  'HOMEDRIVE',
-  'HOMEPATH',
-  'PATHEXT',
-  'PSMODULEPATH',
-  'WSL_DISTRO_NAME',
-  'WSLENV',
-  'SSH_AUTH_SOCK',
-  'GPG_AGENT_INFO',
-  'XDG_RUNTIME_DIR',
-  'XDG_CONFIG_HOME',
-  'XDG_DATA_HOME',
-  'XDG_CACHE_HOME',
-  'TERM',
-  'LANG',
-  'LC_ALL',
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'ALL_PROXY',
-  'NO_PROXY'
-]);
-
-/**
- * Strictly validates an environment variable name intended to supply an API key.
- * Must match /^[A-Z][A-Z0-9_]{1,63}$/ and must not be a system/runtime variable.
- */
-export function validateEnvVarName(name) {
-  if (typeof name !== 'string') {
-    throw Object.assign(new Error('环境变量名必须为字符串'), {
-      code: 'INVALID_ENV_VAR_NAME'
-    });
-  }
-  const trimmed = name.trim();
-  if (!ENV_VAR_NAME_RE.test(trimmed)) {
-    throw Object.assign(
-      new Error(`非法环境变量名 "${trimmed.slice(0, 64)}"：必须匹配 /^[A-Z][A-Z0-9_]{1,63}$/`),
-      { code: 'INVALID_ENV_VAR_NAME' }
-    );
-  }
-  if (BLOCKED_ENV_VAR_NAMES.has(trimmed)) {
-    throw Object.assign(
-      new Error(`禁止绑定非密钥系统环境变量 "${trimmed}"`),
-      { code: 'BLOCKED_ENV_VAR_NAME' }
-    );
-  }
-  return trimmed;
-}
+const VAULT_ENVELOPE_TAG = 'prism-provider-secret-v1';
 
 /**
  * Validates and normalizes an HTTP/HTTPS gateway endpoint URL.
@@ -224,11 +151,6 @@ export function validateHttpEndpointUrl(rawUrl) {
       code: 'INVALID_ENDPOINT_URL'
     });
   }
-  if (parsed.username || parsed.password) {
-    throw Object.assign(new Error('网关端点 URL 禁止包含 username 或 password'), {
-      code: 'INVALID_ENDPOINT_URL'
-    });
-  }
   if (!parsed.hostname) {
     throw Object.assign(new Error('网关端点 URL 缺少主机名'), {
       code: 'INVALID_ENDPOINT_URL'
@@ -252,14 +174,7 @@ function stripControlChars(str, maxLen = 200) {
 }
 
 function redactErrorSnippet(text) {
-  return String(text ?? '')
-    .replace(/\bsk-(?:proj-|ant-|live-|test-|or-v1-)?[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_KEY]')
-    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[REDACTED_TOKEN]')
-    .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, '[REDACTED_KEY]')
-    .replace(/\b(Bearer[ \t]+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1[REDACTED]')
-    .replace(/[\x00-\x1f\x7f]+/g, ' ')
-    .trim()
-    .slice(0, 240);
+  return stripControlChars(redactSensitiveText(text), 240);
 }
 
 function isLoopbackUrl(urlStr) {
@@ -270,6 +185,41 @@ function isLoopbackUrl(urlStr) {
   } catch {
     return false;
   }
+}
+
+function extractNormalizedOrigin(urlStr) {
+  const u = new URL(urlStr);
+  return u.origin.toLowerCase();
+}
+
+function encodeOriginBoundSecret(secret, origin) {
+  return JSON.stringify({
+    kind: VAULT_ENVELOPE_TAG,
+    origin: String(origin || '').toLowerCase(),
+    secret: String(secret || '').trim()
+  });
+}
+
+function decodeOriginBoundSecret(rawVal, expectedOrigin) {
+  const str = typeof rawVal === 'string' ? rawVal.trim() : '';
+  if (!str) return { ok: true, secret: '', boundOrigin: '' };
+  if (str.startsWith('{') && str.includes(VAULT_ENVELOPE_TAG)) {
+    try {
+      const envObj = JSON.parse(str);
+      if (envObj && envObj.kind === VAULT_ENVELOPE_TAG && typeof envObj.secret === 'string') {
+        const bound = String(envObj.origin || '').toLowerCase();
+        const want = String(expectedOrigin || '').toLowerCase();
+        if (!bound || !want || bound !== want) {
+          return { ok: false, secret: '', boundOrigin: bound };
+        }
+        return { ok: true, secret: envObj.secret.trim(), boundOrigin: bound };
+      }
+    } catch {
+      return { ok: false, secret: '', boundOrigin: '' };
+    }
+    return { ok: false, secret: '', boundOrigin: '' };
+  }
+  return { ok: true, secret: str, boundOrigin: '' };
 }
 
 function sanitizeProviderId(rawId) {
@@ -368,6 +318,7 @@ function sanitizeRemoteMemorySetting(input, prevValue = false) {
   if (input === undefined) return prevValue;
   if (typeof input === 'boolean') return input;
   if (input && typeof input === 'object' && !Array.isArray(input)) {
+    const prevObj = prevValue && typeof prevValue === 'object' ? prevValue : null;
     const out = {
       enabled: input.enabled !== undefined ? Boolean(input.enabled) : true
     };
@@ -381,6 +332,11 @@ function sanitizeRemoteMemorySetting(input, prevValue = false) {
       out.apiKeyEnv = validateEnvVarName(String(input.apiKeyEnv));
     } else {
       out.apiKeyEnv = '';
+    }
+    if (input.syncCatalog !== undefined) {
+      out.syncCatalog = Boolean(input.syncCatalog);
+    } else if (prevObj && prevObj.syncCatalog !== undefined) {
+      out.syncCatalog = Boolean(prevObj.syncCatalog);
     }
     if (input.namespace !== undefined) {
       out.namespace = stripControlChars(input.namespace, 64) || 'default';
@@ -441,100 +397,6 @@ function normalizeSpeedRecord(rawSpeed) {
   };
 }
 
-function assertPathNotSymlink(targetPath, label) {
-  let st;
-  try {
-    st = fs.lstatSync(targetPath);
-  } catch (err) {
-    if (err && err.code === 'ENOENT') return null;
-    throw err;
-  }
-  if (st.isSymbolicLink()) {
-    throw Object.assign(
-      new Error(`安全拒绝：${label} 不能为符号链接 (${targetPath})`),
-      { code: 'SYMLINK_REJECTED' }
-    );
-  }
-  return st;
-}
-
-function ensureSafeParentDir0700(dirPath) {
-  const existingStat = assertPathNotSymlink(dirPath, '配置父目录');
-  if (existingStat && !existingStat.isDirectory()) {
-    throw Object.assign(new Error(`配置父路径不是目录: ${dirPath}`), {
-      code: 'INVALID_PROFILE_DIR'
-    });
-  }
-  if (!existingStat) {
-    fs.mkdirSync(dirPath, { recursive: true, mode: 0o700 });
-  }
-  const postStat = assertPathNotSymlink(dirPath, '配置父目录');
-  if (!postStat || !postStat.isDirectory()) {
-    throw Object.assign(new Error(`无法初始化安全配置目录: ${dirPath}`), {
-      code: 'INVALID_PROFILE_DIR'
-    });
-  }
-  try {
-    fs.chmodSync(dirPath, 0o700);
-  } catch {
-    // Non-POSIX filesystems (e.g. Windows / DrvFS) may ignore chmod bits.
-  }
-}
-
-function writeJsonAtomic0600(targetPath, dataObj) {
-  const dir = path.dirname(targetPath);
-  ensureSafeParentDir0700(dir);
-  assertPathNotSymlink(targetPath, '配置文件');
-
-  const serialized = `${JSON.stringify(dataObj, null, 2)}\n`;
-  const tmpName = `.prism-profile-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.tmp`;
-  const tmpPath = path.join(dir, tmpName);
-
-  try {
-    fs.writeFileSync(tmpPath, serialized, {
-      encoding: 'utf8',
-      mode: 0o600,
-      flag: 'wx'
-    });
-    try {
-      fs.chmodSync(tmpPath, 0o600);
-    } catch {
-      // Ignore chmod no-op on non-POSIX mounts.
-    }
-
-    assertPathNotSymlink(targetPath, '配置文件');
-
-    try {
-      fs.renameSync(tmpPath, targetPath);
-    } catch (renameErr) {
-      if (
-        process.platform === 'win32' &&
-        (renameErr?.code === 'EPERM' || renameErr?.code === 'EACCES' || renameErr?.code === 'EEXIST')
-      ) {
-        assertPathNotSymlink(targetPath, '配置文件');
-        fs.rmSync(targetPath, { force: true });
-        fs.renameSync(tmpPath, targetPath);
-      } else {
-        throw renameErr;
-      }
-    }
-
-    try {
-      fs.chmodSync(targetPath, 0o600);
-    } catch {
-      // Ignore chmod no-op on non-POSIX mounts.
-    }
-  } finally {
-    try {
-      if (fs.existsSync(tmpPath)) {
-        fs.rmSync(tmpPath, { force: true });
-      }
-    } catch {
-      // Best-effort cleanup of temp file.
-    }
-  }
-}
-
 export function createPrismProfileManager({
   homeDir,
   profilePath: customProfilePath,
@@ -545,6 +407,53 @@ export function createPrismProfileManager({
   const profilePath = customProfilePath
     ? path.resolve(customProfilePath)
     : path.join(resolvedHome, '.gemini', 'antigravity', 'anti-claude', 'prism-profile.json');
+  const profileDir = path.dirname(profilePath);
+  const relToHome = path.relative(resolvedHome, profileDir);
+  const isUnderHome = relToHome === '' || (!relToHome.startsWith('..') && !path.isAbsolute(relToHome));
+  const symlinkStopAt = isUnderHome ? resolvedHome : path.dirname(profileDir);
+  const lockPath = `${profilePath}.lock`;
+
+  let cachedLoad = null; // { mtimeMs, ctimeMs, ino, size, data }
+
+  function invalidateLoadCache() {
+    cachedLoad = null;
+  }
+
+  function ensureSafeProfileDirs() {
+    const dir = profileDir;
+    const dirStat = assertPathNotSymlink(dir, '配置父目录', { checkAncestors: true, stopAt: symlinkStopAt });
+    if (dirStat && !dirStat.isDirectory()) {
+      throw Object.assign(new Error(`配置父路径不是目录: ${dir}`), {
+        code: 'INVALID_PROFILE_DIR'
+      });
+    }
+    if (!dirStat) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    }
+    const postStat = assertPathNotSymlink(dir, '配置父目录');
+    if (!postStat || !postStat.isDirectory()) {
+      throw Object.assign(new Error(`无法初始化安全配置目录: ${dir}`), {
+        code: 'INVALID_PROFILE_DIR'
+      });
+    }
+    try { fs.chmodSync(dir, 0o700); } catch {}
+    assertPathNotSymlink(profilePath, '配置文件');
+  }
+
+  function withProfileWriteLock(fn) {
+    ensureSafeProfileDirs();
+    const release = acquireFileLock(lockPath, {
+      staleMs: 15_000,
+      errorCode: 'PROFILE_LOCK_BUSY',
+      errorMessage: '模型配置文件正在被其他窗口写入，请稍后重试'
+    });
+    try {
+      invalidateLoadCache();
+      return fn();
+    } finally {
+      release();
+    }
+  }
 
   function sanitizeStoredProvider(raw) {
     if (!raw || typeof raw !== 'object') return null;
@@ -706,10 +615,13 @@ export function createPrismProfileManager({
   }
 
   function loadProfile() {
-    const dir = path.dirname(profilePath);
-    assertPathNotSymlink(dir, '配置父目录');
+    assertPathNotSymlink(profileDir, '配置父目录', { checkAncestors: true, stopAt: symlinkStopAt });
     const fileStat = assertPathNotSymlink(profilePath, '配置文件');
     if (!fileStat) {
+      if (cachedLoad !== null) {
+        try { secretStore?.invalidateCache?.(); } catch {}
+      }
+      cachedLoad = null;
       return createEmptyProfile();
     }
     if (!fileStat.isFile()) {
@@ -717,8 +629,21 @@ export function createPrismProfileManager({
         code: 'INVALID_PROFILE_FILE'
       });
     }
+    if (
+      cachedLoad &&
+      cachedLoad.mtimeMs === fileStat.mtimeMs &&
+      cachedLoad.ctimeMs === fileStat.ctimeMs &&
+      cachedLoad.ino === fileStat.ino &&
+      cachedLoad.size === fileStat.size
+    ) {
+      return structuredClone(cachedLoad.data);
+    }
+    if (cachedLoad !== null) {
+      try { secretStore?.invalidateCache?.(); } catch {}
+    }
     const rawText = fs.readFileSync(profilePath, 'utf8');
     if (!rawText.trim()) {
+      cachedLoad = null;
       return createEmptyProfile();
     }
     let parsed;
@@ -730,10 +655,19 @@ export function createPrismProfileManager({
         { code: 'CORRUPT_PROFILE_JSON' }
       );
     }
-    return sanitizeLoadedProfile(parsed);
+    const sanitized = sanitizeLoadedProfile(parsed);
+    cachedLoad = {
+      mtimeMs: fileStat.mtimeMs,
+      ctimeMs: fileStat.ctimeMs,
+      ino: fileStat.ino,
+      size: fileStat.size,
+      data: sanitized
+    };
+    return structuredClone(sanitized);
   }
 
   function saveProfile(profile) {
+    ensureSafeProfileDirs();
     const toWrite = {
       schemaVersion: PRISM_PROFILE_SCHEMA_VERSION,
       updatedAt: new Date().toISOString(),
@@ -765,7 +699,13 @@ export function createPrismProfileManager({
       })),
       favorites: Array.from(profile.favorites)
     };
-    writeJsonAtomic0600(profilePath, toWrite);
+    writeJsonAtomic(profilePath, toWrite, {
+      mode: 0o600,
+      dirMode: 0o700,
+      prefix: '.prism-profile-',
+      rejectSymlink: true
+    });
+    invalidateLoadCache();
     return toWrite;
   }
 
@@ -830,23 +770,25 @@ export function createPrismProfileManager({
     defaultTier,
     redactOutboundSecrets
   } = {}) {
-    const profile = loadProfile();
-    const prev = profile.settings || createDefaultSettings();
+    return withProfileWriteLock(() => {
+      const profile = loadProfile();
+      const prev = profile.settings || createDefaultSettings();
 
-    const nextSettings = {
-      remoteMemory: sanitizeRemoteMemorySetting(remoteMemory, prev.remoteMemory),
-      webSearch: sanitizeWebSearchSetting(webSearch, prev.webSearch),
-      defaultTier: defaultTier !== undefined
-        ? normalizeTier(defaultTier, prev.defaultTier || 'T2', true)
-        : (prev.defaultTier || 'T2'),
-      redactOutboundSecrets: redactOutboundSecrets !== undefined
-        ? Boolean(redactOutboundSecrets)
-        : (prev.redactOutboundSecrets !== false)
-    };
+      const nextSettings = {
+        remoteMemory: sanitizeRemoteMemorySetting(remoteMemory, prev.remoteMemory),
+        webSearch: sanitizeWebSearchSetting(webSearch, prev.webSearch),
+        defaultTier: defaultTier !== undefined
+          ? normalizeTier(defaultTier, prev.defaultTier || 'T2', true)
+          : (prev.defaultTier || 'T2'),
+        redactOutboundSecrets: redactOutboundSecrets !== undefined
+          ? Boolean(redactOutboundSecrets)
+          : (prev.redactOutboundSecrets !== false)
+      };
 
-    profile.settings = nextSettings;
-    saveProfile(profile);
-    return structuredClone(nextSettings);
+      profile.settings = nextSettings;
+      saveProfile(profile);
+      return structuredClone(nextSettings);
+    });
   }
 
   function upsertProvider(providerInput = {}) {
@@ -854,143 +796,187 @@ export function createPrismProfileManager({
       throw Object.assign(new Error('Provider 参数必须为对象'), { code: 'INVALID_PROVIDER_INPUT' });
     }
     const id = sanitizeProviderId(providerInput.id);
-    const profile = loadProfile();
-    const existingIdx = profile.providers.findIndex((p) => p.id === id);
-    const existing = existingIdx >= 0 ? profile.providers[existingIdx] : null;
 
-    const presetKey = providerInput.preset !== undefined
-      ? (Object.hasOwn(PROVIDER_PRESETS, providerInput.preset) ? providerInput.preset : '')
-      : (existing?.preset || '');
-    const preset = presetKey ? PROVIDER_PRESETS[presetKey] : null;
+    return withProfileWriteLock(() => {
+      const profile = loadProfile();
+      const existingIdx = profile.providers.findIndex((p) => p.id === id);
+      const existing = existingIdx >= 0 ? profile.providers[existingIdx] : null;
 
-    const protocol = providerInput.protocol !== undefined
-      ? normalizeProtocol(providerInput.protocol, preset?.protocol || 'openai-chat', true)
-      : (existing?.protocol || preset?.protocol || 'openai-chat');
+      const presetKey = providerInput.preset !== undefined
+        ? (Object.hasOwn(PROVIDER_PRESETS, providerInput.preset) ? providerInput.preset : '')
+        : (existing?.preset || '');
+      const preset = presetKey ? PROVIDER_PRESETS[presetKey] : null;
 
-    const rawBaseUrl = providerInput.baseUrl !== undefined
-      ? providerInput.baseUrl
-      : (existing?.baseUrl || preset?.defaultBaseUrl || '');
-    const baseUrl = validateHttpEndpointUrl(rawBaseUrl);
+      const protocol = providerInput.protocol !== undefined
+        ? normalizeProtocol(providerInput.protocol, preset?.protocol || 'openai-chat', true)
+        : (existing?.protocol || preset?.protocol || 'openai-chat');
 
-    let apiKeyEnv;
-    if (providerInput.apiKeyEnv !== undefined) {
-      const rawEnv = String(providerInput.apiKeyEnv ?? '').trim();
-      apiKeyEnv = rawEnv === '' ? '' : validateEnvVarName(rawEnv);
-    } else if (existing) {
-      apiKeyEnv = existing.apiKeyEnv || '';
-    } else if (preset?.suggestedEnv) {
-      apiKeyEnv = validateEnvVarName(preset.suggestedEnv);
-    } else {
-      apiKeyEnv = '';
-    }
+      const rawBaseUrl = providerInput.baseUrl !== undefined
+        ? providerInput.baseUrl
+        : (existing?.baseUrl || preset?.defaultBaseUrl || '');
+      const baseUrl = validateHttpEndpointUrl(rawBaseUrl);
+      const newOrigin = extractNormalizedOrigin(baseUrl);
 
-    let hasVaultKey = Boolean(existing?.hasVaultKey);
-    const hasFreshApiKey = typeof providerInput.apiKey === 'string' && providerInput.apiKey.trim() !== '';
-    if (existing && hasVaultKey && !hasFreshApiKey && providerInput.clearVaultKey !== true && providerInput.apiKey !== null) {
-      try {
-        const oldOrigin = new URL(existing.baseUrl).origin.toLowerCase();
-        const newOrigin = new URL(baseUrl).origin.toLowerCase();
+      let apiKeyEnv;
+      if (providerInput.apiKeyEnv !== undefined) {
+        const rawEnv = String(providerInput.apiKeyEnv ?? '').trim();
+        apiKeyEnv = rawEnv === '' ? '' : validateEnvVarName(rawEnv);
+      } else if (existing) {
+        apiKeyEnv = existing.apiKeyEnv || '';
+      } else if (preset?.suggestedEnv) {
+        apiKeyEnv = validateEnvVarName(preset.suggestedEnv);
+      } else {
+        apiKeyEnv = '';
+      }
+
+      let hasVaultKey = Boolean(existing?.hasVaultKey);
+      const hasFreshApiKey = typeof providerInput.apiKey === 'string' && providerInput.apiKey.trim() !== '';
+      const clearingVaultKey = providerInput.clearVaultKey === true || providerInput.apiKey === null;
+
+      // Fail-closed origin rebind protection for BOTH vault keys and bound environment variables
+      if (existing) {
+        const oldOrigin = extractNormalizedOrigin(existing.baseUrl);
         if (oldOrigin !== newOrigin) {
+          if (hasVaultKey && !hasFreshApiKey && !clearingVaultKey) {
+            throw Object.assign(
+              new Error(`安全拦截：修改已绑定系统凭据库密钥的网关主机 (${oldOrigin} → ${newOrigin}) 时，必须重新录入 API Key 或先清除原凭据库密钥，以防密钥发往非预期端点`),
+              { code: 'ORIGIN_REBIND_REQUIRES_KEY' }
+            );
+          }
+          if (
+            existing.apiKeyEnv &&
+            apiKeyEnv === existing.apiKeyEnv &&
+            providerInput.apiKeyEnv === undefined &&
+            providerInput.confirmOriginChange !== true
+          ) {
+            throw Object.assign(
+              new Error(`安全拦截：修改已绑定环境变量密钥的网关主机 (${oldOrigin} → ${newOrigin}) 时，请显式重新指定 apiKeyEnv 或确认变更，以防环境变量密钥发往非预期端点`),
+              { code: 'ORIGIN_REBIND_REQUIRES_KEY' }
+            );
+          }
+        }
+      }
+
+      let wroteNewVaultKey = false;
+      let prevVaultSecret = '';
+      let hadPrevVaultSecret = false;
+      if (clearingVaultKey) {
+        hasVaultKey = false;
+      } else if (hasFreshApiKey) {
+        if (!secretStore || typeof secretStore.setSecret !== 'function') {
           throw Object.assign(
-            new Error(`安全拦截：修改已绑定系统凭据库密钥的网关主机 (${oldOrigin} → ${newOrigin}) 时，必须重新录入 API Key 或先清除原凭据库密钥，以防密钥发往非预期端点`),
-            { code: 'ORIGIN_REBIND_REQUIRES_KEY' }
+            new Error('未注入系统隔离凭据库 (secretStore)，禁止接收或落盘明文 API Key；请使用环境变量 apiKeyEnv'),
+            { code: 'SECRET_STORE_UNAVAILABLE' }
           );
         }
-      } catch (err) {
-        if (err && err.code === 'ORIGIN_REBIND_REQUIRES_KEY') throw err;
+        if (existing?.hasVaultKey && typeof secretStore.getSecret === 'function') {
+          try {
+            prevVaultSecret = String(secretStore.getSecret(id) || '');
+            hadPrevVaultSecret = Boolean(prevVaultSecret);
+          } catch {}
+        }
+        secretStore.setSecret(id, encodeOriginBoundSecret(providerInput.apiKey.trim(), newOrigin));
+        wroteNewVaultKey = true;
+        hasVaultKey = true;
       }
-    }
-    if (providerInput.clearVaultKey === true || providerInput.apiKey === null) {
-      if (secretStore && typeof secretStore.deleteSecret === 'function') {
-        secretStore.deleteSecret(id);
+
+      const allowKeyless = providerInput.allowKeyless !== undefined
+        ? Boolean(providerInput.allowKeyless)
+        : (existing && providerInput.preset === undefined
+          ? (Boolean(existing.allowKeyless) && isLocalOrLanHost(new URL(baseUrl).hostname))
+          : (presetKey === 'ollama-local' || (!apiKeyEnv && !hasVaultKey && isLoopbackUrl(baseUrl))));
+
+      const labelRaw = providerInput.label ?? providerInput.name ?? existing?.label ?? preset?.label ?? id;
+      const record = {
+        id,
+        label: stripControlChars(labelRaw, 120) || id,
+        preset: presetKey,
+        protocol,
+        baseUrl,
+        apiKeyEnv,
+        hasVaultKey,
+        allowKeyless,
+        enabled: providerInput.enabled !== undefined
+          ? Boolean(providerInput.enabled)
+          : (existing ? existing.enabled !== false : true),
+        updatedAt: new Date().toISOString()
+      };
+
+      if (existingIdx >= 0) {
+        profile.providers[existingIdx] = record;
+      } else {
+        profile.providers.push(record);
       }
-      hasVaultKey = false;
-    } else if (hasFreshApiKey) {
-      if (!secretStore || typeof secretStore.setSecret !== 'function') {
-        throw Object.assign(
-          new Error('未注入系统隔离凭据库 (secretStore)，禁止接收或落盘明文 API Key；请使用环境变量 apiKeyEnv'),
-          { code: 'SECRET_STORE_UNAVAILABLE' }
-        );
+
+      try {
+        saveProfile(profile);
+      } catch (saveErr) {
+        // Restore previous vault secret (or delete newly created orphan) if profile write fails
+        if (wroteNewVaultKey && secretStore) {
+          try {
+            if (hadPrevVaultSecret && typeof secretStore.setSecret === 'function') {
+              secretStore.setSecret(id, prevVaultSecret);
+            } else if (!existing?.hasVaultKey && typeof secretStore.deleteSecret === 'function') {
+              secretStore.deleteSecret(id);
+            }
+          } catch {}
+        }
+        throw saveErr;
       }
-      secretStore.setSecret(id, providerInput.apiKey.trim());
-      hasVaultKey = true;
-    }
 
-    const allowKeyless = providerInput.allowKeyless !== undefined
-      ? Boolean(providerInput.allowKeyless)
-      : (existing && providerInput.preset === undefined && providerInput.baseUrl === undefined
-        ? Boolean(existing.allowKeyless)
-        : (presetKey === 'ollama-local' || (!apiKeyEnv && !hasVaultKey && isLoopbackUrl(baseUrl))));
+      // Delete old vault secret ONLY after profile JSON is safely persisted
+      if (clearingVaultKey && secretStore && typeof secretStore.deleteSecret === 'function') {
+        try { secretStore.deleteSecret(id); } catch {}
+      }
 
-    const labelRaw = providerInput.label ?? providerInput.name ?? existing?.label ?? preset?.label ?? id;
-    const record = {
-      id,
-      label: stripControlChars(labelRaw, 120) || id,
-      preset: presetKey,
-      protocol,
-      baseUrl,
-      apiKeyEnv,
-      hasVaultKey,
-      allowKeyless,
-      enabled: providerInput.enabled !== undefined
-        ? Boolean(providerInput.enabled)
-        : (existing ? existing.enabled !== false : true),
-      updatedAt: new Date().toISOString()
-    };
-
-    if (existingIdx >= 0) {
-      profile.providers[existingIdx] = record;
-    } else {
-      profile.providers.push(record);
-    }
-
-    saveProfile(profile);
-    return enrichPublicProvider(record);
+      return enrichPublicProvider(record);
+    });
   }
 
   function removeProvider(providerId) {
     const cleanId = sanitizeProviderId(providerId);
-    const profile = loadProfile();
-    const beforeCount = profile.providers.length;
-    profile.providers = profile.providers.filter((p) => p.id !== cleanId);
-    const removed = profile.providers.length !== beforeCount;
+    return withProfileWriteLock(() => {
+      const profile = loadProfile();
+      const beforeCount = profile.providers.length;
+      profile.providers = profile.providers.filter((p) => p.id !== cleanId);
+      const removed = profile.providers.length !== beforeCount;
 
-    if (secretStore && typeof secretStore.deleteSecret === 'function') {
-      try {
-        secretStore.deleteSecret(cleanId);
-      } catch {
-        // Ensure profile cleanup completes even if external vault entry was already absent.
-      }
-    }
+      const removedModelIds = new Set();
+      profile.models = profile.models.filter((m) => {
+        if (m.providerId === cleanId) {
+          removedModelIds.add(m.id);
+          return false;
+        }
+        return true;
+      });
 
-    // Remove models bound to this provider and scrub dangling favorites / fallback references
-    const removedModelIds = new Set();
-    profile.models = profile.models.filter((m) => {
-      if (m.providerId === cleanId) {
-        removedModelIds.add(m.id);
-        return false;
-      }
-      return true;
-    });
-
-    if (removedModelIds.size > 0) {
-      profile.favorites = profile.favorites.filter((favId) => !removedModelIds.has(favId));
-      for (const m of profile.models) {
-        if (m.fallbackModelId && removedModelIds.has(m.fallbackModelId)) {
-          m.fallbackModelId = '';
+      if (removedModelIds.size > 0) {
+        profile.favorites = profile.favorites.filter((favId) => !removedModelIds.has(favId));
+        for (const m of profile.models) {
+          if (m.fallbackModelId && removedModelIds.has(m.fallbackModelId)) {
+            m.fallbackModelId = '';
+          }
         }
       }
-    }
 
-    if (removed || removedModelIds.size > 0) {
-      saveProfile(profile);
-    }
+      if (removed || removedModelIds.size > 0) {
+        saveProfile(profile);
+      }
 
-    return {
-      removed,
-      providerId: cleanId,
-      removedModelIds: Array.from(removedModelIds)
-    };
+      if (secretStore && typeof secretStore.deleteSecret === 'function') {
+        try {
+          secretStore.deleteSecret(cleanId);
+        } catch {
+          // Ensure cleanup completes even if external vault entry was already absent.
+        }
+      }
+
+      return {
+        removed,
+        providerId: cleanId,
+        removedModelIds: Array.from(removedModelIds)
+      };
+    });
   }
 
   function upsertModel(modelInput = {}) {
@@ -998,115 +984,120 @@ export function createPrismProfileManager({
       throw Object.assign(new Error('Model 参数必须为对象'), { code: 'INVALID_MODEL_INPUT' });
     }
     const id = sanitizeModelId(modelInput.id);
-    const profile = loadProfile();
-    const existingIdx = profile.models.findIndex((m) => m.id === id);
-    const existing = existingIdx >= 0 ? profile.models[existingIdx] : null;
 
-    const providerId = sanitizeProviderId(modelInput.providerId ?? existing?.providerId);
-    if (!profile.providers.some((p) => p.id === providerId)) {
-      throw Object.assign(new Error(`关联的 Provider "${providerId}" 不存在`), {
-        code: 'PROVIDER_NOT_FOUND'
-      });
-    }
+    return withProfileWriteLock(() => {
+      const profile = loadProfile();
+      const existingIdx = profile.models.findIndex((m) => m.id === id);
+      const existing = existingIdx >= 0 ? profile.models[existingIdx] : null;
 
-    const upstreamModel = stripControlChars(
-      modelInput.upstreamModel !== undefined ? modelInput.upstreamModel : (existing?.upstreamModel ?? id),
-      160
-    );
-    if (!upstreamModel) {
-      throw Object.assign(new Error('upstreamModel 不能为空'), {
-        code: 'INVALID_UPSTREAM_MODEL'
-      });
-    }
-
-    const tier = modelInput.tier !== undefined
-      ? normalizeTier(modelInput.tier, profile.settings.defaultTier || 'T2', true)
-      : (existing?.tier || profile.settings.defaultTier || 'T2');
-
-    const vendor = modelInput.vendor !== undefined
-      ? normalizeVendor(modelInput.vendor, 'other', true)
-      : (existing?.vendor || 'other');
-
-    let fallbackModelId = existing?.fallbackModelId || '';
-    if (modelInput.fallbackModelId !== undefined) {
-      const rawFb = String(modelInput.fallbackModelId ?? '').trim();
-      if (rawFb === '') {
-        fallbackModelId = '';
-      } else {
-        const cleanFb = sanitizeModelId(rawFb);
-        if (cleanFb === id) {
-          throw Object.assign(new Error('模型 fallbackModelId 不能指向自身'), {
-            code: 'SELF_FALLBACK_INVALID'
-          });
-        }
-        fallbackModelId = cleanFb;
-      }
-    }
-
-    let maxTokens = existing?.maxTokens ?? 4096;
-    if (modelInput.maxTokens !== undefined) {
-      const parsedMax = Math.round(Number(modelInput.maxTokens));
-      if (!Number.isFinite(parsedMax) || parsedMax < 1 || parsedMax > 1048576) {
-        throw Object.assign(new Error('maxTokens 必须为 1–1048576 之间的正整数'), {
-          code: 'INVALID_MAX_TOKENS'
+      const providerId = sanitizeProviderId(modelInput.providerId ?? existing?.providerId);
+      if (!profile.providers.some((p) => p.id === providerId)) {
+        throw Object.assign(new Error(`关联的 Provider "${providerId}" 不存在`), {
+          code: 'PROVIDER_NOT_FOUND'
         });
       }
-      maxTokens = parsedMax;
-    }
 
-    const aliasRaw = modelInput.alias !== undefined ? modelInput.alias : (existing?.alias || id);
-    const roleHintRaw = modelInput.roleHint !== undefined ? modelInput.roleHint : (existing?.roleHint || '');
+      const upstreamModel = stripControlChars(
+        modelInput.upstreamModel !== undefined ? modelInput.upstreamModel : (existing?.upstreamModel ?? id),
+        160
+      );
+      if (!upstreamModel) {
+        throw Object.assign(new Error('upstreamModel 不能为空'), {
+          code: 'INVALID_UPSTREAM_MODEL'
+        });
+      }
 
-    const record = {
-      id,
-      alias: stripControlChars(aliasRaw, 120) || id,
-      providerId,
-      upstreamModel,
-      tier,
-      vendor,
-      roleHint: stripControlChars(roleHintRaw, 240),
-      fallbackModelId,
-      enabled: modelInput.enabled !== undefined
-        ? Boolean(modelInput.enabled)
-        : (existing ? existing.enabled !== false : true),
-      maxTokens,
-      lastSpeed: existing?.lastSpeed ? { ...existing.lastSpeed } : null
-    };
+      const tier = modelInput.tier !== undefined
+        ? normalizeTier(modelInput.tier, profile.settings.defaultTier || 'T2', true)
+        : (existing?.tier || profile.settings.defaultTier || 'T2');
 
-    if (existingIdx >= 0) {
-      profile.models[existingIdx] = record;
-    } else {
-      profile.models.push(record);
-    }
+      const vendor = modelInput.vendor !== undefined
+        ? normalizeVendor(modelInput.vendor, 'other', true)
+        : (existing?.vendor || 'other');
 
-    if (modelInput.favorite === true && !profile.favorites.includes(id)) {
-      profile.favorites.push(id);
-    } else if (modelInput.favorite === false) {
-      profile.favorites = profile.favorites.filter((favId) => favId !== id);
-    }
+      let fallbackModelId = existing?.fallbackModelId || '';
+      if (modelInput.fallbackModelId !== undefined) {
+        const rawFb = String(modelInput.fallbackModelId ?? '').trim();
+        if (rawFb === '') {
+          fallbackModelId = '';
+        } else {
+          const cleanFb = sanitizeModelId(rawFb);
+          if (cleanFb === id) {
+            throw Object.assign(new Error('模型 fallbackModelId 不能指向自身'), {
+              code: 'SELF_FALLBACK_INVALID'
+            });
+          }
+          fallbackModelId = cleanFb;
+        }
+      }
 
-    saveProfile(profile);
-    return structuredClone(record);
+      let maxTokens = existing?.maxTokens ?? 4096;
+      if (modelInput.maxTokens !== undefined) {
+        const parsedMax = Math.round(Number(modelInput.maxTokens));
+        if (!Number.isFinite(parsedMax) || parsedMax < 1 || parsedMax > 1048576) {
+          throw Object.assign(new Error('maxTokens 必须为 1–1048576 之间的正整数'), {
+            code: 'INVALID_MAX_TOKENS'
+          });
+        }
+        maxTokens = parsedMax;
+      }
+
+      const aliasRaw = modelInput.alias !== undefined ? modelInput.alias : (existing?.alias || id);
+      const roleHintRaw = modelInput.roleHint !== undefined ? modelInput.roleHint : (existing?.roleHint || '');
+
+      const record = {
+        id,
+        alias: stripControlChars(aliasRaw, 120) || id,
+        providerId,
+        upstreamModel,
+        tier,
+        vendor,
+        roleHint: stripControlChars(roleHintRaw, 240),
+        fallbackModelId,
+        enabled: modelInput.enabled !== undefined
+          ? Boolean(modelInput.enabled)
+          : (existing ? existing.enabled !== false : true),
+        maxTokens,
+        lastSpeed: existing?.lastSpeed ? { ...existing.lastSpeed } : null
+      };
+
+      if (existingIdx >= 0) {
+        profile.models[existingIdx] = record;
+      } else {
+        profile.models.push(record);
+      }
+
+      if (modelInput.favorite === true && !profile.favorites.includes(id)) {
+        profile.favorites.push(id);
+      } else if (modelInput.favorite === false) {
+        profile.favorites = profile.favorites.filter((favId) => favId !== id);
+      }
+
+      saveProfile(profile);
+      return structuredClone(record);
+    });
   }
 
   function removeModel(modelId) {
     const cleanId = sanitizeModelId(modelId);
-    const profile = loadProfile();
-    const beforeCount = profile.models.length;
-    profile.models = profile.models.filter((m) => m.id !== cleanId);
-    const removed = profile.models.length !== beforeCount;
+    return withProfileWriteLock(() => {
+      const profile = loadProfile();
+      const beforeCount = profile.models.length;
+      profile.models = profile.models.filter((m) => m.id !== cleanId);
+      const removed = profile.models.length !== beforeCount;
 
-    profile.favorites = profile.favorites.filter((favId) => favId !== cleanId);
-    for (const m of profile.models) {
-      if (m.fallbackModelId === cleanId) {
-        m.fallbackModelId = '';
+      profile.favorites = profile.favorites.filter((favId) => favId !== cleanId);
+      for (const m of profile.models) {
+        if (m.fallbackModelId === cleanId) {
+          m.fallbackModelId = '';
+        }
       }
-    }
 
-    if (removed) {
-      saveProfile(profile);
-    }
-    return { removed, modelId: cleanId };
+      if (removed) {
+        saveProfile(profile);
+      }
+      return { removed, modelId: cleanId };
+    });
   }
 
   function reorderFavorites(orderedIds = []) {
@@ -1115,44 +1106,47 @@ export function createPrismProfileManager({
         code: 'INVALID_FAVORITES_INPUT'
       });
     }
-    const profile = loadProfile();
-    const validModelIds = new Set(profile.models.map((m) => m.id));
-    const seen = new Set();
-    const cleaned = [];
+    return withProfileWriteLock(() => {
+      const profile = loadProfile();
+      const validModelIds = new Set(profile.models.map((m) => m.id));
+      const seen = new Set();
+      const cleaned = [];
 
-    for (const item of orderedIds) {
-      if (typeof item !== 'string') continue;
-      const trimmed = item.trim();
-      if (!trimmed || !validModelIds.has(trimmed) || seen.has(trimmed)) continue;
-      seen.add(trimmed);
-      cleaned.push(trimmed);
-    }
+      for (const item of orderedIds) {
+        if (typeof item !== 'string') continue;
+        const trimmed = item.trim();
+        if (!trimmed || !validModelIds.has(trimmed) || seen.has(trimmed)) continue;
+        seen.add(trimmed);
+        cleaned.push(trimmed);
+      }
 
-    profile.favorites = cleaned;
-    saveProfile(profile);
-    return [...cleaned];
+      profile.favorites = cleaned;
+      saveProfile(profile);
+      return [...cleaned];
+    });
   }
 
   function recordModelSpeed(modelId, speedObj = {}) {
     const cleanId = sanitizeModelId(modelId);
-    const profile = loadProfile();
-    const target = profile.models.find((m) => m.id === cleanId);
-    if (!target) {
-      throw Object.assign(new Error(`未找到模型 "${cleanId}"`), {
-        code: 'MODEL_NOT_FOUND'
-      });
-    }
-    const normalized = normalizeSpeedRecord(speedObj || {});
-    target.lastSpeed = normalized;
-    saveProfile(profile);
-    return structuredClone(normalized);
+    return withProfileWriteLock(() => {
+      const profile = loadProfile();
+      const target = profile.models.find((m) => m.id === cleanId);
+      if (!target) {
+        throw Object.assign(new Error(`未找到模型 "${cleanId}"`), {
+          code: 'MODEL_NOT_FOUND'
+        });
+      }
+      const normalized = normalizeSpeedRecord(speedObj || {});
+      target.lastSpeed = normalized;
+      saveProfile(profile);
+      return structuredClone(normalized);
+    });
   }
 
   /**
    * Internal server-only credential resolver for model-hub.mjs.
    * Order: secretStore.getSecret(providerId) -> env[provider.apiKeyEnv].
-   * Returned object masks `apiKey` from JSON.stringify and util.inspect so it
-   * can never be accidentally serialized outward.
+   * Verifies origin binding when vault secret is stored in envelope format.
    */
   function resolveProviderAuth(providerId) {
     const cleanId = sanitizeProviderId(providerId);
@@ -1168,9 +1162,16 @@ export function createPrismProfileManager({
     let source = 'none';
 
     if (provider.hasVaultKey && secretStore && typeof secretStore.getSecret === 'function') {
-      const vaultSecret = secretStore.getSecret(provider.id);
-      if (typeof vaultSecret === 'string' && vaultSecret.trim() !== '') {
-        apiKey = vaultSecret.trim();
+      const vaultRaw = secretStore.getSecret(provider.id);
+      const decoded = decodeOriginBoundSecret(vaultRaw, extractNormalizedOrigin(provider.baseUrl));
+      if (!decoded.ok) {
+        throw Object.assign(
+          new Error('安全拦截：系统凭据库密钥绑定的网关域名与当前配置不一致，请重新录入 API Key'),
+          { code: 'ORIGIN_VAULT_MISMATCH' }
+        );
+      }
+      if (decoded.secret) {
+        apiKey = decoded.secret;
         source = 'vault';
       }
     }
@@ -1219,69 +1220,78 @@ export function createPrismProfileManager({
     if (!Array.isArray(items) || items.length === 0) {
       return { added: 0, skipped: 0, importedIds: [] };
     }
-    const profile = loadProfile();
-    if (!profile.providers.some((p) => p.id === cleanProvId)) {
-      throw Object.assign(new Error(`关联的 Provider "${cleanProvId}" 不存在`), {
-        code: 'PROVIDER_NOT_FOUND'
-      });
-    }
-    const existingIds = new Set(profile.models.map((m) => m.id));
-    const existingPairKeys = new Set(profile.models.map((m) => `${m.providerId}::${m.upstreamModel}`));
-    let added = 0;
-    let skipped = 0;
-    const importedIds = [];
+    return withProfileWriteLock(() => {
+      const profile = loadProfile();
+      if (!profile.providers.some((p) => p.id === cleanProvId)) {
+        throw Object.assign(new Error(`关联的 Provider "${cleanProvId}" 不存在`), {
+          code: 'PROVIDER_NOT_FOUND'
+        });
+      }
+      const existingIds = new Set(profile.models.map((m) => m.id));
+      const existingPairKeys = new Set(profile.models.map((m) => `${m.providerId}::${m.upstreamModel}`));
+      let added = 0;
+      let skipped = 0;
+      const importedIds = [];
 
-    for (const raw of items.slice(0, 120)) {
-      if (!raw || typeof raw !== 'object') continue;
-      const upstreamModel = stripControlChars(raw.upstreamModel || raw.id || '', 160);
-      if (!upstreamModel) continue;
-      const pairKey = `${cleanProvId}::${upstreamModel}`;
-      if (existingPairKeys.has(pairKey)) {
-        skipped++;
-        continue;
-      }
-      let candidateId = String(raw.id || upstreamModel).trim().replace(/^models\//i, '').replace(/[^A-Za-z0-9._:/-]+/g, '-').replace(/^\.+|\.+$/g, '').slice(0, 80);
-      if (!candidateId || !MODEL_ID_RE.test(candidateId) || candidateId.includes('..')) {
-        candidateId = `${cleanProvId}-${added + 1}`;
-      }
-      if (existingIds.has(candidateId)) {
-        const scopedId = `${cleanProvId}-${candidateId}`.slice(0, 95);
-        if (existingIds.has(scopedId) || !MODEL_ID_RE.test(scopedId)) {
+      for (const raw of items.slice(0, 120)) {
+        if (!raw || typeof raw !== 'object') continue;
+        const upstreamModel = stripControlChars(raw.upstreamModel || raw.id || '', 160);
+        if (!upstreamModel) continue;
+        const pairKey = `${cleanProvId}::${upstreamModel}`;
+        if (existingPairKeys.has(pairKey)) {
           skipped++;
           continue;
         }
-        candidateId = scopedId;
+        let candidateId = String(raw.id || upstreamModel)
+          .trim()
+          .replace(/^models\//i, '')
+          .replace(/[^A-Za-z0-9._:/-]+/g, '-')
+          .replace(/^[^A-Za-z0-9]+|[.]+$/g, '')
+          .slice(0, 80);
+        if (!candidateId || !MODEL_ID_RE.test(candidateId) || candidateId.includes('..')) {
+          let seq = added + 1;
+          while (existingIds.has(`${cleanProvId}-${seq}`)) seq++;
+          candidateId = `${cleanProvId}-${seq}`;
+        }
+        if (existingIds.has(candidateId)) {
+          const scopedId = `${cleanProvId}-${candidateId}`.slice(0, 95);
+          if (existingIds.has(scopedId) || !MODEL_ID_RE.test(scopedId)) {
+            skipped++;
+            continue;
+          }
+          candidateId = scopedId;
+        }
+        const tier = normalizeTier(raw.tier, profile.settings.defaultTier || 'T2', false);
+        const vendor = normalizeVendor(raw.vendor, 'other', false);
+        const alias = stripControlChars(raw.alias || candidateId, 120) || candidateId;
+        const roleHint = stripControlChars(raw.roleHint || '', 240);
+        profile.models.push({
+          id: candidateId,
+          alias,
+          providerId: cleanProvId,
+          upstreamModel,
+          tier,
+          vendor,
+          roleHint,
+          fallbackModelId: '',
+          enabled: true,
+          maxTokens: 4096,
+          lastSpeed: null
+        });
+        existingIds.add(candidateId);
+        existingPairKeys.add(pairKey);
+        if (raw.favorite === true && !profile.favorites.includes(candidateId)) {
+          profile.favorites.push(candidateId);
+        }
+        importedIds.push(candidateId);
+        added++;
       }
-      const tier = normalizeTier(raw.tier, profile.settings.defaultTier || 'T2', false);
-      const vendor = normalizeVendor(raw.vendor, 'other', false);
-      const alias = stripControlChars(raw.alias || candidateId, 120) || candidateId;
-      const roleHint = stripControlChars(raw.roleHint || '', 240);
-      profile.models.push({
-        id: candidateId,
-        alias,
-        providerId: cleanProvId,
-        upstreamModel,
-        tier,
-        vendor,
-        roleHint,
-        fallbackModelId: '',
-        enabled: true,
-        maxTokens: 4096,
-        lastSpeed: null
-      });
-      existingIds.add(candidateId);
-      existingPairKeys.add(pairKey);
-      if (raw.favorite === true && !profile.favorites.includes(candidateId)) {
-        profile.favorites.push(candidateId);
-      }
-      importedIds.push(candidateId);
-      added++;
-    }
 
-    if (added > 0) {
-      saveProfile(profile);
-    }
-    return { added, skipped, importedIds };
+      if (added > 0) {
+        saveProfile(profile);
+      }
+      return { added, skipped, importedIds };
+    });
   }
 
   return {

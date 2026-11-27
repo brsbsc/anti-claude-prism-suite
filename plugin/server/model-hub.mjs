@@ -6,210 +6,54 @@
  * Security & reliability invariants:
  * - Zero external dependencies (Node >= 22 built-in modules only).
  * - Multi-byte UTF-8 safe SSE parser (`TextDecoder` stream mode) with TTFT,
- *   idle-chunk, and total timeouts, deterministic timer cleanup, and mid-stream
- *   error frame detection (`event: error`, `{"error": ...}`, `{"type": "error"}`).
+ *   idle-chunk, and total timeouts, deterministic timer cleanup, bounded buffers,
+ *   and mid-stream error frame detection (`event: error`, `{"error": ...}`, `{"type": "error"}`).
  * - Native support for `openai-chat`, `openai-responses`, and `anthropic-messages`
- *   with non-streaming JSON fallback and 1-hop cycle-safe fallback routing.
- * - Strict SSRF / DNS-rebinding elimination for public web search: HTTPS only,
+ *   with non-streaming JSON fallback, `redirect: 'error'`, and 1-hop cycle-safe fallback routing.
+ * - Strict SSRF / DNS-rebinding elimination for public web search: HTTPS:443 only,
  *   verifies ALL resolved DNS records via `isPublicRoutableIp`, pins the verified
  *   public IP via custom `https.request` `lookup` while preserving TLS SNI,
  *   re-verifies redirects (max 2 hops), and caps response bodies at 256 KB.
- * - Redacts outbound private keys and API credentials by default, and never
- *   exposes `baseUrl`, `apiKeyEnv`, or secrets in `listModelsForMcp`.
+ * - Redacts outbound private keys, active API keys, and credentials by default,
+ *   and never exposes `baseUrl`, `apiKeyEnv`, or secrets to MCP callers.
  */
 import dns from 'node:dns';
 import https from 'node:https';
 import net from 'node:net';
 import { performance } from 'node:perf_hooks';
 import { TIER_DEFINITIONS, VALID_TIERS } from './prism-profile.mjs';
+import {
+  isDangerousMetadataOrLinkLocalHost,
+  isLocalOrLanHost,
+  isPublicRoutableIp,
+  readResponseTextCapped,
+  redactSensitiveText
+} from './platform-utils.mjs';
 
-export const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 30_000;
-export const DEFAULT_IDLE_CHUNK_TIMEOUT_MS = 45_000;
-export const DEFAULT_TOTAL_TIMEOUT_MS = 120_000;
-export const MAX_SEARCH_RESPONSE_BYTES = 256 * 1024;
-export const MAX_SEARCH_REDIRECTS = 2;
-export const DEFAULT_PUBLIC_SEARCH_ENDPOINT = 'https://html.duckduckgo.com/html/';
+export { isPublicRoutableIp };
 
-const RETRIABLE_HTTP_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
+const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 30_000;
+const DEFAULT_IDLE_CHUNK_TIMEOUT_MS = 45_000;
+const DEFAULT_TOTAL_TIMEOUT_MS = 120_000;
+const MAX_SEARCH_RESPONSE_BYTES = 256 * 1024;
+const MAX_SEARCH_REDIRECTS = 2;
+const DEFAULT_PUBLIC_SEARCH_ENDPOINT = 'https://html.duckduckgo.com/html/';
+const MAX_ERROR_BODY_BYTES = 16 * 1024;
+const MAX_JSON_RESPONSE_BYTES = 4 * 1024 * 1024;
+const MAX_DISCOVERY_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_SSE_LINE_BYTES = 1024 * 1024;
+const MAX_SSE_EVENT_BYTES = 2 * 1024 * 1024;
+const MAX_STREAM_TEXT_CHARS = 2 * 1024 * 1024;
+const MAX_CONCURRENT_PROBES = 3;
+
+const RETRIABLE_HTTP_STATUSES = new Set([408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529]);
 const NON_RETRIABLE_AUTH_STATUSES = new Set([400, 401, 403, 404, 422]);
 
 /**
  * Redacts common private keys, tokens, and high-risk credentials from outbound prompts.
  */
-export function redactOutboundText(text) {
-  let out = String(text ?? '');
-  if (!out) return '';
-
-  // PEM private keys
-  out = out.replace(
-    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g,
-    '[REDACTED_PRIVATE_KEY]'
-  );
-  // GitHub classic & fine-grained PATs
-  out = out.replace(
-    /\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b/g,
-    '[REDACTED_GH_TOKEN]'
-  );
-  // OpenAI / Anthropic / Stripe / OpenRouter style sk-... keys
-  out = out.replace(
-    /\bsk-(?:proj-|ant-|live-|test-|or-v1-)?[A-Za-z0-9_-]{16,}\b/g,
-    '[REDACTED_API_KEY]'
-  );
-  // Google API keys
-  out = out.replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, '[REDACTED_GOOGLE_KEY]');
-  // Slack tokens
-  out = out.replace(/\bxox[baprs]-[A-Za-z0-9-]{16,}\b/g, '[REDACTED_SLACK_TOKEN]');
-  // AWS access key IDs
-  out = out.replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, '[REDACTED_AWS_KEY]');
-  // Standard 3-segment JWTs
-  out = out.replace(
-    /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
-    '[REDACTED_JWT]'
-  );
-  // Authorization Bearer tokens
-  out = out.replace(/\b(Bearer[ \t]+)[A-Za-z0-9._~+/=-]{12,}/gi, '$1[REDACTED_TOKEN]');
-
-  return out;
-}
-
-function expandIpv6ToWords(rawIpv6) {
-  let addr = rawIpv6.toLowerCase();
-  if (addr.includes('%')) return null;
-
-  // Convert trailing dotted-quad IPv4 (e.g. ::ffff:10.0.0.1) into two 16-bit hex groups
-  const lastColon = addr.lastIndexOf(':');
-  if (lastColon !== -1 && addr.indexOf('.', lastColon) !== -1) {
-    const v4Part = addr.slice(lastColon + 1);
-    if (!net.isIPv4(v4Part)) return null;
-    const octets = v4Part.split('.').map((n) => Number(n));
-    const hi = ((octets[0] << 8) | octets[1]).toString(16);
-    const lo = ((octets[2] << 8) | octets[3]).toString(16);
-    addr = `${addr.slice(0, lastColon)}:${hi}:${lo}`;
-  }
-
-  const dblParts = addr.split('::');
-  if (dblParts.length > 2) return null;
-
-  const parseSide = (part) => {
-    if (!part) return [];
-    return part.split(':').map((seg) => {
-      if (!/^[0-9a-f]{1,4}$/.test(seg)) return -1;
-      return parseInt(seg, 16);
-    });
-  };
-
-  if (dblParts.length === 1) {
-    const groups = parseSide(dblParts[0]);
-    if (groups.length !== 8 || groups.some((n) => n < 0)) return null;
-    return groups;
-  }
-
-  const left = parseSide(dblParts[0]);
-  const right = parseSide(dblParts[1]);
-  if (left.some((n) => n < 0) || right.some((n) => n < 0)) return null;
-  const missing = 8 - (left.length + right.length);
-  if (missing < 1) return null;
-  return [...left, ...new Array(missing).fill(0), ...right];
-}
-
-function wordsToIpv4(hiWord, loWord) {
-  return `${(hiWord >> 8) & 0xff}.${hiWord & 0xff}.${(loWord >> 8) & 0xff}.${loWord & 0xff}`;
-}
-
-/**
- * Returns true ONLY if `ip` is a globally routable public unicast IPv4 or IPv6 address.
- * Blocks loopback, RFC1918, CGNAT/Tailscale (100.64.0.0/10), link-local, benchmarking/FakeIP
- * (198.18.0.0/15), multicast/reserved, ULA, IPv4-mapped non-public IPv6, NAT64, 6to4, and doc ranges.
- */
-export function isPublicRoutableIp(ip) {
-  if (typeof ip !== 'string') return false;
-  let clean = ip.trim();
-  if (!clean || clean.includes('%')) return false;
-  if (clean.startsWith('[') && clean.endsWith(']')) {
-    clean = clean.slice(1, -1);
-  }
-
-  if (net.isIPv4(clean)) {
-    const parts = clean.split('.');
-    if (parts.length !== 4) return false;
-    const nums = parts.map((p) => (/^(?:0|[1-9]\d{0,2})$/.test(p) ? Number(p) : -1));
-    if (nums.some((n) => n < 0 || n > 255)) return false;
-    const [a, b, c] = nums;
-
-    if (a === 0) return false; // 0.0.0.0/8 ("This" network)
-    if (a === 10) return false; // 10.0.0.0/8 (RFC1918)
-    if (a === 100 && b >= 64 && b <= 127) return false; // 100.64.0.0/10 (CGNAT / Tailscale)
-    if (a === 127) return false; // 127.0.0.0/8 (Loopback)
-    if (a === 169 && b === 254) return false; // 169.254.0.0/16 (Link-local / Cloud metadata)
-    if (a === 172 && b >= 16 && b <= 31) return false; // 172.16.0.0/12 (RFC1918)
-    if (a === 192 && b === 0 && c === 0) return false; // 192.0.0.0/24 (IETF protocol assignments)
-    if (a === 192 && b === 0 && c === 2) return false; // 192.0.2.0/24 (TEST-NET-1)
-    if (a === 192 && b === 168) return false; // 192.168.0.0/16 (RFC1918)
-    if (a === 198 && (b === 18 || b === 19)) return false; // 198.18.0.0/15 (Benchmarking / FakeIP)
-    if (a === 198 && b === 51 && c === 100) return false; // 198.51.100.0/24 (TEST-NET-2)
-    if (a === 203 && b === 0 && c === 113) return false; // 203.0.113.0/24 (TEST-NET-3)
-    if (a >= 224) return false; // 224.0.0.0/4 Multicast + 240.0.0.0/4 Reserved/Broadcast
-
-    return true;
-  }
-
-  if (net.isIPv6(clean)) {
-    const g = expandIpv6ToWords(clean);
-    if (!g) return false;
-
-    const allZeroPrefix6 = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0;
-    // :: (Unspecified) and ::1 (Loopback) and deprecated IPv4-compatible ::w.x.y.z
-    if (allZeroPrefix6) {
-      if (g[6] === 0 && (g[7] === 0 || g[7] === 1)) return false;
-      return isPublicRoutableIp(wordsToIpv4(g[6], g[7]));
-    }
-
-    // IPv4-mapped ::ffff:0:0/96
-    if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0xffff) {
-      return isPublicRoutableIp(wordsToIpv4(g[6], g[7]));
-    }
-
-    // IPv4-translated ::ffff:0:0:0/96
-    if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0xffff && g[5] === 0) {
-      return isPublicRoutableIp(wordsToIpv4(g[6], g[7]));
-    }
-
-    // NAT64 Well-Known Prefix 64:ff9b::/96 & Local-Use 64:ff9b:1::/48
-    if (g[0] === 0x0064 && g[1] === 0xff9b) {
-      if (g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) {
-        return isPublicRoutableIp(wordsToIpv4(g[6], g[7]));
-      }
-      if (g[2] === 1) return false;
-    }
-
-    // 6to4 2002::/16 embeds IPv4 in g[1], g[2]
-    if (g[0] === 0x2002) {
-      return isPublicRoutableIp(wordsToIpv4(g[1], g[2]));
-    }
-
-    // Discard-Only 100::/64
-    if (g[0] === 0x0100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return false;
-
-    // Documentation 2001:db8::/32 & Benchmarking 2001:2::/48 & Teredo 2001:0000::/32
-    if (g[0] === 0x2001) {
-      if (g[1] === 0x0db8) return false;
-      if (g[1] === 0x0002 && g[2] === 0) return false;
-      if (g[1] === 0x0000) return false;
-    }
-
-    // Unique Local fc00::/7
-    if ((g[0] & 0xfe00) === 0xfc00) return false;
-
-    // Link-Local fe80::/10 & deprecated Site-Local fec0::/10
-    if ((g[0] & 0xffc0) === 0xfe80 || (g[0] & 0xffc0) === 0xfec0) return false;
-
-    // Multicast ff00::/8
-    if ((g[0] & 0xff00) === 0xff00) return false;
-
-    return true;
-  }
-
-  return false;
+export function redactOutboundText(text, extraSecrets = []) {
+  return redactSensitiveText(text, { extraSecrets });
 }
 
 function createUpstreamError(message, {
@@ -217,9 +61,10 @@ function createUpstreamError(message, {
   status = 0,
   retriable = false,
   isStreamError = false,
+  extraSecrets = [],
   cause
 } = {}) {
-  const safeMessage = redactOutboundText(String(message || 'Upstream gateway error')).slice(0, 400);
+  const safeMessage = redactSensitiveText(String(message || 'Upstream gateway error'), { extraSecrets, maxLen: 400 });
   const err = new Error(safeMessage, cause ? { cause } : undefined);
   err.name = 'ModelHubUpstreamError';
   err.code = code;
@@ -236,6 +81,34 @@ function createStreamTimeoutError(code, label, timeoutMs) {
   err.errno = 'ETIMEDOUT';
   err.retriable = true;
   return err;
+}
+
+function assertSafeProviderEndpoint(baseUrl, hasApiKey) {
+  let parsedBase;
+  try {
+    parsedBase = new URL(baseUrl);
+  } catch {
+    throw createUpstreamError('网关端点 URL 格式无效', {
+      code: 'INVALID_ENDPOINT_URL',
+      status: 400,
+      retriable: false
+    });
+  }
+  const bareH = parsedBase.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (isDangerousMetadataOrLinkLocalHost(bareH)) {
+    throw createUpstreamError('安全拦截：禁止向云元数据、未指定地址或链路本地端点发起网关请求', {
+      code: 'SSRF_BLOCKED_METADATA',
+      status: 400,
+      retriable: false
+    });
+  }
+  if (hasApiKey && parsedBase.protocol === 'http:' && !isLocalOrLanHost(bareH)) {
+    throw createUpstreamError(
+      '安全拦截：禁止通过明文 http:// 向公网网关发送 API Key，请改用 https://',
+      { code: 'CLEARTEXT_HTTP_CREDENTIAL_BLOCKED', status: 400, retriable: false }
+    );
+  }
+  return parsedBase;
 }
 
 function extractEmbeddedErrorDetails(errPayload) {
@@ -271,7 +144,7 @@ function extractEmbeddedErrorDetails(errPayload) {
   return { message, status, type: errType };
 }
 
-function checkMidStreamErrorFrame(sseEvent) {
+function checkMidStreamErrorFrame(sseEvent, extraSecrets = []) {
   const eventType = sseEvent.event || 'message';
   const rawData = String(sseEvent.data ?? '').trim();
 
@@ -286,7 +159,8 @@ function checkMidStreamErrorFrame(sseEvent) {
       code: 'SSE_STREAM_ERROR',
       status,
       retriable,
-      isStreamError: true
+      isStreamError: true,
+      extraSecrets
     });
   }
 
@@ -314,18 +188,20 @@ function checkMidStreamErrorFrame(sseEvent) {
       code: 'SSE_STREAM_ERROR',
       status,
       retriable,
-      isStreamError: true
+      isStreamError: true,
+      extraSecrets
     });
   }
 
-  if (parsed.error !== undefined && parsed.error !== null && parsed.error !== false) {
+  if (parsed.error !== undefined && parsed.error !== null && parsed.error !== false && parsed.error !== '') {
     const { message, status } = extractEmbeddedErrorDetails(parsed);
     const retriable = !NON_RETRIABLE_AUTH_STATUSES.has(status);
     throw createUpstreamError(`SSE 流内错误帧: ${message}`, {
       code: 'SSE_STREAM_ERROR',
       status,
       retriable,
-      isStreamError: true
+      isStreamError: true,
+      extraSecrets
     });
   }
 }
@@ -349,12 +225,8 @@ function toChunkReader(streamOrResponse) {
     return {
       read: () => reader.read(),
       cancel: async (reason) => {
-        try {
-          await reader.cancel(reason);
-        } catch {}
-        try {
-          reader.releaseLock();
-        } catch {}
+        try { await reader.cancel(reason); } catch {}
+        try { reader.releaseLock(); } catch {}
       }
     };
   }
@@ -399,23 +271,28 @@ function toChunkReader(streamOrResponse) {
  * Pure Node zero-dependency SSE async generator.
  * - Multi-byte UTF-8 safe across arbitrary TCP packet boundaries (`TextDecoder` stream mode).
  * - Handles `\r\n`, `\n`, split `\r`/`\n` across chunks, comments, and multi-line `data:` concatenation.
- * - Enforces `firstByteTimeoutMs`, `idleChunkTimeoutMs`, and `totalTimeoutMs` via `AbortController`
- *   and cleans up all `setTimeout` handles deterministically in `finally`.
- * - Detects mid-stream error frames (`event: error`, `{"error": ...}`, `{"type": "error"}`).
+ * - Enforces `firstByteTimeoutMs`, `idleChunkTimeoutMs`, `totalTimeoutMs`, and line/event size caps.
+ * - Initializes reader BEFORE arming timers/listeners so early errors never leak handles.
  */
 export async function* parseSseEvents(streamOrResponse, options = {}) {
   const firstByteTimeoutMs = options.firstByteTimeoutMs !== undefined
     ? Math.max(0, Number(options.firstByteTimeoutMs) || 0)
     : DEFAULT_FIRST_BYTE_TIMEOUT_MS;
-  const idleChunkTimeoutMs = options.idleChunkTimeoutMs !== undefined
-    ? Math.max(0, Number(options.idleChunkTimeoutMs) || 0)
+  const rawIdleMs = options.idleChunkTimeoutMs !== undefined ? options.idleChunkTimeoutMs : options.idleTimeoutMs;
+  const idleChunkTimeoutMs = rawIdleMs !== undefined
+    ? Math.max(0, Number(rawIdleMs) || 0)
     : DEFAULT_IDLE_CHUNK_TIMEOUT_MS;
   const totalTimeoutMs = options.totalTimeoutMs !== undefined
     ? Math.max(0, Number(options.totalTimeoutMs) || 0)
     : DEFAULT_TOTAL_TIMEOUT_MS;
   const detectMidStreamErrors = options.detectMidStreamErrors !== false;
   const onFirstByte = typeof options.onFirstByte === 'function' ? options.onFirstByte : null;
+  const extraSecrets = Array.isArray(options.extraSecrets) ? options.extraSecrets : [];
+  const maxLineBytes = Math.max(4096, Number(options.maxLineBytes) || MAX_SSE_LINE_BYTES);
+  const maxEventBytes = Math.max(8192, Number(options.maxEventBytes) || MAX_SSE_EVENT_BYTES);
 
+  // Acquire chunk reader BEFORE registering timers/listeners so EMPTY_SSE_STREAM never leaks them
+  const reader = toChunkReader(streamOrResponse);
   const internalController = options.abortController || new AbortController();
   const externalSignal = options.signal || null;
 
@@ -424,7 +301,6 @@ export async function* parseSseEvents(streamOrResponse, options = {}) {
   const abortPromise = new Promise((_, reject) => {
     rejectAbortPromise = reject;
   });
-  // Prevent unhandled rejection if abort fires while not actively awaited
   abortPromise.catch(() => {});
 
   const triggerAbort = (err) => {
@@ -440,26 +316,20 @@ export async function* parseSseEvents(streamOrResponse, options = {}) {
     }
   };
 
-  const onExternalAbort = () => {
-    const reason = externalSignal?.reason instanceof Error
-      ? externalSignal.reason
-      : Object.assign(new Error('Request aborted by caller'), {
-        name: 'AbortError',
-        code: 'CALLER_ABORTED',
-        callerAborted: true,
-        retriable: false
-      });
-    reason.callerAborted = true;
-    triggerAbort(reason);
+  const makeCallerAbortError = () => {
+    const ext = externalSignal?.reason;
+    const msg = ext instanceof Error ? ext.message : 'Request aborted by caller';
+    return Object.assign(new Error(msg, ext instanceof Error ? { cause: ext } : undefined), {
+      name: 'AbortError',
+      code: 'CALLER_ABORTED',
+      callerAborted: true,
+      retriable: false
+    });
   };
 
-  if (externalSignal) {
-    if (externalSignal.aborted) {
-      onExternalAbort();
-    } else {
-      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
-    }
-  }
+  const onExternalAbort = () => {
+    triggerAbort(makeCallerAbortError());
+  };
 
   let totalTimer = null;
   let stepTimer = null;
@@ -477,21 +347,14 @@ export async function* parseSseEvents(streamOrResponse, options = {}) {
     }
   };
 
-  if (totalTimeoutMs > 0 && !abortError) {
-    totalTimer = setTimeout(() => {
-      triggerAbort(createStreamTimeoutError('TOTAL_TIMEOUT', 'SSE 流总时长超时', totalTimeoutMs));
-    }, totalTimeoutMs);
-  }
-
-  const reader = toChunkReader(streamOrResponse);
-  const decoder = new TextDecoder('utf-8', { stream: true });
-
+  const decoder = new TextDecoder('utf-8');
   let receivedFirstByte = Boolean(options.firstByteAlreadyReceived);
   let carryCr = '';
   let lineBuffer = '';
   let eventName = 'message';
   let eventId = '';
   let dataLines = [];
+  let dataBytes = 0;
   let finishedCleanly = false;
 
   const flushCurrentEvent = () => {
@@ -505,13 +368,21 @@ export async function* parseSseEvents(streamOrResponse, options = {}) {
     };
     eventName = 'message';
     dataLines = [];
+    dataBytes = 0;
     if (detectMidStreamErrors) {
-      checkMidStreamErrorFrame(evt);
+      checkMidStreamErrorFrame(evt, extraSecrets);
     }
     return evt;
   };
 
   const processLine = (line) => {
+    if (line.length > maxLineBytes) {
+      throw createUpstreamError(`SSE 单行超过体积上限 (${maxLineBytes} chars)`, {
+        code: 'SSE_LINE_TOO_LARGE',
+        status: 502,
+        retriable: false
+      });
+    }
     if (line === '') {
       return flushCurrentEvent();
     }
@@ -535,6 +406,14 @@ export async function* parseSseEvents(streamOrResponse, options = {}) {
     if (field === 'event') {
       eventName = value.trim() || 'message';
     } else if (field === 'data') {
+      dataBytes += value.length + 1;
+      if (dataBytes > maxEventBytes) {
+        throw createUpstreamError(`SSE 单条事件超过体积上限 (${maxEventBytes} chars)`, {
+          code: 'SSE_EVENT_TOO_LARGE',
+          status: 502,
+          retriable: false
+        });
+      }
       dataLines.push(value);
     } else if (field === 'id' && !value.includes('\0')) {
       eventId = value;
@@ -543,6 +422,21 @@ export async function* parseSseEvents(streamOrResponse, options = {}) {
   };
 
   try {
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        onExternalAbort();
+      } else {
+        externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+      }
+    }
+
+    if (totalTimeoutMs > 0 && !abortError) {
+      totalTimer = setTimeout(() => {
+        triggerAbort(createStreamTimeoutError('TOTAL_TIMEOUT', 'SSE 流总时长超时', totalTimeoutMs));
+      }, totalTimeoutMs);
+      totalTimer.unref?.();
+    }
+
     while (true) {
       if (abortError) throw abortError;
 
@@ -553,6 +447,7 @@ export async function* parseSseEvents(streamOrResponse, options = {}) {
         stepTimer = setTimeout(() => {
           triggerAbort(createStreamTimeoutError(code, label, stepLimitMs));
         }, stepLimitMs);
+        stepTimer.unref?.();
       }
 
       let chunkResult;
@@ -604,9 +499,23 @@ export async function* parseSseEvents(streamOrResponse, options = {}) {
 
       if (!decoded) continue;
 
+      if (lineBuffer.length + decoded.length > maxLineBytes && !decoded.includes('\n') && !decoded.includes('\r')) {
+        throw createUpstreamError(`SSE 单行超过体积上限 (${maxLineBytes} chars)`, {
+          code: 'SSE_LINE_TOO_LARGE',
+          status: 502,
+          retriable: false
+        });
+      }
       const normalized = lineBuffer + decoded.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
       const lines = normalized.split('\n');
       lineBuffer = lines.pop() ?? '';
+      if (lineBuffer.length > maxLineBytes) {
+        throw createUpstreamError(`SSE 单行超过体积上限 (${maxLineBytes} chars)`, {
+          code: 'SSE_LINE_TOO_LARGE',
+          status: 502,
+          retriable: false
+        });
+      }
 
       for (const line of lines) {
         const dispatched = processLine(line);
@@ -618,9 +527,7 @@ export async function* parseSseEvents(streamOrResponse, options = {}) {
   } finally {
     clearAllTimers();
     if (externalSignal) {
-      try {
-        externalSignal.removeEventListener('abort', onExternalAbort);
-      } catch {}
+      try { externalSignal.removeEventListener('abort', onExternalAbort); } catch {}
     }
     if (!finishedCleanly) {
       await reader.cancel(abortError || undefined);
@@ -688,7 +595,6 @@ function normalizeCandidateResultUrl(rawHref) {
     return '';
   }
 
-  // Unwrap DuckDuckGo redirect links (?uddg=https%3A%2F%2F...)
   const uddg = parsed.searchParams.get('uddg');
   if (uddg) {
     try {
@@ -708,11 +614,9 @@ function normalizeCandidateResultUrl(rawHref) {
   const host = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
   if (!host) return '';
 
-  // Skip internal DuckDuckGo navigation/ad tracker links
   if (host === 'duckduckgo.com' || host.endsWith('.duckduckgo.com')) {
     return '';
   }
-  // Never surface links pointing directly to private/non-public IP literals
   if (net.isIP(host) !== 0 && !isPublicRoutableIp(host)) {
     return '';
   }
@@ -722,8 +626,7 @@ function normalizeCandidateResultUrl(rawHref) {
 
 /**
  * Safely extracts `{ title, url, snippet }` search results from raw HTML
- * without DOM dependencies: strips scripts/styles/comments, decodes entities,
- * and unwraps search redirect links.
+ * without DOM dependencies.
  */
 export function extractSearchResultsFromHtml(rawHtml, { maxResults = 6 } = {}) {
   const limit = Math.max(1, Math.min(20, Number(maxResults) || 6));
@@ -745,7 +648,6 @@ export function extractSearchResultsFromHtml(rawHtml, { maxResults = 6 } = {}) {
     results.push({ title, url, snippet });
   };
 
-  // Pass 1: DuckDuckGo HTML result anchors (`class="...result__a..."`) + nearest `result__snippet`
   const ddgAnchorRe = /<a\b[^>]*class=["'][^"']*\bresult__a\b[^"']*["'][^>]*>([\s\S]*?)<\/a>/gi;
   let match;
   while ((match = ddgAnchorRe.exec(cleanedHtml)) !== null && results.length < limit) {
@@ -763,7 +665,6 @@ export function extractSearchResultsFromHtml(rawHtml, { maxResults = 6 } = {}) {
     return results;
   }
 
-  // Pass 2: Generic semantic HTML anchors (`<a href="https://...">Title</a>` + trailing text/snippet)
   const genericAnchorRe = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
   while ((match = genericAnchorRe.exec(cleanedHtml)) !== null && results.length < limit) {
     const attrs = match[1] || '';
@@ -877,10 +778,11 @@ function validateHttpsSearchUrl(rawUrl) {
       { code: 'UNSAFE_SEARCH_PROTOCOL' }
     );
   }
-  if (parsed.username || parsed.password) {
-    throw Object.assign(new Error('公网代搜 URL 禁止包含用户名或密码'), {
-      code: 'INVALID_SEARCH_URL'
-    });
+  if (parsed.port && parsed.port !== '443') {
+    throw Object.assign(
+      new Error(`公网代搜仅允许标准 443 端口（收到 :${parsed.port}）`),
+      { code: 'UNSAFE_SEARCH_PORT' }
+    );
   }
   return parsed;
 }
@@ -922,6 +824,7 @@ function executePinnedHttpsGet({
         })
       );
     }, timeoutMs);
+    timer.unref?.();
 
     const pinnedLookup = (_host, opts, cb) => {
       if (typeof opts === 'function') {
@@ -958,7 +861,11 @@ function executePinnedHttpsGet({
         const headers = res.headers || {};
 
         if (statusCode >= 300 && statusCode < 400) {
-          res.resume();
+          // Immediately destroy redirect socket so hostile servers cannot stream unbounded bodies
+          res.destroy();
+          if (req) {
+            try { req.destroy(); } catch {}
+          }
           finishResolve({ statusCode, headers, body: '' });
           return;
         }
@@ -993,6 +900,11 @@ function executePinnedHttpsGet({
         });
 
         res.on('error', (err) => finishReject(err));
+        res.on('close', () => {
+          if (!res.complete) {
+            finishReject(Object.assign(new Error('公网代搜响应连接提前中断'), { code: 'ECONNRESET' }));
+          }
+        });
         res.on('end', () => {
           const body = Buffer.concat(chunks, totalBytes).toString('utf8');
           finishResolve({ statusCode, headers, body });
@@ -1042,18 +954,26 @@ export async function searchPublicWebSafe(query, options = {}) {
   const maxBytes = options.maxBytes !== undefined
     ? Math.max(1024, Math.min(MAX_SEARCH_RESPONSE_BYTES, Number(options.maxBytes) || MAX_SEARCH_RESPONSE_BYTES))
     : MAX_SEARCH_RESPONSE_BYTES;
-  const timeoutMs = options.timeoutMs !== undefined
+  const totalBudgetMs = options.timeoutMs !== undefined
     ? Math.max(500, Number(options.timeoutMs) || 12_000)
     : 12_000;
   const maxResults = options.maxResults !== undefined
     ? Math.max(1, Math.min(15, Number(options.maxResults) || 5))
     : 5;
 
+  const deadline = Date.now() + totalBudgetMs;
   let currentUrl = buildInitialSearchUrl(cleanQuery, options.endpointUrl || options.url);
 
   for (let hop = 0; hop <= maxRedirects; hop += 1) {
+    if (Date.now() >= deadline) {
+      throw Object.assign(new Error(`公网代搜请求超时 (${totalBudgetMs}ms)`), {
+        code: 'SEARCH_TIMEOUT',
+        errno: 'ETIMEDOUT'
+      });
+    }
     const parsedUrl = validateHttpsSearchUrl(currentUrl);
     const { bareHost, verifiedIp, family } = await resolveAndVerifyPublicHost(parsedUrl.hostname, lookupFn);
+    const remainMs = Math.max(250, deadline - Date.now());
 
     const response = await transportFn({
       parsedUrl,
@@ -1061,7 +981,7 @@ export async function searchPublicWebSafe(query, options = {}) {
       verifiedIp,
       family,
       maxBytes,
-      timeoutMs
+      timeoutMs: remainMs
     });
 
     const status = Number(response?.statusCode) || 0;
@@ -1079,7 +999,13 @@ export async function searchPublicWebSafe(query, options = {}) {
           code: 'INVALID_SEARCH_REDIRECT'
         });
       }
-      currentUrl = new URL(rawLocation, currentUrl).toString();
+      try {
+        currentUrl = new URL(rawLocation, currentUrl).toString();
+      } catch {
+        throw Object.assign(new Error('公网代搜重定向目标 URL 非法'), {
+          code: 'INVALID_SEARCH_REDIRECT'
+        });
+      }
       continue;
     }
 
@@ -1110,19 +1036,25 @@ export async function searchPublicWebSafe(query, options = {}) {
   throw Object.assign(new Error('公网代搜重定向超限'), { code: 'TOO_MANY_REDIRECTS' });
 }
 
-function buildProtocolEndpoint(baseUrl, suffix) {
-  const cleanBase = String(baseUrl || '').replace(/\/+$/, '');
-  if (cleanBase.endsWith(suffix)) return cleanBase;
-  return `${cleanBase}${suffix}`;
+/**
+ * Safely appends an API path suffix to `baseUrl.pathname` while preserving any query string (e.g. Azure `?api-version=...`).
+ */
+export function buildProtocolEndpoint(baseUrl, suffix) {
+  const u = new URL(String(baseUrl || '').trim());
+  const cleanPath = u.pathname.replace(/\/+$/, '');
+  const normSuffix = suffix.startsWith('/') ? suffix : `/${suffix}`;
+  u.pathname = cleanPath.endsWith(normSuffix) ? cleanPath : `${cleanPath}${normSuffix}`;
+  return u.toString();
 }
 
-function extractOpenAiChatJsonFallback(json) {
+function extractOpenAiChatJsonFallback(json, extraSecrets = []) {
   if (json?.error) {
     const { message, status } = extractEmbeddedErrorDetails(json);
     throw createUpstreamError(message, {
       code: 'UPSTREAM_JSON_ERROR',
       status,
-      retriable: RETRIABLE_HTTP_STATUSES.has(status)
+      retriable: RETRIABLE_HTTP_STATUSES.has(status),
+      extraSecrets
     });
   }
   const msg = json?.choices?.[0]?.message || {};
@@ -1134,7 +1066,9 @@ function extractOpenAiChatJsonFallback(json) {
       .map((part) => (typeof part === 'string' ? part : (part?.text ?? '')))
       .join('');
   }
-  const reasoning = typeof msg.reasoning_content === 'string' ? msg.reasoning_content : '';
+  const reasoning = typeof msg.reasoning_content === 'string'
+    ? msg.reasoning_content
+    : (typeof msg.reasoning === 'string' ? msg.reasoning : '');
   return {
     text,
     reasoningChars: reasoning.length,
@@ -1142,15 +1076,16 @@ function extractOpenAiChatJsonFallback(json) {
   };
 }
 
-function extractOpenAiResponsesJsonFallback(json) {
+function extractOpenAiResponsesJsonFallback(json, extraSecrets = []) {
   if (json?.error || json?.status === 'failed') {
     const { message, status } = extractEmbeddedErrorDetails(
-      json?.error ? json : { error: json?.error || { message: 'OpenAI Responses failed', status: 502 } }
+      json?.error ? json : { error: { message: 'OpenAI Responses failed', status: 502 } }
     );
     throw createUpstreamError(message, {
       code: 'UPSTREAM_JSON_ERROR',
       status,
-      retriable: RETRIABLE_HTTP_STATUSES.has(status)
+      retriable: RETRIABLE_HTTP_STATUSES.has(status),
+      extraSecrets
     });
   }
   if (typeof json?.output_text === 'string' && json.output_text.length > 0) {
@@ -1175,13 +1110,14 @@ function extractOpenAiResponsesJsonFallback(json) {
   };
 }
 
-function extractAnthropicJsonFallback(json) {
+function extractAnthropicJsonFallback(json, extraSecrets = []) {
   if (json?.type === 'error' || json?.error) {
     const { message, status } = extractEmbeddedErrorDetails(json);
     throw createUpstreamError(message, {
       code: 'UPSTREAM_JSON_ERROR',
       status,
-      retriable: RETRIABLE_HTTP_STATUSES.has(status)
+      retriable: RETRIABLE_HTTP_STATUSES.has(status),
+      extraSecrets
     });
   }
   const textParts = [];
@@ -1205,6 +1141,7 @@ function extractAnthropicJsonFallback(json) {
 function isFallbackEligibleError(err) {
   if (!err || typeof err !== 'object') return false;
   if (err.callerAborted) return false;
+  if (err.retriable === false) return false;
   if (err.retriable === true) return true;
   const status = Number(err.status);
   if (Number.isFinite(status) && status > 0) {
@@ -1234,9 +1171,9 @@ function isFallbackEligibleError(err) {
   return false;
 }
 
-function formatFallbackReason(err) {
+function formatFallbackReason(err, extraSecrets = []) {
   const statusPrefix = err?.status ? `HTTP ${err.status}: ` : (err?.code ? `${err.code}: ` : '');
-  return redactOutboundText(`${statusPrefix}${err?.message || 'Upstream failure'}`)
+  return redactSensitiveText(`${statusPrefix}${err?.message || 'Upstream failure'}`, { extraSecrets })
     .replace(/[\x00-\x1f\x7f]+/g, ' ')
     .trim()
     .slice(0, 200);
@@ -1308,6 +1245,28 @@ export function createModelHub({
     ...opts
   }));
 
+  const inFlightProbes = new Map();
+  let activeProbeCount = 0;
+  const probeWaitQueue = [];
+
+  async function withProbeSlot(fn) {
+    if (activeProbeCount >= MAX_CONCURRENT_PROBES) {
+      await new Promise((resolve) => probeWaitQueue.push(resolve));
+    } else {
+      activeProbeCount += 1;
+    }
+    try {
+      return await fn();
+    } finally {
+      const next = probeWaitQueue.shift();
+      if (next) {
+        next();
+      } else {
+        activeProbeCount = Math.max(0, activeProbeCount - 1);
+      }
+    }
+  }
+
   async function invokeSingleModel({
     model,
     provider,
@@ -1319,7 +1278,19 @@ export function createModelHub({
     signal,
     timeouts = {}
   }) {
+    if (signal?.aborted) {
+      throw Object.assign(new Error('Request aborted by caller'), {
+        name: 'AbortError',
+        code: 'CALLER_ABORTED',
+        callerAborted: true,
+        retriable: false
+      });
+    }
+
     const auth = await Promise.resolve(profileManager.resolveProviderAuth(provider.id));
+    let providerOrigin = '';
+    try { providerOrigin = new URL(provider.baseUrl).origin; } catch {}
+    const extraSecrets = [auth.apiKey, provider.baseUrl, providerOrigin].filter(Boolean);
     if (!auth.enabled || model.enabled === false) {
       throw createUpstreamError(`模型或网关已停用 (${model.id})`, {
         code: 'MODEL_DISABLED',
@@ -1329,31 +1300,11 @@ export function createModelHub({
     }
     if (!auth.hasApiKey && !auth.allowKeyless) {
       throw createUpstreamError(
-        `Provider "${provider.id}" 尚未配置有效凭据（请配置环境变量 ${provider.apiKeyEnv || 'API_KEY'} 或录入隔离凭据库）`,
+        `Provider "${provider.id}" 尚未配置有效凭据（请配置绑定环境变量或录入隔离凭据库）`,
         { code: 'MISSING_PROVIDER_CREDENTIALS', status: 401, retriable: false }
       );
     }
-    if (auth.hasApiKey) {
-      const parsedBase = new URL(provider.baseUrl);
-      if (parsedBase.protocol === 'http:') {
-        const bareH = parsedBase.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-        const ipFam = net.isIP(bareH);
-        const isLocalOrLanHost =
-          bareH === 'localhost' ||
-          bareH.endsWith('.local') ||
-          bareH.endsWith('.lan') ||
-          bareH.endsWith('.internal') ||
-          bareH.endsWith('.ts.net') ||
-          !bareH.includes('.') ||
-          (ipFam !== 0 && !isPublicRoutableIp(bareH));
-        if (!isLocalOrLanHost) {
-          throw createUpstreamError(
-            `安全拦截：禁止通过明文 http:// 向公网网关 (${bareH}) 发送 API Key，请改用 https://`,
-            { code: 'CLEARTEXT_HTTP_CREDENTIAL_BLOCKED', status: 400, retriable: false }
-          );
-        }
-      }
-    }
+    assertSafeProviderEndpoint(provider.baseUrl, auth.hasApiKey);
 
     const firstByteTimeoutMs = timeouts.firstByteTimeoutMs ?? defaultTimeouts.firstByteTimeoutMs ?? DEFAULT_FIRST_BYTE_TIMEOUT_MS;
     const idleChunkTimeoutMs = timeouts.idleChunkTimeoutMs ?? defaultTimeouts.idleChunkTimeoutMs ?? DEFAULT_IDLE_CHUNK_TIMEOUT_MS;
@@ -1432,6 +1383,7 @@ export function createModelHub({
     let timedOutErr = null;
 
     const onCallerAbort = () => {
+      if (timedOutErr) return;
       const callerErr = Object.assign(new Error('Request aborted by caller'), {
         name: 'AbortError',
         code: 'CALLER_ABORTED',
@@ -1474,15 +1426,19 @@ export function createModelHub({
 
     if (firstByteTimeoutMs > 0) {
       headerTimer = setTimeout(() => {
+        if (timedOutErr) return;
         timedOutErr = createStreamTimeoutError('FIRST_BYTE_TIMEOUT', '上游网关首包连接超时', firstByteTimeoutMs);
         try { requestController.abort(timedOutErr); } catch {}
       }, firstByteTimeoutMs);
+      headerTimer.unref?.();
     }
     if (totalTimeoutMs > 0) {
       totalRequestTimer = setTimeout(() => {
+        if (timedOutErr) return;
         timedOutErr = createStreamTimeoutError('TOTAL_TIMEOUT', '上游网关请求总超时', totalTimeoutMs);
         try { requestController.abort(timedOutErr); } catch {}
       }, totalTimeoutMs);
+      totalRequestTimer.unref?.();
     }
 
     let response;
@@ -1492,11 +1448,20 @@ export function createModelHub({
           method: 'POST',
           headers,
           body: JSON.stringify(requestBody),
+          redirect: 'error',
           signal: requestController.signal
         });
       } catch (fetchErr) {
         if (timedOutErr) throw timedOutErr;
-        throw fetchErr;
+        const safeErrMsg = redactSensitiveText(String(fetchErr?.message || '网关连接失败'), {
+          extraSecrets: [...extraSecrets, provider.baseUrl]
+        });
+        throw createUpstreamError(safeErrMsg, {
+          code: String(fetchErr?.code || fetchErr?.cause?.code || 'FETCH_ERROR'),
+          retriable: isFallbackEligibleError(fetchErr),
+          extraSecrets,
+          cause: fetchErr
+        });
       } finally {
         clearHeaderTimers();
       }
@@ -1505,9 +1470,9 @@ export function createModelHub({
       if (!response.ok) {
         let errText = '';
         try {
-          errText = (await response.text()).slice(0, 800);
+          errText = await readResponseTextCapped(response, MAX_ERROR_BODY_BYTES, { rejectOnOverflow: false });
         } catch {}
-        let parsedMsg = errText;
+        let parsedMsg = errText.slice(0, 800);
         if (errText.trim().startsWith('{')) {
           try {
             const errJson = JSON.parse(errText);
@@ -1519,20 +1484,42 @@ export function createModelHub({
           {
             code: `HTTP_${status}`,
             status,
-            retriable: RETRIABLE_HTTP_STATUSES.has(status)
+            retriable: RETRIABLE_HTTP_STATUSES.has(status),
+            extraSecrets
           }
         );
       }
 
       const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
+      if (contentType.includes('text/html')) {
+        try { await response.body?.cancel?.(); } catch {}
+        throw createUpstreamError('上游网关返回了 HTML 页面而非模型流式响应（请检查 Base URL 或网关防火墙）', {
+          code: 'INVALID_CONTENT_TYPE',
+          status: 502,
+          retriable: true,
+          extraSecrets
+        });
+      }
+
       if (contentType.includes('application/json') && !contentType.includes('text/event-stream')) {
-        const json = await response.json();
+        const rawJsonText = await readResponseTextCapped(response, MAX_JSON_RESPONSE_BYTES, { rejectOnOverflow: true });
+        let json;
+        try {
+          json = JSON.parse(rawJsonText);
+        } catch {
+          throw createUpstreamError('上游返回了无效的 JSON 响应', {
+            code: 'INVALID_UPSTREAM_JSON',
+            status: 502,
+            retriable: true,
+            extraSecrets
+          });
+        }
         markFirstToken();
         const fallbackParsed = protocol === 'openai-chat'
-          ? extractOpenAiChatJsonFallback(json)
+          ? extractOpenAiChatJsonFallback(json, extraSecrets)
           : protocol === 'openai-responses'
-            ? extractOpenAiResponsesJsonFallback(json)
-            : extractAnthropicJsonFallback(json);
+            ? extractOpenAiResponsesJsonFallback(json, extraSecrets)
+            : extractAnthropicJsonFallback(json, extraSecrets);
 
         if (fallbackParsed.text && typeof onDelta === 'function') {
           onDelta(fallbackParsed.text);
@@ -1556,8 +1543,25 @@ export function createModelHub({
         : 0;
 
       const textParts = [];
+      let totalTextChars = 0;
       let reasoningChars = 0;
       let usage = null;
+      let parsedEventCount = 0;
+
+      const appendTextPiece = (piece) => {
+        if (!piece) return;
+        markFirstToken();
+        if (totalTextChars + piece.length > MAX_STREAM_TEXT_CHARS) {
+          throw createUpstreamError(`模型流式输出超过上限 (${MAX_STREAM_TEXT_CHARS} chars)`, {
+            code: 'STREAM_OUTPUT_TOO_LARGE',
+            status: 502,
+            retriable: false
+          });
+        }
+        totalTextChars += piece.length;
+        textParts.push(piece);
+        if (typeof onDelta === 'function') onDelta(piece);
+      };
 
       for await (const sseEvent of parseSseEvents(response, {
         firstByteTimeoutMs: remainingFirstByteMs,
@@ -1565,11 +1569,14 @@ export function createModelHub({
         totalTimeoutMs: remainingTotalMs,
         abortController: requestController,
         signal,
-        onFirstByte: markFirstToken
+        extraSecrets
       })) {
         const rawData = String(sseEvent.data ?? '').trim();
         if (!rawData) continue;
-        if (rawData === '[DONE]') break;
+        if (rawData === '[DONE]') {
+          parsedEventCount += 1;
+          break;
+        }
 
         let payload;
         try {
@@ -1577,10 +1584,11 @@ export function createModelHub({
         } catch {
           continue;
         }
+        parsedEventCount += 1;
 
         if (protocol === 'openai-chat') {
           const choice = payload?.choices?.[0];
-          const delta = choice?.delta || choice?.message || {};
+          const delta = choice?.delta ?? (textParts.length === 0 ? choice?.message : null) ?? {};
           if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
             markFirstToken();
             reasoningChars += delta.reasoning_content.length;
@@ -1589,17 +1597,11 @@ export function createModelHub({
             reasoningChars += delta.reasoning.length;
           }
           if (typeof delta.content === 'string' && delta.content.length > 0) {
-            markFirstToken();
-            textParts.push(delta.content);
-            if (typeof onDelta === 'function') onDelta(delta.content);
+            appendTextPiece(delta.content);
           } else if (Array.isArray(delta.content)) {
             for (const part of delta.content) {
               const piece = typeof part === 'string' ? part : (part?.text ?? '');
-              if (piece) {
-                markFirstToken();
-                textParts.push(piece);
-                if (typeof onDelta === 'function') onDelta(piece);
-              }
+              if (piece) appendTextPiece(piece);
             }
           }
           if (payload?.usage) usage = payload.usage;
@@ -1607,20 +1609,21 @@ export function createModelHub({
           const evtType = payload?.type || sseEvent.event;
           if (evtType === 'response.output_text.delta') {
             const deltaText = typeof payload.delta === 'string' ? payload.delta : '';
-            if (deltaText) {
-              markFirstToken();
-              textParts.push(deltaText);
-              if (typeof onDelta === 'function') onDelta(deltaText);
-            }
+            if (deltaText) appendTextPiece(deltaText);
           } else if (
             evtType === 'response.reasoning_summary_text.delta' ||
+            evtType === 'response.reasoning_text.delta' ||
             evtType === 'response.reasoning.delta'
           ) {
-            if (typeof payload.delta === 'string') {
+            if (typeof payload.delta === 'string' && payload.delta.length > 0) {
               markFirstToken();
               reasoningChars += payload.delta.length;
             }
-          } else if (evtType === 'response.completed' || evtType === 'response.done') {
+          } else if (
+            evtType === 'response.completed' ||
+            evtType === 'response.done' ||
+            evtType === 'response.incomplete'
+          ) {
             const respObj = payload?.response || payload;
             if (respObj?.status === 'failed' || respObj?.error) {
               const { message, status: errStatus } = extractEmbeddedErrorDetails(
@@ -1630,40 +1633,40 @@ export function createModelHub({
                 code: 'SSE_STREAM_ERROR',
                 status: errStatus,
                 retriable: !NON_RETRIABLE_AUTH_STATUSES.has(errStatus),
-                isStreamError: true
+                isStreamError: true,
+                extraSecrets
               });
             }
             if (textParts.length === 0) {
-              const extracted = extractOpenAiResponsesJsonFallback(respObj);
-              if (extracted.text) {
-                markFirstToken();
-                textParts.push(extracted.text);
-                if (typeof onDelta === 'function') onDelta(extracted.text);
-              }
+              const extracted = extractOpenAiResponsesJsonFallback(respObj, extraSecrets);
+              if (extracted.text) appendTextPiece(extracted.text);
             }
             if (respObj?.usage) usage = respObj.usage;
+            break;
           }
         } else if (protocol === 'anthropic-messages') {
           const evtType = payload?.type || sseEvent.event;
-          if (evtType === 'content_block_start') {
+          if (evtType === 'message_start') {
+            if (payload?.message?.usage) {
+              usage = { ...(usage || {}), ...payload.message.usage };
+            }
+          } else if (evtType === 'content_block_start') {
             const initText = payload?.content_block?.type === 'text' ? payload.content_block.text : '';
             if (typeof initText === 'string' && initText.length > 0) {
-              markFirstToken();
-              textParts.push(initText);
-              if (typeof onDelta === 'function') onDelta(initText);
+              appendTextPiece(initText);
             }
           } else if (evtType === 'content_block_delta') {
             const delta = payload?.delta;
             if (delta?.type === 'text_delta' && typeof delta.text === 'string' && delta.text.length > 0) {
-              markFirstToken();
-              textParts.push(delta.text);
-              if (typeof onDelta === 'function') onDelta(delta.text);
-            } else if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+              appendTextPiece(delta.text);
+            } else if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string' && delta.thinking.length > 0) {
               markFirstToken();
               reasoningChars += delta.thinking.length;
             }
           } else if (evtType === 'message_delta') {
-            if (payload?.usage) usage = payload.usage;
+            if (payload?.usage) {
+              usage = { ...(usage || {}), ...payload.usage };
+            }
           } else if (evtType === 'message_stop') {
             break;
           }
@@ -1672,6 +1675,15 @@ export function createModelHub({
 
       const totalMs = Math.max(0, Math.round(performance.now() - startedAt));
       if (timedOutErr) throw timedOutErr;
+
+      if (parsedEventCount === 0 && textParts.length === 0 && reasoningChars === 0) {
+        throw createUpstreamError('上游响应流未包含任何有效的 SSE 事件数据', {
+          code: 'EMPTY_STREAM_RESPONSE',
+          status: 502,
+          retriable: true,
+          extraSecrets
+        });
+      }
 
       return {
         text: textParts.join(''),
@@ -1682,6 +1694,12 @@ export function createModelHub({
       };
     } catch (err) {
       if (timedOutErr) throw timedOutErr;
+      if (err && typeof err === 'object' && extraSecrets.length && typeof err.message === 'string') {
+        const cleaned = redactSensitiveText(err.message, { extraSecrets });
+        if (cleaned !== err.message) {
+          try { err.message = cleaned; } catch {}
+        }
+      }
       throw err;
     } finally {
       clearRequestTimers();
@@ -1701,15 +1719,20 @@ export function createModelHub({
     );
 
     const enabledModels = publicProfile.models.filter((m) => m.enabled !== false);
-    const enabledIdSet = new Set(enabledModels.map((m) => m.id));
+    const readyModelIdSet = new Set(
+      enabledModels
+        .filter((m) => Boolean(m.ready && providerMap.get(m.providerId)?.ready))
+        .map((m) => m.id)
+    );
     const favoriteIndexMap = new Map();
     publicProfile.favorites.forEach((favId, idx) => {
       favoriteIndexMap.set(favId, idx);
     });
 
     const filtered = enabledModels.filter((m) => {
-      if (tierFilter && VALID_TIERS.includes(tierFilter) && m.tier !== tierFilter) {
-        return false;
+      if (tierFilter) {
+        if (!VALID_TIERS.includes(tierFilter)) return false;
+        if (m.tier !== tierFilter) return false;
       }
       if (excludedVendors.size > 0 && excludedVendors.has(String(m.vendor || '').toLowerCase())) {
         return false;
@@ -1723,7 +1746,7 @@ export function createModelHub({
       const hasFallback = Boolean(
         m.fallbackModelId &&
         m.fallbackModelId !== m.id &&
-        enabledIdSet.has(m.fallbackModelId)
+        readyModelIdSet.has(m.fallbackModelId)
       );
       return {
         id: m.id,
@@ -1768,6 +1791,42 @@ export function createModelHub({
     };
   }
 
+  function buildAskReturnPayload({
+    res,
+    requestedModel,
+    actualModel,
+    actualProvider,
+    usedFallback,
+    fallbackReason,
+    didRedact,
+    webSearchBlockedByPolicy,
+    searchedSources
+  }) {
+    const finalText = searchedSources.length > 0
+      ? appendSearchedSourcesFooter(res.text, searchedSources)
+      : res.text;
+    return {
+      ok: true,
+      text: finalText,
+      rawText: res.text,
+      requestedModelId: requestedModel.id,
+      actualModelId: actualModel.id,
+      usedFallback,
+      fallbackReason,
+      providerId: actualProvider.id,
+      protocol: actualProvider.protocol,
+      tier: actualModel.tier,
+      vendor: actualModel.vendor,
+      ttftMs: res.ttftMs,
+      totalMs: res.totalMs,
+      reasoningChars: res.reasoningChars,
+      redactedPrompt: didRedact,
+      webSearchBlockedByPolicy,
+      searchedSources,
+      usage: res.usage
+    };
+  }
+
   async function askModel(arg1, arg2, arg3) {
     const { modelId: rawModelId, prompt: rawPrompt, options } = parseAskArguments(arg1, arg2, arg3);
     if (!String(rawPrompt ?? '').trim()) {
@@ -1809,9 +1868,24 @@ export function createModelHub({
       ? Boolean(options.redactSecrets)
       : (profile.settings?.redactOutboundSecrets !== false);
 
-    const sanitizedUserPrompt = shouldRedact ? redactOutboundText(rawPrompt) : String(rawPrompt);
+    const activeOutboundSecrets = [];
+    if (shouldRedact) {
+      const candidateProviderIds = new Set([primaryProvider.id]);
+      if (primaryModel.fallbackModelId && primaryModel.fallbackModelId !== primaryModel.id) {
+        const fbM = modelMap.get(primaryModel.fallbackModelId);
+        if (fbM?.providerId) candidateProviderIds.add(fbM.providerId);
+      }
+      for (const pid of candidateProviderIds) {
+        try {
+          const resolvedAuth = await Promise.resolve(profileManager.resolveProviderAuth(pid));
+          if (resolvedAuth?.apiKey) activeOutboundSecrets.push(resolvedAuth.apiKey);
+        } catch {}
+      }
+    }
+
+    const sanitizedUserPrompt = shouldRedact ? redactOutboundText(rawPrompt, activeOutboundSecrets) : String(rawPrompt);
     const rawSysPrompt = String(options.systemPrompt ?? '');
-    const sanitizedSystemPrompt = shouldRedact ? redactOutboundText(rawSysPrompt) : rawSysPrompt;
+    const sanitizedSystemPrompt = shouldRedact ? redactOutboundText(rawSysPrompt, activeOutboundSecrets) : rawSysPrompt;
     const didRedact = sanitizedUserPrompt !== String(rawPrompt) || sanitizedSystemPrompt !== rawSysPrompt;
 
     const webSearchSetting = profile.settings?.webSearch;
@@ -1851,6 +1925,14 @@ export function createModelHub({
       preferBearerAuth: options.preferBearerAuth
     };
 
+    let primaryEmittedDelta = false;
+    const wrappedPrimaryOnDelta = typeof options.onDelta === 'function'
+      ? (chunk) => {
+          primaryEmittedDelta = true;
+          options.onDelta(chunk);
+        }
+      : undefined;
+
     try {
       const res = await invokeSingleModel({
         model: primaryModel,
@@ -1859,42 +1941,29 @@ export function createModelHub({
         systemPrompt: sanitizedSystemPrompt,
         maxTokens: options.maxTokens,
         temperature: options.temperature,
-        onDelta: options.onDelta,
+        onDelta: wrappedPrimaryOnDelta,
         signal: options.signal,
         timeouts
       });
-
-      const finalText = searchedSources.length > 0
-        ? appendSearchedSourcesFooter(res.text, searchedSources)
-        : res.text;
-
-      return {
-        ok: true,
-        text: finalText,
-        rawText: res.text,
-        requestedModelId: primaryModel.id,
-        actualModelId: primaryModel.id,
+      return buildAskReturnPayload({
+        res,
+        requestedModel: primaryModel,
+        actualModel: primaryModel,
+        actualProvider: primaryProvider,
         usedFallback: false,
         fallbackReason: '',
-        providerId: primaryProvider.id,
-        protocol: primaryProvider.protocol,
-        tier: primaryModel.tier,
-        vendor: primaryModel.vendor,
-        ttftMs: res.ttftMs,
-        totalMs: res.totalMs,
-        reasoningChars: res.reasoningChars,
-        redactedPrompt: didRedact,
+        didRedact,
         webSearchBlockedByPolicy,
-        searchedSources,
-        usage: res.usage
-      };
+        searchedSources
+      });
     } catch (primaryErr) {
-      // Max 1-hop cycle-safe fallback routing
+      // Max 1-hop cycle-safe fallback routing (never replay into an already partially streamed onDelta callback)
       const fbId = primaryModel.fallbackModelId;
       const fbModel = fbId && fbId !== primaryModel.id ? modelMap.get(fbId) : null;
       const fbProvider = fbModel ? providerMap.get(fbModel.providerId) : null;
 
       if (
+        primaryEmittedDelta ||
         !fbModel ||
         fbModel.enabled === false ||
         !fbProvider ||
@@ -1904,7 +1973,7 @@ export function createModelHub({
         throw primaryErr;
       }
 
-      const fallbackReason = formatFallbackReason(primaryErr);
+      const fallbackReason = formatFallbackReason(primaryErr, activeOutboundSecrets);
       const fbRes = await invokeSingleModel({
         model: fbModel,
         provider: fbProvider,
@@ -1916,107 +1985,109 @@ export function createModelHub({
         signal: options.signal,
         timeouts
       });
-
-      const finalText = searchedSources.length > 0
-        ? appendSearchedSourcesFooter(fbRes.text, searchedSources)
-        : fbRes.text;
-
-      return {
-        ok: true,
-        text: finalText,
-        rawText: fbRes.text,
-        requestedModelId: primaryModel.id,
-        actualModelId: fbModel.id,
+      return buildAskReturnPayload({
+        res: fbRes,
+        requestedModel: primaryModel,
+        actualModel: fbModel,
+        actualProvider: fbProvider,
         usedFallback: true,
         fallbackReason,
-        providerId: fbProvider.id,
-        protocol: fbProvider.protocol,
-        tier: fbModel.tier,
-        vendor: fbModel.vendor,
-        ttftMs: fbRes.ttftMs,
-        totalMs: fbRes.totalMs,
-        reasoningChars: fbRes.reasoningChars,
-        redactedPrompt: didRedact,
+        didRedact,
         webSearchBlockedByPolicy,
-        searchedSources,
-        usage: fbRes.usage
-      };
+        searchedSources
+      });
     }
   }
 
   async function probeModelSpeed(modelId, options = {}) {
     const cleanId = String(modelId || '').trim();
-    const profile = profileManager.loadProfile();
-    const model = profile.models.find((m) => m.id === cleanId);
-    if (!model) {
-      throw Object.assign(new Error(`未找到待测速模型 "${cleanId}"`), {
-        code: 'MODEL_NOT_FOUND'
-      });
-    }
-    const provider = profile.providers.find((p) => p.id === model.providerId);
-    if (!provider) {
-      throw Object.assign(new Error(`模型 "${cleanId}" 关联的 Provider 不存在`), {
-        code: 'PROVIDER_NOT_FOUND'
-      });
+    if (inFlightProbes.has(cleanId)) {
+      return inFlightProbes.get(cleanId);
     }
 
-    const startedAt = performance.now();
-    const checkedAt = new Date().toISOString();
+    const task = withProbeSlot(async () => {
+      const profile = profileManager.loadProfile();
+      const model = profile.models.find((m) => m.id === cleanId);
+      if (!model) {
+        throw Object.assign(new Error(`未找到待测速模型 "${cleanId}"`), {
+          code: 'MODEL_NOT_FOUND'
+        });
+      }
+      const provider = profile.providers.find((p) => p.id === model.providerId);
+      if (!provider) {
+        throw Object.assign(new Error(`模型 "${cleanId}" 关联的 Provider 不存在`), {
+          code: 'PROVIDER_NOT_FOUND'
+        });
+      }
 
+      const startedAt = performance.now();
+      const checkedAt = new Date().toISOString();
+      let speedPayload;
+      let preview = '';
+
+      try {
+        const res = await invokeSingleModel({
+          model,
+          provider,
+          prompt: 'Reply with OK',
+          systemPrompt: '',
+          maxTokens: 16,
+          timeouts: {
+            firstByteTimeoutMs: options.firstByteTimeoutMs ?? 15_000,
+            idleChunkTimeoutMs: options.idleChunkTimeoutMs ?? 15_000,
+            totalTimeoutMs: options.totalTimeoutMs ?? 25_000
+          }
+        });
+
+        const rawToks = Number(res.usage?.completion_tokens ?? res.usage?.output_tokens ?? 0);
+        const completionToks = Number.isFinite(rawToks) && rawToks > 0
+          ? rawToks
+          : Math.max(1, Math.ceil((res.text.length + res.reasoningChars) / 4));
+        const genMs = Math.max(1, res.totalMs - (res.ttftMs ?? 0));
+        const durationSec = Math.max(0.001, (genMs > 5 ? genMs : res.totalMs) / 1000);
+        const tokPerSec = Math.round((completionToks / durationSec) * 100) / 100;
+
+        speedPayload = {
+          ok: true,
+          ttftMs: res.ttftMs,
+          totalMs: res.totalMs,
+          tokPerSec,
+          checkedAt,
+          error: ''
+        };
+        preview = res.text.trim().slice(0, 64);
+      } catch (err) {
+        const totalMs = Math.max(0, Math.round(performance.now() - startedAt));
+        speedPayload = {
+          ok: false,
+          ttftMs: null,
+          totalMs,
+          tokPerSec: null,
+          checkedAt,
+          error: formatFallbackReason(err, [provider.baseUrl])
+        };
+      }
+
+      let recorded = speedPayload;
+      try {
+        recorded = profileManager.recordModelSpeed(model.id, speedPayload);
+      } catch {
+        // Keep probe outcome intact even if profile lock is transiently busy or model was concurrently deleted
+      }
+
+      return {
+        ok: Boolean(recorded.ok),
+        modelId: model.id,
+        ...recorded,
+        preview
+      };
+    });
+
+    inFlightProbes.set(cleanId, task);
     try {
-      const res = await invokeSingleModel({
-        model,
-        provider,
-        prompt: 'Reply with OK',
-        systemPrompt: '',
-        maxTokens: 8,
-        timeouts: {
-          firstByteTimeoutMs: options.firstByteTimeoutMs ?? 15_000,
-          idleChunkTimeoutMs: options.idleChunkTimeoutMs ?? 15_000,
-          totalTimeoutMs: options.totalTimeoutMs ?? 25_000
-        }
-      });
-
-      const completionToks = Number(
-        res.usage?.completion_tokens ??
-        res.usage?.output_tokens ??
-        Math.max(1, Math.ceil((res.text.length + res.reasoningChars) / 4))
-      );
-      const durationSec = Math.max(0.001, res.totalMs / 1000);
-      const tokPerSec = Math.round((completionToks / durationSec) * 100) / 100;
-
-      const recorded = profileManager.recordModelSpeed(model.id, {
-        ok: true,
-        ttftMs: res.ttftMs,
-        totalMs: res.totalMs,
-        tokPerSec,
-        checkedAt,
-        error: ''
-      });
-
-      return {
-        ok: true,
-        modelId: model.id,
-        ...recorded,
-        preview: res.text.trim().slice(0, 64)
-      };
-    } catch (err) {
-      const totalMs = Math.max(0, Math.round(performance.now() - startedAt));
-      const recorded = profileManager.recordModelSpeed(model.id, {
-        ok: false,
-        ttftMs: null,
-        totalMs,
-        tokPerSec: null,
-        checkedAt,
-        error: formatFallbackReason(err)
-      });
-
-      return {
-        ok: false,
-        modelId: model.id,
-        ...recorded,
-        preview: ''
-      };
+      return await task;
+    } finally {
+      inFlightProbes.delete(cleanId);
     }
   }
 
@@ -2033,7 +2104,7 @@ export function createModelHub({
     else if (/(?:\bgpt|\bo1\b|\bo3\b|\bo4\b|codex|chatgpt|astra)/i.test(lower)) vendor = 'openai';
 
     let tier = 'T2';
-    if (/(?:opus|gpt-6\.2-astra|gpt-6-astra|gpt-5-pro|\bo1-pro\b|\bo3-pro\b|carbon|xhigh|reasoner|r1\b|v4-pro)/i.test(lower)) {
+    if (/(?:opus|gpt-6\.2-astra|gpt-6-astra|gpt-5-pro|\bo1-pro\b|\bo3-pro\b|carbon|xhigh|reasoner|(?<![a-z0-9])r1\b|v4-pro)/i.test(lower)) {
       tier = 'T1';
     } else if (/(?:flash-lite|haiku|mini\b|nano\b|glm-.*-flash|3\.5-turbo)/i.test(lower)) {
       tier = 'T4';
@@ -2051,13 +2122,12 @@ export function createModelHub({
   }
 
   function buildModelsDiscoveryUrl(baseUrl, protocol) {
-    const cleanBase = String(baseUrl || '').trim().replace(/\/+$/, '');
-    const u = new URL(cleanBase);
+    const u = new URL(String(baseUrl || '').trim());
     let p = u.pathname.replace(/\/+$/, '');
     p = p.replace(/\/(?:chat\/completions|responses|messages|models)$/i, '');
-    if (protocol === 'anthropic-messages' && !/\/v1$/i.test(p)) {
+    if (protocol === 'anthropic-messages' && !/\/v\d+(?:(?:alpha|beta)\d*)?$/i.test(p)) {
       p = `${p}/v1`;
-    } else if (!/\/v\d+(?:beta)?(?:\/openai)?$/i.test(p) && !/\/api$/i.test(p)) {
+    } else if (!/\/v\d+(?:(?:alpha|beta)\d*)?(?:\/openai)?$/i.test(p) && !/\/api$/i.test(p)) {
       p = `${p}/v1`;
     }
     u.pathname = `${p}/models`;
@@ -2071,7 +2141,18 @@ export function createModelHub({
     if (!provider) {
       throw Object.assign(new Error(`未找到网关 "${cleanProvId}"`), { code: 'PROVIDER_NOT_FOUND' });
     }
-    const auth = profileManager.resolveProviderAuth(provider.id);
+    let auth;
+    try {
+      auth = await Promise.resolve(profileManager.resolveProviderAuth(provider.id));
+    } catch (authErr) {
+      return {
+        ok: false,
+        code: authErr?.code || 'AUTH_RESOLVE_FAILED',
+        providerId: provider.id,
+        error: redactSensitiveText(String(authErr?.message || authErr || '凭据解析失败'), { maxLen: 200 }),
+        models: []
+      };
+    }
     if (!auth.hasApiKey && !auth.allowKeyless) {
       return {
         ok: false,
@@ -2084,9 +2165,23 @@ export function createModelHub({
       };
     }
 
-    const candidates = [buildModelsDiscoveryUrl(provider.baseUrl, provider.protocol)];
-    if (/\/v1\/models$/i.test(candidates[0]) && provider.baseUrl.includes('11434')) {
-      candidates.push(candidates[0].replace(/\/v1\/models$/i, '/api/tags'));
+    // Enforce the same cleartext HTTP & cloud metadata SSRF guard as invokeSingleModel
+    assertSafeProviderEndpoint(provider.baseUrl, auth.hasApiKey);
+
+    let providerOrigin = '';
+    try { providerOrigin = new URL(provider.baseUrl).origin; } catch {}
+    const extraSecrets = [auth.apiKey, provider.baseUrl, providerOrigin].filter(Boolean);
+    const primaryDiscUrl = buildModelsDiscoveryUrl(provider.baseUrl, provider.protocol);
+    const candidates = [primaryDiscUrl];
+    const isOllamaCandidate = provider.preset === 'ollama-local' || provider.baseUrl.includes('11434');
+    if (isOllamaCandidate) {
+      try {
+        const uAlt = new URL(primaryDiscUrl);
+        if (/\/v1\/models$/i.test(uAlt.pathname)) {
+          uAlt.pathname = uAlt.pathname.replace(/\/v1\/models$/i, '/api/tags');
+          candidates.push(uAlt.toString());
+        }
+      } catch {}
     }
 
     const existingPairSet = new Set(
@@ -2095,8 +2190,12 @@ export function createModelHub({
     const headers = { Accept: 'application/json' };
     if (auth.hasApiKey) {
       if (provider.protocol === 'anthropic-messages') {
-        headers['x-api-key'] = auth.apiKey;
         headers['anthropic-version'] = '2023-06-01';
+        if (/^Bearer\s+/i.test(auth.apiKey)) {
+          headers.Authorization = auth.apiKey;
+        } else {
+          headers['x-api-key'] = auth.apiKey;
+        }
       } else {
         headers.Authorization = `Bearer ${auth.apiKey}`;
       }
@@ -2109,6 +2208,7 @@ export function createModelHub({
     for (const targetUrl of candidates) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(new Error('探测超时 (8s)')), options.timeoutMs ?? 8000);
+      timer.unref?.();
       try {
         const resp = await activeFetch(targetUrl, {
           method: 'GET',
@@ -2117,12 +2217,12 @@ export function createModelHub({
           signal: controller.signal
         });
         lastStatus = Number(resp?.status) || 0;
-        const rawText = await resp.text();
+        const rawText = await readResponseTextCapped(resp, MAX_DISCOVERY_RESPONSE_BYTES, { rejectOnOverflow: true });
         if (!resp.ok) {
           if (lastStatus === 401 || lastStatus === 403 || lastStatus === 404) {
             lastMsg = `该网关未开放 /models 模型枚举接口 (HTTP ${lastStatus})，这不影响正常对话调用；请直接点击「+ 模型」手动添加或复制 AI 配置口令`;
           } else {
-            lastMsg = `网关返回 HTTP ${lastStatus}：${redactOutboundText(rawText).slice(0, 140)}`;
+            lastMsg = `网关返回 HTTP ${lastStatus}：${redactSensitiveText(rawText, { extraSecrets, maxLen: 140 })}`;
           }
           continue;
         }
@@ -2175,8 +2275,7 @@ export function createModelHub({
           models: items.slice(0, 300)
         };
       } catch (err) {
-        const rawErr = redactOutboundText(String(err?.message || err || '请求失败'))
-          .replace(/([?&](?:key|api_key|token)=)[^&\s]+/gi, '$1[REDACTED]');
+        const rawErr = redactSensitiveText(String(err?.message || err || '请求失败'), { extraSecrets });
         lastMsg = `无法连接网关模型列表接口：${rawErr.slice(0, 160)}`;
       } finally {
         clearTimeout(timer);
@@ -2197,8 +2296,6 @@ export function createModelHub({
     askModel,
     listModelsForMcp,
     probeModelSpeed,
-    discoverProviderModels,
-    searchPublicWeb: (q, opts) => effectiveSearchFn(q, opts),
-    redactOutboundText
+    discoverProviderModels
   };
 }

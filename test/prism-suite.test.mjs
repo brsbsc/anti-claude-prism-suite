@@ -44,11 +44,18 @@ import {
   readLocalPrismPrefsFromLevelDb
 } from '../plugin/server/account-manager.mjs';
 import {
+  UPSTREAM_SCHEMA_VERSION,
+  compareSemver,
+  evaluateRepoUpdate,
+  checkUpstreams,
+  renderMarkdownReport,
+  syncUpstreamBaseline,
   localizeCommitLocally,
   polishZhTechTerms,
   extractZhReleaseHighlights,
   checkPrismSelfUpdate,
-  applyPrismSelfUpdate
+  applyPrismSelfUpdate,
+  auditTarEntriesSafe
 } from '../plugin/server/upstream-radar.mjs';
 import {
   createClientRelauncher,
@@ -72,6 +79,7 @@ import {
 } from '../plugin/server/prism-profile.mjs';
 import {
   createModelHub,
+  buildProtocolEndpoint,
   parseSseEvents,
   isPublicRoutableIp,
   searchPublicWebSafe,
@@ -84,16 +92,10 @@ import {
   saveProjectContext,
   saveProjectScheduledTask,
   deleteProjectScheduledTask,
-  HOST_IDENTITY_PROBE_EXPR
+  HOST_IDENTITY_PROBE_EXPR,
+  verifyElectronNativeViaCdp
 } from '../vendor/anti-claude/core/daemon.mjs';
 import { buildWinStartupVbs } from '../vendor/anti-claude/install.mjs';
-import {
-  UPSTREAM_SCHEMA_VERSION,
-  evaluateRepoUpdate,
-  checkUpstreams,
-  renderMarkdownReport,
-  syncUpstreamBaseline
-} from '../plugin/server/upstream-radar.mjs';
 import { runAccountsCli } from '../scripts/prism-accounts.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -511,7 +513,8 @@ test('v0.4.1 audit security guards block NTFS ADS, UNC bypasses, secret-slice le
       'utf8'
     );
 
-    const srv = createPrismFilesServer({ dataDir, defaultRoot: workDir });
+    const srv = createPrismFilesServer({ dataDir, defaultRoot: workDir, accountStateDir: path.join(tmp, 'acct-state') });
+    try {
 
     // P0-3: Symlinked brainDir remains strictly read-only
     const brainPrev = srv.readFilePreview(brainDoc);
@@ -538,6 +541,9 @@ test('v0.4.1 audit security guards block NTFS ADS, UNC bypasses, secret-slice le
     const un = uninstallPlugin({ pluginsDir: explicitTarget });
     assert.deepEqual(un.removed, [explicitTarget]);
     assert.equal(fs.existsSync(explicitTarget), false);
+    } finally {
+      srv.close();
+    }
   } finally {
     if (prevBrain === undefined) delete process.env.PRISM_FILES_BRAIN_DIR;
     else process.env.PRISM_FILES_BRAIN_DIR = prevBrain;
@@ -1840,7 +1846,7 @@ test('v0.6.0 bundled Anti-Claude v3.1.9 kernel, per-pool quota recommendation ve
         reset5hAt: futureIso,
         reset7dAt: futureIso,
         families: {
-          gemini: { pct5h: 91.8, pct7d: 49.5, reset5hAt: futureIso, reset7dAt: future7d => futureIso, reset7dAt: futureIso },
+          gemini: { pct5h: 91.8, pct7d: 49.5, reset5hAt: futureIso, reset7dAt: futureIso },
           claude: { pct5h: 100, pct7d: 100, reset5hAt: futureIso, reset7dAt: futureIso }
         }
       }
@@ -2767,7 +2773,8 @@ test('v0.7.0 Windows shortcut/label adaptation, outline rail persistence, workbe
     assert.equal(astraItem.alreadyAdded, true);
 
     // 6. Server-persisted dismissedGuides & wide desktop dashboard layout markers
-    const srv = createPrismFilesServer({ dataDir: path.join(tmp, 'srv'), defaultRoot: tmp, profileManager: profMgr, modelHub: hub });
+    const srv = createPrismFilesServer({ dataDir: path.join(tmp, 'srv'), defaultRoot: tmp, accountStateDir: path.join(tmp, 'acct-state'), prismProfile: profMgr, modelHub: hub });
+    try {
     const updGuides = await srv.handleToolCall('update_state', {
       dismissedGuides: ['guide:models:v1', 'guide:accounts-steps:v1', 'invalid spaces!!']
     });
@@ -2778,6 +2785,9 @@ test('v0.7.0 Windows shortcut/label adaptation, outline rail persistence, workbe
     const srvDisc = await srv.handleToolCall('model_hub_discover_models', { providerId: 'my-gw' });
     assert.equal(srvDisc.structuredContent.ok, true);
     assert.equal(srvDisc.structuredContent.total, 4);
+    } finally {
+      srv.close();
+    }
 
     assert.match(appHtml, /\.accounts-dashboard/);
     assert.match(appHtml, /\.mhub-tier-cards/);
@@ -3864,6 +3874,578 @@ test('audit & review #1, #5-#10, #15, #19, #21, #22: behavioral regression tests
     assert.notEqual(forkReclaim.status, 0);
     const reclaimOut = JSON.parse(forkReclaim.stdout.trim());
     assert.notEqual(reclaimOut.code, 'FORK_LOCK_BUSY', 'Dead PID lock must be reclaimed immediately');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('full audit hardening: Model Hub, Profile, Memory, Vault/Relay, MCP, Self-Update, CDP & UI behavioral regressions', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-audit-full-'));
+  try {
+    // 1. Model Hub & Profile: Origin-bound Vault envelope, apiKeyEnv origin rebind, redirect:error, cleartext http,
+    //    metadata SSRF, query-preserving endpoint, SSE ReadableStream/abort/200-HTML fallback, non-sk key scrubbing
+    assert.ok(PROVIDER_PRESETS.openai && TIER_DEFINITIONS.T1);
+    assert.equal(
+      buildProtocolEndpoint('https://my-res.openai.azure.com/openai/deployments/gpt4?api-version=2024-10-21', '/chat/completions'),
+      'https://my-res.openai.azure.com/openai/deployments/gpt4/chat/completions?api-version=2024-10-21'
+    );
+    assert.equal(
+      buildProtocolEndpoint('https://generativelanguage.googleapis.com/v1beta?alt=sse', '/models/gemini-2.5-pro:streamGenerateContent'),
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse'
+    );
+
+    const vaultMap = new Map();
+    const profPath = path.join(tmp, 'profile', 'prism-profile.json');
+    const profMgr = createPrismProfileManager({
+      profilePath: profPath,
+      env: { CUSTOM_NON_SK_KEY: 'opaque_vendor_secret_XYZ987654321' },
+      secretStore: {
+        getSecret: (id) => vaultMap.get(id) || '',
+        setSecret: (id, val) => { vaultMap.set(id, val); },
+        deleteSecret: (id) => vaultMap.delete(id)
+      }
+    });
+
+    // Save remoteMemory.syncCatalog persists cleanly
+    profMgr.updateSettings({ remoteMemory: { enabled: true, endpointUrl: 'https://mem.example.org/mcp', syncCatalog: false } });
+    assert.equal(profMgr.loadProfile().settings.remoteMemory.syncCatalog, false);
+
+    // Origin rebind blocked for BOTH Vault-backed AND apiKeyEnv-backed providers
+    profMgr.upsertProvider({
+      id: 'env-gw',
+      preset: 'openai',
+      baseUrl: 'https://good.example.org/v1',
+      apiKeyEnv: 'CUSTOM_NON_SK_KEY'
+    });
+    assert.throws(
+      () => profMgr.upsertProvider({ id: 'env-gw', baseUrl: 'https://evil.example.net/v1' }),
+      (err) => err.code === 'ORIGIN_REBIND_REQUIRES_KEY'
+    );
+
+    profMgr.upsertProvider({
+      id: 'vault-gw',
+      preset: 'openai',
+      baseUrl: 'https://vault-a.example.org/v1',
+      apiKey: 'opaque_vault_token_AAA111222333'
+    });
+    // Vault envelope binds origin; tampering profile baseUrl without re-saving vault triggers ORIGIN_VAULT_MISMATCH
+    const tampered = JSON.parse(fs.readFileSync(profPath, 'utf8'));
+    tampered.providers.find((p) => p.id === 'vault-gw').baseUrl = 'https://hijack.example.net/v1';
+    fs.writeFileSync(profPath, JSON.stringify(tampered, null, 2), 'utf8');
+    assert.throws(
+      () => profMgr.resolveProviderAuth('vault-gw'),
+      (err) => err.code === 'ORIGIN_VAULT_MISMATCH'
+    );
+
+    // Cleartext http:// to public host & cloud metadata blocked in BOTH invoke and discover
+    profMgr.upsertProvider({ id: 'pub-http', preset: 'openai', baseUrl: 'http://api.public-example.org/v1', apiKeyEnv: 'CUSTOM_NON_SK_KEY' });
+    profMgr.upsertProvider({ id: 'meta-gw', preset: 'openai', baseUrl: 'http://169.254.169.254/latest', allowKeyless: true });
+    profMgr.upsertModel({ id: 'm-pub-http', providerId: 'pub-http', upstreamModel: 'gpt-x', tier: 'T2' });
+    profMgr.upsertModel({ id: 'm-meta', providerId: 'meta-gw', upstreamModel: 'gpt-x', tier: 'T2' });
+    profMgr.upsertModel({ id: 'm-primary', providerId: 'env-gw', upstreamModel: 'gpt-primary', tier: 'T1', fallbackModelId: 'm-fallback' });
+    profMgr.upsertModel({ id: 'm-fallback', providerId: 'env-gw', upstreamModel: 'gpt-fallback', tier: 'T2' });
+
+    const seenRedirectModes = [];
+    const hub = createModelHub({
+      profileManager: profMgr,
+      fetchFn: async (url, init) => {
+        seenRedirectModes.push(init?.redirect);
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (body.model === 'gpt-primary') {
+          // 200 text/html WAF page must be rejected and trigger fallback
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: (k) => (k.toLowerCase() === 'content-type' ? 'text/html; charset=utf-8' : null) },
+            text: async () => '<html><body>Sign in required opaque_vendor_secret_XYZ987654321</body></html>'
+          };
+        }
+        const enc = new TextEncoder();
+        const stream = new ReadableStream({
+          start(ctrl) {
+            ctrl.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"Fallback OK"}}]}\n\n'));
+            ctrl.enqueue(enc.encode('data: [DONE]\n\n'));
+            ctrl.close();
+          }
+        });
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (k) => (k.toLowerCase() === 'content-type' ? 'text/event-stream' : null) },
+          body: stream
+        };
+      }
+    });
+
+    await assert.rejects(() => hub.discoverProviderModels('pub-http'), (e) => e.code === 'CLEARTEXT_HTTP_CREDENTIAL_BLOCKED');
+    await assert.rejects(() => hub.discoverProviderModels('meta-gw'), (e) => e.code === 'SSRF_BLOCKED_METADATA');
+    await assert.rejects(() => hub.askModel({ model: 'm-pub-http', prompt: 'hi' }), (e) => e.code === 'CLEARTEXT_HTTP_CREDENTIAL_BLOCKED');
+    await assert.rejects(() => hub.askModel({ model: 'm-meta', prompt: 'hi' }), (e) => e.code === 'SSRF_BLOCKED_METADATA');
+
+    const fbRes = await hub.askModel({ model: 'm-primary', prompt: 'check fallback' });
+    assert.equal(fbRes.ok, true);
+    assert.equal(fbRes.usedFallback, true);
+    assert.equal(fbRes.text, 'Fallback OK');
+    assert.ok(seenRedirectModes.every((m) => m === 'error'), 'All outbound model fetches must enforce redirect: error');
+
+    // Non-sk active API key must be scrubbed from thrown error messages
+    const hubErr = createModelHub({
+      profileManager: profMgr,
+      fetchFn: async () => ({
+        ok: false,
+        status: 401,
+        headers: { get: () => 'application/json' },
+        text: async () => 'Unauthorized for opaque_vendor_secret_XYZ987654321'
+      })
+    });
+    await assert.rejects(
+      () => hubErr.askModel({ model: 'm-fallback', prompt: 'hi' }),
+      (err) => {
+        assert.equal(err.message.includes('opaque_vendor_secret_XYZ987654321'), false);
+        assert.equal(err.message.includes('CUSTOM_NON_SK_KEY'), false);
+        return true;
+      }
+    );
+
+    // parseSseEvents + redactOutboundText direct checks
+    const sseEvs = [];
+    const sseEnc = new TextEncoder();
+    const sseStream = new ReadableStream({
+      start(ctrl) {
+        ctrl.enqueue(sseEnc.encode(': heartbeat\n\ndata: {"v":1}\n\ndata: [DONE]\n\n'));
+        ctrl.close();
+      }
+    });
+    for await (const ev of parseSseEvents(sseStream, { firstByteTimeoutMs: 2000, idleTimeoutMs: 2000 })) {
+      sseEvs.push(ev.data);
+    }
+    assert.deepEqual(sseEvs, ['{"v":1}', '[DONE]']);
+    assert.equal(redactOutboundText('url=https://a.com?api_key=supersecret123456').includes('supersecret123456'), false);
+    assert.equal(isPublicRoutableIp('2001:db8::1'), false);
+    assert.equal(isPublicRoutableIp('2001:4860:4860::8888'), true);
+
+    // 2. Handoff Memory: WSL symlinked ~/.gemini redirect, remote taint & [EXTERNAL_UNTRUSTED_MEMORY], FTS helpers
+    assert.match(segmentForFts('双模记忆架构'), /双模/);
+    assert.match(buildSafeFtsMatchQuery('架构 OR NEAR()'), /"架构"/);
+    const wslMem = createHandoffMemoryStore({
+      platform: 'linux',
+      homeDir: '/home/bob',
+      stateDir: '/home/bob/.gemini/antigravity/prism-suite',
+      mountsText: 'C:\\134 /mnt/c 9p rw,aname=drvfs 0 0\n/dev/sdb / ext4 rw 0 0\n',
+      realpathFn: (p) => p.replace(/^\/home\/bob\/\.gemini/, '/mnt/c/Users/Bob/.gemini')
+    });
+    const wslInfo = wslMem.getStorageInfo();
+    assert.equal(wslInfo.redirectedFromMount, true);
+    assert.equal(wslInfo.effectiveDbDir.includes('/.gemini/'), false, 'Native fallback must avoid symlinked ~/.gemini');
+    wslMem.close();
+
+    // Remote config blocks ANTIGRAVITY_CSRF_TOKEN, cleartext public http, and metadata IP; remote sync isolates untrusted data
+    const memDir = path.join(tmp, 'mem-remote');
+    const badEnvMem = createHandoffMemoryStore({
+      stateDir: memDir,
+      remoteConfig: { enabled: true, url: 'https://mem.example.org/mcp', authEnv: 'ANTIGRAVITY_CSRF_TOKEN' }
+    });
+    assert.equal((await badEnvMem.syncRemoteCatalog()).code, 'INVALID_AUTH_ENV_NAME');
+    badEnvMem.close();
+
+    const httpMem = createHandoffMemoryStore({
+      stateDir: memDir,
+      remoteConfig: { enabled: true, url: 'http://public-mem.example.org/mcp' }
+    });
+    assert.equal((await httpMem.syncRemoteCatalog()).code, 'UNSAFE_REMOTE_PROTOCOL');
+    httpMem.close();
+
+    const metaMem = createHandoffMemoryStore({
+      stateDir: memDir,
+      remoteConfig: { enabled: true, url: 'http://169.254.169.254/latest' }
+    });
+    assert.equal((await metaMem.syncRemoteCatalog()).code, 'UNSAFE_REMOTE_HOST');
+    metaMem.close();
+
+    const syncMem = createHandoffMemoryStore({
+      stateDir: path.join(tmp, 'mem-sync-taint'),
+      remoteConfig: { enabled: true, url: 'https://mem.example.org/mcp', syncCatalog: true },
+      fetchImpl: async (_url, init) => {
+        const rpc = JSON.parse(init.body);
+        assert.equal(init.redirect, 'error');
+        return {
+          ok: true,
+          headers: { get: () => 'application/json' },
+          json: async () => ({
+            jsonrpc: '2.0',
+            id: rpc.id,
+            result: {
+              entries: [
+                { project: 'p1', slot: 's-taint', tags: ['catalog:master'], metadata: { tainted: true }, summary: 'bad' },
+                { project: 'p1', slot: 's-ok', tags: ['catalog:master', 'handoff:p1:s-ok'], summary: 'dateless remote item' }
+              ]
+            }
+          })
+        };
+      }
+    });
+    try {
+      // Seed newer local slot first; dateless remote item must NOT overwrite it
+      syncMem.store({ project: 'p1', slot: 's-ok', summary: 'newer local summary' });
+      const s1 = await syncMem.syncRemoteCatalog();
+      const s2 = await syncMem.syncRemoteCatalog();
+      assert.equal(s1.ok, true);
+      assert.equal(s1.updatedSlots, 1, 'Tainted metadata item must be skipped');
+      assert.equal(s2.importedMemories, 0, 'Dateless remote sync must use deterministic ID without duplicating');
+      const catSlots = syncMem.getMasterCatalog({ project: 'p1' }).slots;
+      assert.equal(catSlots.find((s) => s.slot === 's-taint'), undefined);
+      assert.equal(catSlots.find((s) => s.slot === 's-ok').summary, 'newer local summary');
+      const remoteEntries = syncMem.list({ project: 'p1', slot: 's-ok' }).entries.filter((e) => e.source === 'remote-mcp');
+      assert.equal(remoteEntries.length, 1);
+      assert.match(remoteEntries[0].summary, /^\[EXTERNAL_UNTRUSTED_MEMORY\] /);
+    } finally {
+      syncMem.close();
+    }
+
+    // 3. Account Vault/Manager: auto-capture rollback failure preserves backup; ui-prefs.json nested schema unwrapped
+    const acctDir = path.join(tmp, 'acct-rollback');
+    const savedVault = new Map();
+    const fakeVault = {
+      backendInfo: { backend: 'mock', supported: true },
+      probe: () => ({ ok: true, supported: true, backend: 'mock' }),
+      invalidateCache: () => {},
+      inspectActive: () => ({ ok: true, exists: true, email: 'unsaved@example.com', hashPrefix: 'aaaa', byteLength: 10 }),
+      inspectSaved: (id) => ({
+        ok: true,
+        exists: savedVault.has(id),
+        accountId: id,
+        email: savedVault.get(id) || '',
+        hashPrefix: 'bbbb',
+        byteLength: 10
+      }),
+      inspectSavedMany: (ids) => Object.fromEntries(ids.map((id) => [id, fakeVault.inspectSaved(id)])),
+      saveActiveTo: (id) => { savedVault.set(id, 'target@example.com'); return { ok: true, hashPrefix: 'bbbb' }; },
+      deleteSaved: (id) => { savedVault.delete(id); return { ok: true, deleted: true }; },
+      swapActiveFromSaved: (_targetId, { backupCurrentToId }) => {
+        if (backupCurrentToId) savedVault.set(backupCurrentToId, 'unsaved@example.com');
+        throw Object.assign(new Error('active write broke and rollback failed'), {
+          code: 'ACTIVE_VERIFY_FAILED',
+          rolledBack: false,
+          activeTouched: true,
+          backedUp: true
+        });
+      }
+    };
+    const mgr = createAccountManager({ stateDir: acctDir, vault: fakeVault, disableLocalQuotaScan: true });
+    mgr.setEnabled(true);
+    savedVault.set('target-acct', 'target@example.com');
+    fs.writeFileSync(
+      path.join(acctDir, 'accounts.json'),
+      JSON.stringify({
+        version: 1,
+        enabled: true,
+        accounts: [{ id: 'target-acct', email: 'target@example.com', alias: 'Target', role: 'primary', priority: 1 }]
+      }),
+      'utf8'
+    );
+    assert.throws(
+      () => mgr.switchAccount('target-acct', { autoCaptureUncaptured: true, saveSnapshot: false }),
+      (err) => err.code === 'ACTIVE_VERIFY_FAILED'
+    );
+    const afterFailState = JSON.parse(fs.readFileSync(path.join(acctDir, 'accounts.json'), 'utf8'));
+    const rescued = afterFailState.accounts.find((a) => a.email === 'unsaved@example.com');
+    assert.ok(rescued, 'Auto-captured account must be registered when active was touched and rollback failed');
+    assert.equal(savedVault.has(rescued.id), true, 'Auto-captured backup must NOT be deleted when rollback failed');
+    assert.equal(afterFailState.pendingSwitch?.phase, 'rollback-failed');
+
+    // Nested ui-prefs.json written by daemon.mjs must be unwrapped cleanly
+    fs.writeFileSync(
+      path.join(acctDir, 'ui-prefs.json'),
+      JSON.stringify({ schema: 1, updatedAt: '2026-11-27T00:00:00Z', prefs: { mascotStyle: 'shiba', _ts: 1795680000000 } }),
+      'utf8'
+    );
+    const syncedPrefs = mgr.syncPrismPrefsSeed({ writeExtensionSeed: false });
+    assert.equal(syncedPrefs.found, true);
+    assert.equal(syncedPrefs.prefs.mascotStyle, 'shiba');
+    assert.equal(sanitizePrismUiPrefs({ mascotSize: null, mascotMinCount: '' }), null);
+
+    // 4. MCP Server: POSIX colon allowed, batch meta blocks (), update_state schema has dismissedGuides, non-string save rejected
+    assert.equal(isSensitivePath('/work/2026-11-27T10:00:00.log', { platform: 'linux' }), false);
+    assert.equal(isSensitivePath('/work/.kube/config', { platform: 'linux' }), true);
+    assert.equal(isSensitivePath('C:\\work\\a.txt:hidden', { platform: 'win32' }), true);
+    assert.equal(hasWindowsBatchMeta('D:\\proj\\test(1).js'), true);
+
+    const mcpSrv = createPrismFilesServer({ dataDir: path.join(tmp, 'mcp-d'), defaultRoot: tmp, accountStateDir: path.join(tmp, 'mcp-a') });
+    try {
+      const listRpc = await mcpSrv.handleRpc({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+      const updTool = listRpc.result.tools.find((t) => t.name === 'update_state');
+      assert.ok(updTool.inputSchema.properties.dismissedGuides);
+      const badArgsRpc = await mcpSrv.handleRpc({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_state', arguments: [] } });
+      assert.equal(badArgsRpc.error.code, -32602);
+      const sampleFile = path.join(tmp, 'sample.txt');
+      fs.writeFileSync(sampleFile, 'hello', 'utf8');
+      assert.equal(mcpSrv.saveFileContent(sampleFile, undefined, Date.now()).ok, false);
+    } finally {
+      mcpSrv.close();
+    }
+
+    // 5. Upstream Radar: semver prerelease ordering, tar allowlist & tar-bomb cap, verified tarball SHA-256
+    assert.equal(compareSemver('0.7.0', '0.7.0-beta.1') > 0, true);
+    await assert.rejects(
+      () => auditTarEntriesSafe('/tmp/x.tgz', async (_b, args) => ({
+        stdout: args[0] === '-tvzf' ? 'lrwxrwxrwx root/root 0 2026-11-27 00:00 a -> /etc/passwd\n' : 'a\n'
+      })),
+      (e) => e.code === 'UNSAFE_TAR_ENTRY'
+    );
+    await assert.rejects(
+      () => auditTarEntriesSafe('/tmp/bomb.tgz', async (_b, args) => ({
+        stdout: args[0] === '-tvzf' ? '-rw-r--r-- root/root 200000000 2026-11-27 00:00 huge.bin\n' : 'huge.bin\n'
+      })),
+      (e) => e.code === 'TAR_BOMB_DETECTED'
+    );
+
+    // 6. Kernel CDP verifyElectronNativeViaCdp: fail-closed, rejects .bind()/JS/revoke/Date.now spoofs, accepts genuine native functions
+    assert.equal(await verifyElectronNativeViaCdp(async () => null), false, 'Must fail-closed when CDP fails');
+    const mkCdpMock = (internalPropsForFn, {
+      description = 'function () { [native code] }',
+      zoomResult = { type: 'number', value: 0 }
+    } = {}) => async (method, params) => {
+      if (method === 'Runtime.evaluate') return { result: { result: { objectId: 'win-1' } } };
+      if (method === 'Runtime.getProperties' && params.objectId === 'win-1') {
+        return { result: { result: [{ name: 'electronNative', writable: false, configurable: false, value: { type: 'object', objectId: 'en-1' } }] } };
+      }
+      if (method === 'Runtime.getProperties' && params.objectId === 'en-1') {
+        return {
+          result: {
+            result: ['getZoomLevel', 'setTitleBarOverlay', 'openExternal'].map((name) => ({
+              name,
+              value: { type: 'function', objectId: `fn-${name}`, description }
+            }))
+          }
+        };
+      }
+      if (method === 'Runtime.getProperties' && String(params.objectId || '').startsWith('fn-')) {
+        return {
+          result: {
+            result: [],
+            ...(internalPropsForFn !== undefined ? { internalProperties: internalPropsForFn } : {})
+          }
+        };
+      }
+      if (method === 'Runtime.callFunctionOn' && params.objectId === 'fn-getZoomLevel') {
+        return { result: { result: zoomResult } };
+      }
+      return { result: {} };
+    };
+    assert.equal(
+      await verifyElectronNativeViaCdp(mkCdpMock([{ name: '[[TargetFunction]]', value: { type: 'function' } }])),
+      false,
+      'Must reject .bind() spoofed electronNative methods'
+    );
+    assert.equal(
+      await verifyElectronNativeViaCdp(mkCdpMock([{ name: '[[FunctionLocation]]', value: { type: 'object' } }])),
+      false,
+      'Must reject JS-defined electronNative methods'
+    );
+    assert.equal(
+      await verifyElectronNativeViaCdp(mkCdpMock([{ name: '[[Scopes]]', value: { type: 'object' } }], { zoomResult: { type: 'undefined' } })),
+      false,
+      'Must reject Proxy.revocable().revoke / Promise resolver spoofs that return undefined'
+    );
+    assert.equal(
+      await verifyElectronNativeViaCdp(mkCdpMock([{ name: '[[Scopes]]', value: { type: 'object' } }], { description: 'function now() { [native code] }' })),
+      false,
+      'Must reject renamed built-in functions whose V8 C++ description still carries an identifier'
+    );
+    assert.equal(
+      await verifyElectronNativeViaCdp(mkCdpMock([{ name: '[[Scopes]]', value: { type: 'object' } }])),
+      true,
+      'Must accept native C++ contextBridge electronNative methods'
+    );
+    assert.equal(
+      await verifyElectronNativeViaCdp(mkCdpMock(undefined)),
+      true,
+      'Must accept native C++ methods even if V8 omits empty internalProperties array'
+    );
+
+    // 7. CLI flag parsing (--state-dir before subcommand, dash-prefixed values) & UI/Extension static hardening assertions
+    const cliRes = await runAccountsCli(['--state-dir', path.join(tmp, 'cli-st'), 'verify', '--json'], {
+      manager: { verifyDataIntegrity: () => ({ ok: true, via: 'cli-flag-before-cmd' }) },
+      handoffMemory: { close: () => {} }
+    });
+    assert.equal(cliRes.cmd, 'verify');
+    assert.equal(cliRes.data.via, 'cli-flag-before-cmd');
+
+    let capturedNext = '';
+    await runAccountsCli(['snapshot', '--next', '- 继续灰度验证'], {
+      manager: { saveHandoffSnapshot: (opts) => { capturedNext = opts.nextAction; return { ok: true, snapshot: { slotTag: 't' } }; } },
+      handoffMemory: { close: () => {} }
+    });
+    assert.equal(capturedNext, '- 继续灰度验证');
+    const nonExistentCliState = path.join(tmp, 'never-created-cli');
+    await assert.rejects(
+      () => runAccountsCli(['--state-dir', nonExistentCliState, 'unknown-subcmd']),
+      (e) => e.code === 'UNKNOWN_COMMAND'
+    );
+    assert.equal(fs.existsSync(nonExistentCliState), false);
+
+    // 8. Round 2 Review regressions: SSRF FQDN/Alibaba/ZoneID, lock meta/ABA, vault rollback, tar numeric UID & drive segment, CJK slug isolation
+    const {
+      acquireFileLock,
+      isDangerousMetadataOrLinkLocalHost,
+      isLocalOrLanHost,
+      redactSensitiveText
+    } = await import('../plugin/server/platform-utils.mjs');
+    const {
+      assertSafeTarEntryPath,
+      parseTarVerboseSize
+    } = await import('../plugin/server/upstream-radar.mjs');
+
+    assert.equal(isDangerousMetadataOrLinkLocalHost('metadata.google.internal.'), true);
+    assert.equal(isDangerousMetadataOrLinkLocalHost('100.100.100.200'), true);
+    assert.equal(isDangerousMetadataOrLinkLocalHost('fe80::1%eth0'), true);
+    assert.equal(isLocalOrLanHost('metadata.google.internal.'), false);
+    assert.equal(isLocalOrLanHost('100.100.100.200'), false);
+    assert.equal(isLocalOrLanHost('funnel-box.ts.net'), false);
+
+    const scrubbedEsc = redactSensitiveText('{\\"apiKey\\":\\"my-custom-secret-999\\", OPENAI_SECRET_KEY=topsecret12345}');
+    assert.doesNotMatch(scrubbedEsc, /my-custom-secret-999|topsecret12345/);
+
+    const metaLockPath = path.join(tmp, 'meta-test.lock');
+    const relMetaLock = acquireFileLock(metaLockPath, { meta: { pid: 99999999, lockToken: 'spoofed-token' } });
+    try {
+      const lockJson = JSON.parse(fs.readFileSync(metaLockPath, 'utf8'));
+      assert.equal(lockJson.pid, process.pid);
+      assert.notEqual(lockJson.lockToken, 'spoofed-token');
+    } finally {
+      relMetaLock();
+    }
+
+    assert.equal(parseTarVerboseSize('-rw-r--r-- 0/0 200000000 2026-11-27 00:00 bomb.bin'), 200000000);
+    assert.equal(parseTarVerboseSize('-rw-r--r--  0 0 0 200000000 Nov 27 00:00 bomb.bin'), 200000000);
+    assert.throws(() => assertSafeTarEntryPath('repo-v0.7.0/C:/evil.js'), (e) => e.code === 'UNSAFE_TAR_ENTRY');
+    assert.equal(isSensitivePath('C:\\Users\\me\\prism-suite\\.\\accounts.json', { platform: 'win32' }), true);
+    assert.equal(isSensitivePath('/tmp/handoff-memories.jsonl'), true);
+
+    // Vault rollback preserves previous key when saveProfile fails on an existing provider + cross-window cache invalidation
+    const rbDir = path.join(tmp, 'rb-prof');
+    const rbPath = path.join(rbDir, 'prism-profile.json');
+    let vaultMem = '';
+    let cacheInvalidations = 0;
+    let sabotageNextSave = false;
+    const rbStore = {
+      getSecret: () => vaultMem,
+      setSecret: (_id, val) => {
+        vaultMem = val;
+        if (sabotageNextSave) {
+          sabotageNextSave = false;
+          fs.rmSync(rbPath, { force: true });
+          fs.mkdirSync(rbPath, { recursive: true });
+        }
+        return true;
+      },
+      deleteSecret: () => { vaultMem = ''; return true; },
+      invalidateCache: () => { cacheInvalidations += 1; }
+    };
+    const rbMgrA = createPrismProfileManager({ homeDir: tmp, profilePath: rbPath, secretStore: rbStore });
+    const rbMgrB = createPrismProfileManager({ homeDir: tmp, profilePath: rbPath, secretStore: rbStore });
+    rbMgrA.upsertProvider({ id: 'rb-gw', baseUrl: 'https://old.example.com/v1', apiKey: 'sk-old-key-11111111' });
+    const savedOldEnvelope = vaultMem;
+    assert.match(savedOldEnvelope, /sk-old-key-11111111/);
+    sabotageNextSave = true;
+    assert.throws(() => rbMgrA.upsertProvider({ id: 'rb-gw', baseUrl: 'https://new.example.com/v1', apiKey: 'sk-new-key-22222222' }));
+    assert.equal(vaultMem, savedOldEnvelope, 'Rollback must restore previous Vault secret instead of leaving new or empty secret');
+    fs.rmSync(rbPath, { recursive: true, force: true });
+    rbMgrA.upsertProvider({ id: 'rb-gw', baseUrl: 'https://old.example.com/v1', apiKey: 'sk-old-key-11111111' });
+    rbMgrA.loadProfile();
+    const beforeInv = cacheInvalidations;
+    await new Promise((r) => setTimeout(r, 15));
+    rbMgrB.updateSettings({ defaultTier: 'T1' });
+    rbMgrA.loadProfile();
+    assert.ok(cacheInvalidations > beforeInv, 'Disk profile change must invalidate provider secret cache');
+
+    // SSE single-chunk oversized line cap & onDelta stream non-contamination
+    await assert.rejects(
+      async () => {
+        for await (const _ of parseSseEvents([`data: ${'x'.repeat(5000)}\n\n`], { maxLineBytes: 4096 })) {
+          // no-op
+        }
+      },
+      (e) => e.code === 'SSE_LINE_TOO_LARGE' && e.retriable === false
+    );
+    const streamDir = path.join(tmp, 'stream-hub');
+    const streamProf = createPrismProfileManager({ homeDir: tmp, profilePath: path.join(streamDir, 'prism-profile.json'), env: { TEST_MH_KEY: 'sk-test-stream-123456' } });
+    streamProf.upsertProvider({ id: 'sp', baseUrl: 'https://api.openai.com/v1', apiKeyEnv: 'TEST_MH_KEY' });
+    streamProf.upsertModel({ id: 'm-pri', providerId: 'sp', upstreamModel: 'gpt-4o', fallbackModelId: 'm-fb' });
+    streamProf.upsertModel({ id: 'm-fb', providerId: 'sp', upstreamModel: 'gpt-4o-mini' });
+    let fallbackCalled = 0;
+    const streamHub = createModelHub({
+      profileManager: streamProf,
+      fetchFn: async (_url, init) => {
+        const body = JSON.parse(init.body);
+        if (body.model === 'gpt-4o-mini') fallbackCalled += 1;
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ 'content-type': 'text/event-stream' }),
+          body: (async function* () {
+            yield Buffer.from('data: {"choices":[{"delta":{"content":"Half"}}]}\n\n');
+            yield Buffer.from('event: error\ndata: {"error":{"message":"boom","status":502}}\n\n');
+          })()
+        };
+      }
+    });
+    const deltas = [];
+    await assert.rejects(
+      () => streamHub.askModel({ model: 'm-pri', prompt: 'hi', onDelta: (d) => deltas.push(d) }),
+      (e) => e.code === 'SSE_STREAM_ERROR'
+    );
+    assert.deepEqual(deltas, ['Half']);
+    assert.equal(fallbackCalled, 0, 'Must not replay fallback into partially emitted onDelta stream');
+
+    // Handoff memory CJK slug isolation & future remote timestamp clamping
+    const cjkMem = createHandoffMemoryStore({
+      homeDir: tmp,
+      stateDir: path.join(tmp, 'cjk-mem'),
+      remoteConfig: { enabled: true, url: 'http://127.0.0.1:18999/mcp', syncCatalog: true },
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        text: async () => JSON.stringify({
+          jsonrpc: '2.0',
+          id: null,
+          result: {
+            entries: [{
+              project: '商城后台',
+              slot: '主干开发',
+              summary: '远端同步条目',
+              verified: 'ok',
+              updatedAt: '2099-01-01T00:00:00.000Z',
+              tags: Array.from({ length: 20 }, (_, i) => `extra-tag-${i}`)
+            }]
+          }
+        })
+      })
+    });
+    try {
+      cjkMem.store({ project: '商城后台', slot: '支付模块', summary: '完成微信支付回调', verified: 'pass' });
+      cjkMem.store({ project: '订单中心', slot: '支付模块', summary: '完成订单拆单', verified: 'pass' });
+      assert.equal(cjkMem.list({ project: '商城后台' }).total, 1);
+      assert.equal(cjkMem.list({ project: '---' }).total, 0, 'All-punctuation project filter must not drop WHERE filter');
+      const syncOut = await cjkMem.syncRemoteCatalog();
+      assert.equal(syncOut.ok, true);
+      const syncedList = cjkMem.list({ project: '商城后台', slot: '主干开发' });
+      assert.equal(syncedList.entries.length, 1);
+      assert.ok(syncedList.entries[0].createdAtMs <= Date.now() + 1000, 'Future remote timestamps must be clamped');
+      assert.ok(syncedList.entries[0].tags.includes('external:untrusted'), 'external:untrusted tag must survive tag cap');
+    } finally {
+      cjkMem.close();
+    }
+
+    const appHtmlSrc = fs.readFileSync(path.join(REPO, 'plugin', 'ui', 'app.html'), 'utf8');
+    assert.doesNotMatch(appHtmlSrc, /prism-files\/prism-profile\.json/);
+    assert.match(appHtmlSrc, /existingTa\.dataset\.editPath === curEditPath/);
+    assert.match(appHtmlSrc, /'model_hub_probe_speed', \{ modelId: id \}, 30000/);
+    assert.match(appHtmlSrc, /previewDrawer\.hidden = !showPane/);
+    assert.match(appHtmlSrc, /compositionend/);
+    const extCssSrc = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite.css'), 'utf8');
+    assert.match(extCssSrc, /\[data-page-hidden="1"\]/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

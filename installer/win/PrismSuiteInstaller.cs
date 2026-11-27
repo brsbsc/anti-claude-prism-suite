@@ -256,7 +256,7 @@ namespace AntiClaudePrismSuiteInstaller
             return string.Join(Path.DirectorySeparatorChar.ToString(), parts);
         }
 
-        private static void WriteResourceToFile(Assembly asm, string resourceName, string destPath)
+        private static void AtomicWriteStreamToFile(Stream src, string destPath)
         {
             string parent = Path.GetDirectoryName(destPath);
             if (!string.IsNullOrEmpty(parent))
@@ -266,37 +266,30 @@ namespace AntiClaudePrismSuiteInstaller
                     throw new InvalidOperationException("安全拦截：拒绝向重解析点目录写入文件：" + parent);
                 }
                 Directory.CreateDirectory(parent);
+                if (IsReparsePoint(parent))
+                {
+                    throw new InvalidOperationException("安全拦截：拒绝向重解析点目录写入文件：" + parent);
+                }
             }
             if (IsReparsePoint(destPath))
             {
                 throw new InvalidOperationException("安全拦截：拒绝覆盖重解析点文件：" + destPath);
             }
             string tmpPath = destPath + ".prism-tmp-" + Guid.NewGuid().ToString("N");
-            bool createdTmp = false;
+            bool shouldCleanupTmp = true;
             try
             {
-                using (Stream src = asm.GetManifestResourceStream(resourceName))
+                using (FileStream dst = new FileStream(tmpPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 {
-                    if (src == null)
-                    {
-                        throw new InvalidOperationException("未找到内嵌资源：" + resourceName);
-                    }
-                    using (FileStream dst = new FileStream(tmpPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                    {
-                        createdTmp = true;
-                        src.CopyTo(dst);
-                        dst.Flush(true);
-                    }
+                    src.CopyTo(dst);
+                    dst.Flush(true);
                 }
-                if (IsReparsePoint(destPath))
-                {
-                    throw new InvalidOperationException("安全拦截：目标文件被替换为重解析点：" + destPath);
-                }
-                File.Copy(tmpPath, destPath, true);
+                AtomicMoveReplace(tmpPath, destPath);
+                shouldCleanupTmp = false;
             }
             finally
             {
-                if (createdTmp)
+                if (shouldCleanupTmp)
                 {
                     try
                     {
@@ -306,6 +299,68 @@ namespace AntiClaudePrismSuiteInstaller
                     {
                     }
                 }
+            }
+        }
+
+        private static void WriteResourceToFile(Assembly asm, string resourceName, string destPath)
+        {
+            using (Stream src = asm.GetManifestResourceStream(resourceName))
+            {
+                if (src == null)
+                {
+                    throw new InvalidOperationException("未找到内嵌资源：" + resourceName);
+                }
+                AtomicWriteStreamToFile(src, destPath);
+            }
+        }
+
+        private const uint MOVEFILE_REPLACE_EXISTING = 0x00000001u;
+        private const uint MOVEFILE_WRITE_THROUGH = 0x00000008u;
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool MoveFileExW(string lpExistingFileName, string lpNewFileName, uint dwFlags);
+
+        private static void AtomicMoveReplace(string tmpPath, string destPath)
+        {
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                if (IsReparsePoint(destPath))
+                {
+                    throw new InvalidOperationException("安全拦截：目标文件为重解析点，拒绝原子替换：" + destPath);
+                }
+                if (MoveFileExW(tmpPath, destPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+                {
+                    return;
+                }
+                int err = Marshal.GetLastWin32Error();
+                if (err == 5 && !IsReparsePoint(destPath) && File.Exists(destPath))
+                {
+                    try
+                    {
+                        FileAttributes attrs = File.GetAttributes(destPath);
+                        if ((attrs & FileAttributes.ReadOnly) != 0)
+                        {
+                            File.SetAttributes(destPath, attrs & ~FileAttributes.ReadOnly);
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+                if ((err == 32 || err == 5) && attempt < 4)
+                {
+                    System.Threading.Thread.Sleep(50 * (attempt + 1));
+                    continue;
+                }
+                throw new System.ComponentModel.Win32Exception(err, "原子替换文件失败：" + destPath);
+            }
+        }
+
+        private static void AtomicCopyFile(string srcPath, string destPath)
+        {
+            using (FileStream src = new FileStream(srcPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                AtomicWriteStreamToFile(src, destPath);
             }
         }
 
@@ -903,8 +958,8 @@ namespace AntiClaudePrismSuiteInstaller
 
                 if (!File.Exists(livePath))
                 {
-                    File.Copy(srcTemplate, livePath, true);
-                    File.Copy(srcTemplate, basePath, true);
+                    AtomicCopyFile(srcTemplate, livePath);
+                    AtomicCopyFile(srcTemplate, basePath);
                 }
                 else
                 {
@@ -916,15 +971,15 @@ namespace AntiClaudePrismSuiteInstaller
                     {
                         if (!string.Equals(baseHash, srcHash, StringComparison.OrdinalIgnoreCase))
                         {
-                            File.Copy(srcTemplate, basePath, true);
+                            AtomicCopyFile(srcTemplate, basePath);
                         }
                     }
                     else if (!string.IsNullOrEmpty(liveHash)
                         && !string.IsNullOrEmpty(baseHash)
                         && string.Equals(liveHash, baseHash, StringComparison.OrdinalIgnoreCase))
                     {
-                        File.Copy(srcTemplate, livePath, true);
-                        File.Copy(srcTemplate, basePath, true);
+                        AtomicCopyFile(srcTemplate, livePath);
+                        AtomicCopyFile(srcTemplate, basePath);
                     }
                     else if (!string.IsNullOrEmpty(srcHash)
                         && !string.Equals(baseHash, srcHash, StringComparison.OrdinalIgnoreCase))
@@ -936,7 +991,7 @@ namespace AntiClaudePrismSuiteInstaller
                         {
                             throw new InvalidOperationException("安全拦截：incoming 目标文件为重解析点：" + incFile);
                         }
-                        File.Copy(srcTemplate, incFile, true);
+                        AtomicCopyFile(srcTemplate, incFile);
                     }
                 }
             }
