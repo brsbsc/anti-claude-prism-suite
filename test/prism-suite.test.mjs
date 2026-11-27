@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import vm from 'node:vm';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { installExtensions, installKernel, installPlugin, installAll } from '../install.mjs';
 import { uninstallExtensions, uninstallKernel, uninstallPlugin, uninstallAll } from '../uninstall.mjs';
@@ -75,7 +77,16 @@ import {
   searchPublicWebSafe,
   redactOutboundText
 } from '../plugin/server/model-hub.mjs';
-import { resolveHostRevealTarget } from '../vendor/anti-claude/core/daemon.mjs';
+import {
+  resolveHostRevealTarget,
+  collectUsageSummary,
+  isSensitiveSourcePath,
+  saveProjectContext,
+  saveProjectScheduledTask,
+  deleteProjectScheduledTask,
+  HOST_IDENTITY_PROBE_EXPR
+} from '../vendor/anti-claude/core/daemon.mjs';
+import { buildWinStartupVbs } from '../vendor/anti-claude/install.mjs';
 import {
   UPSTREAM_SCHEMA_VERSION,
   evaluateRepoUpdate,
@@ -1503,6 +1514,9 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
         if (file === 'tar' && args[0] === '-tvzf') {
           return { stdout: '-rw-r--r-- root/root 100 2026-11-26 09:00 repo-v0.9.9/install.mjs\n', stderr: '' };
         }
+        if (file === 'tar' && args[0] === '-tzf') {
+          return { stdout: 'repo-v0.9.9/install.mjs\n', stderr: '' };
+        }
         if (file === 'tar' && args[0] === '-xzf') {
           const destIdx = args.indexOf('-C') + 1;
           fs.writeFileSync(path.join(args[destIdx], 'install.mjs'), 'console.log("ok")', 'utf8');
@@ -2779,3 +2793,1079 @@ test('v0.7.0 Windows shortcut/label adaptation, outline rail persistence, workbe
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('audit #1 & review #2/#13: macOS Keychain -g/hex/4095B/rollback & Linux secret-tool raw active slots', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-audit1-'));
+  try {
+    // 1. Realistic macOS Keychain mock:
+    //    - find-generic-password -g prints password to stderr as `"..."` (printable ASCII) or `0x<hex> "..."` (multiline/non-ASCII/binary)
+    //    - security -i enforces Apple's 4095-byte stdin line limit
+    //    - direct `security add-generic-password` argv fallback handles >3900B payloads without truncation
+    const macStore = new Map(); // key -> Buffer
+    const macWriteInputs = [];
+    const macDirectArgvCalls = [];
+    let failNextActiveWrite = false;
+    const isPrintableSingleLineAscii = (buf) => {
+      for (let i = 0; i < buf.length; i++) {
+        const b = buf[i];
+        if (b < 0x20 || b >= 0x7f) return false;
+      }
+      return true;
+    };
+    const macRunCmd = (bin, args, { input = '' } = {}) => {
+      assert.equal(bin, 'security');
+      if (args[0] === '-h') return { status: 0, stdout: 'help', stderr: '' };
+      if (args[0] === 'find-generic-password') {
+        assert.ok(args.includes('-g'), 'macOS Keychain read must use -g to disambiguate hex vs UTF-8');
+        const s = args[args.indexOf('-s') + 1];
+        const a = args[args.indexOf('-a') + 1];
+        const valBuf = macStore.get(`${s}\0${a}`);
+        if (valBuf === undefined) return { status: 44, stdout: '', stderr: 'The specified item could not be found in the keychain.' };
+        const pwLine = isPrintableSingleLineAscii(valBuf)
+          ? `password: "${valBuf.toString('utf8')}"\n`
+          : `password: 0x${valBuf.toString('hex')}  "${valBuf.toString('latin1').replace(/[\r\n]/g, '.')}"\n`;
+        return { status: 0, stdout: 'keychain: "/Users/demo/Library/Keychains/login.keychain-db"\n', stderr: pwLine };
+      }
+      if (args[0] === 'add-generic-password') {
+        macDirectArgvCalls.push(args);
+        const s = args[args.indexOf('-s') + 1];
+        const a = args[args.indexOf('-a') + 1];
+        if (failNextActiveWrite && s === 'gemini' && a === 'antigravity') {
+          failNextActiveWrite = false;
+          return { status: 1, stdout: '', stderr: 'simulated write failure' };
+        }
+        const wIdx = args.indexOf('-w');
+        const xIdx = args.indexOf('-X');
+        if (wIdx !== -1) {
+          macStore.set(`${s}\0${a}`, Buffer.from(args[wIdx + 1], 'utf8'));
+          return { status: 0, stdout: '', stderr: '' };
+        }
+        if (xIdx !== -1) {
+          macStore.set(`${s}\0${a}`, Buffer.from(args[xIdx + 1], 'hex'));
+          return { status: 0, stdout: '', stderr: '' };
+        }
+        return { status: 1, stdout: '', stderr: 'missing -w/-X' };
+      }
+      if (args[0] === '-i') {
+        assert.ok(Buffer.byteLength(input, 'utf8') < 4095, 'security -i MUST NOT receive >=4095B line');
+        macWriteInputs.push(input);
+        const mW = input.match(/^add-generic-password -U -s ("(?:\\.|[^"\\])*") -a ("(?:\\.|[^"\\])*") -w ("(?:\\.|[^"\\])*")/);
+        if (mW) {
+          const s = JSON.parse(mW[1]);
+          const a = JSON.parse(mW[2]);
+          if (failNextActiveWrite && s === 'gemini' && a === 'antigravity') {
+            failNextActiveWrite = false;
+            return { status: 1, stdout: '', stderr: 'simulated -i write failure' };
+          }
+          macStore.set(`${s}\0${a}`, Buffer.from(JSON.parse(mW[3]), 'utf8'));
+          return { status: 0, stdout: '', stderr: '' };
+        }
+        const mX = input.match(/^add-generic-password -U -s ("(?:\\.|[^"\\])*") -a ("(?:\\.|[^"\\])*") -X ([0-9a-fA-F]+)/);
+        if (mX) {
+          const s = JSON.parse(mX[1]);
+          const a = JSON.parse(mX[2]);
+          if (failNextActiveWrite && s === 'gemini' && a === 'antigravity') {
+            failNextActiveWrite = false;
+            return { status: 1, stdout: '', stderr: 'simulated -i hex failure' };
+          }
+          macStore.set(`${s}\0${a}`, Buffer.from(mX[3], 'hex'));
+          return { status: 0, stdout: '', stderr: '' };
+        }
+        return { status: 1, stdout: '', stderr: `unparsed security -i: ${input}` };
+      }
+      if (args[0] === 'delete-generic-password') {
+        const s = args[args.indexOf('-s') + 1];
+        const a = args[args.indexOf('-a') + 1];
+        macStore.delete(`${s}\0${a}`);
+        return { status: 0, stdout: '', stderr: '' };
+      }
+      return { status: 1, stdout: '', stderr: 'unexpected security args' };
+    };
+
+    const macVault = createAccountVault({ platform: 'darwin', isWsl: false, homeDir: tmp, runCmd: macRunCmd });
+    const rawMac1 = JSON.stringify({ id_token_email: 'mac1@example.com', refresh_token: 'tok-mac-1' });
+    const rawMac2 = JSON.stringify({ id_token_email: 'mac2@example.com', refresh_token: 'tok-mac-2' });
+    macStore.set('gemini\0antigravity', Buffer.from(rawMac1, 'utf8'));
+    const savedMac1 = macVault.saveActiveTo('mac1');
+    assert.equal(savedMac1.email, 'mac1@example.com');
+    assert.ok(macStore.get('prism-suite\0mac1').toString('utf8').startsWith('prism-b64:'), 'Backup slot uses prism-b64 encoding');
+
+    macStore.set('gemini\0antigravity', Buffer.from(rawMac2, 'utf8'));
+    macVault.saveActiveTo('mac2');
+    const swappedMac = macVault.swapActiveFromSaved('mac1', { expectedTargetEmail: 'mac1@example.com', backupCurrentToId: 'mac2' });
+    assert.equal(swappedMac.ok, true);
+    const activeAfterMacSwap = macStore.get('gemini\0antigravity').toString('utf8');
+    assert.equal(activeAfterMacSwap, rawMac1, 'macOS active slot MUST receive raw JSON without prism-b64: prefix');
+    assert.equal(activeAfterMacSwap.startsWith('prism-b64:'), false);
+
+    // Multiline + non-ASCII UTF-8 credential on macOS uses -X <hex> and round-trips via -g 0x... decoding
+    const multilineMac = '{"id_token_email":"ml@example.com",\n"name":"测试用户",\n"refresh_token":"tok-ml"}';
+    macStore.set('gemini\0antigravity', Buffer.from(multilineMac, 'utf8'));
+    macVault.saveActiveTo('macml');
+    macStore.set('gemini\0antigravity', Buffer.from(rawMac2, 'utf8'));
+    macVault.swapActiveFromSaved('macml', { expectedTargetEmail: 'ml@example.com' });
+    assert.ok(macWriteInputs.some((line) => line.includes('-s "gemini" -a "antigravity" -X ')), 'Multiline active slot uses -X hex');
+    assert.equal(macStore.get('gemini\0antigravity').toString('utf8'), multilineMac);
+
+    // Large >3900B OAuth JSON must fall back to direct argv add-generic-password (never truncated by 4095B security -i limit)
+    const bigMac = JSON.stringify({ id_token_email: 'big@example.com', id_token: 'x'.repeat(3200), refresh_token: 'y'.repeat(1000) });
+    macStore.set('gemini\0antigravity', Buffer.from(bigMac, 'utf8'));
+    macVault.saveActiveTo('macbig');
+    macStore.set('gemini\0antigravity', Buffer.from(rawMac2, 'utf8'));
+    macVault.swapActiveFromSaved('macbig', { expectedTargetEmail: 'big@example.com' });
+    assert.ok(macDirectArgvCalls.length >= 2, 'Large >3900B credential must use direct argv fallback');
+    assert.equal(macStore.get('gemini\0antigravity').toString('utf8'), bigMac);
+
+    // Mid-write failure on writeActiveRaw must still trigger rollback (swapped=true set BEFORE writeActiveRaw)
+    macStore.set('gemini\0antigravity', Buffer.from(rawMac2, 'utf8'));
+    failNextActiveWrite = true;
+    assert.throws(
+      () => macVault.swapActiveFromSaved('mac1', { expectedTargetEmail: 'mac1@example.com' }),
+      (err) => err && err.rolledBack === true
+    );
+    assert.equal(macStore.get('gemini\0antigravity').toString('utf8'), rawMac2);
+
+    // 2. Linux Secret Service (secret-tool) mock
+    const linStore = new Map();
+    const linRunCmd = (bin, args, { input = '' } = {}) => {
+      assert.equal(bin, 'secret-tool');
+      if (args[0] === '--help') return { status: 0, stdout: 'help', stderr: '' };
+      const s = args[args.indexOf('service') + 1];
+      const a = args[args.indexOf('account') + 1];
+      if (args[0] === 'lookup') {
+        const val = linStore.get(`${s}\0${a}`);
+        if (val === undefined) return { status: 1, stdout: '', stderr: '' };
+        return { status: 0, stdout: val, stderr: '' };
+      }
+      if (args[0] === 'store') {
+        linStore.set(`${s}\0${a}`, input);
+        return { status: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'clear') {
+        linStore.delete(`${s}\0${a}`);
+        return { status: 0, stdout: '', stderr: '' };
+      }
+      return { status: 1, stdout: '', stderr: 'unexpected secret-tool args' };
+    };
+
+    const linVault = createAccountVault({ platform: 'linux', isWsl: false, homeDir: tmp, runCmd: linRunCmd });
+    // Legitimate trailing \n must be preserved across save + swap (no blind trailing newline stripping)
+    const rawLin1 = `${JSON.stringify({ id_token_email: 'lin1@example.com', refresh_token: 'tok-lin-1' })}\n`;
+    const rawLin2 = JSON.stringify({ id_token_email: 'lin2@example.com', refresh_token: 'tok-lin-2' });
+    linStore.set('gemini\0antigravity', rawLin1);
+    linVault.saveActiveTo('lin1');
+    assert.ok(linStore.get('prism-suite\0lin1').startsWith('prism-b64:'));
+
+    linStore.set('gemini\0antigravity', rawLin2);
+    linVault.saveActiveTo('lin2');
+    linVault.swapActiveFromSaved('lin1', { expectedTargetEmail: 'lin1@example.com', backupCurrentToId: 'lin2' });
+    assert.equal(linStore.get('gemini\0antigravity'), rawLin1, 'Linux active slot MUST preserve raw UTF-8 JSON including trailing newline');
+    assert.equal(linStore.get('gemini\0antigravity').startsWith('prism-b64:'), false);
+
+    // Non-UTF-8 binary payload in backup must NOT fall back to writing prism-b64: into Linux active slot
+    const binPayload = Buffer.from([0x00, 0xff, 0x01, 0x02, 0x7b, 0x22, 0x65, 0x6d, 0x61, 0x69, 0x6c, 0x22, 0x3a, 0x22, 0x61, 0x40, 0x62, 0x2e, 0x63, 0x22, 0x7d]);
+    linStore.set('prism-suite\0linbin', `prism-b64:${binPayload.toString('base64')}`);
+    assert.throws(
+      () => linVault.swapActiveFromSaved('linbin'),
+      (err) => err && err.code === 'UNSUPPORTED_RAW_BINARY_SECRET'
+    );
+    assert.equal(linStore.get('gemini\0antigravity'), rawLin1, 'Active slot must remain uncorrupted on binary rejection');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('audit #5 & #6: WSL self-update cwd/env healing & BSD/symlink tar audit rejection', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-audit56-'));
+  try {
+    const fakeExe = Buffer.from('MZ-fake-installer-v0.9.9', 'utf8');
+    const validSha = crypto.createHash('sha256').update(fakeExe).digest('hex');
+    const mkFetch = () => async (url) => {
+      if (String(url).includes('/releases/latest')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            tag_name: 'v0.9.9',
+            name: 'v0.9.9',
+            published_at: '2026-11-26T00:00:00Z',
+            body: '- Fix WSL update and BSD tar audit',
+            assets: [
+              {
+                name: 'Anti-Claude-Prism-Suite-Setup.exe',
+                size: fakeExe.length,
+                browser_download_url: 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/download/v0.9.9/Anti-Claude-Prism-Suite-Setup.exe'
+              },
+              {
+                name: 'Anti-Claude-Prism-Suite-Setup.exe.sha256',
+                size: 80,
+                browser_download_url: 'https://github.com/wushuai0802/anti-claude-prism-suite/releases/download/v0.9.9/Anti-Claude-Prism-Suite-Setup.exe.sha256'
+              }
+            ]
+          })
+        };
+      }
+      if (String(url).endsWith('.sha256')) {
+        return { ok: true, status: 200, arrayBuffer: async () => Buffer.from(`${validSha}  Anti-Claude-Prism-Suite-Setup.exe\n`, 'utf8') };
+      }
+      return { ok: true, status: 200, arrayBuffer: async () => fakeExe };
+    };
+
+    const lockDir = path.join(tmp, 'lock');
+
+    // 1. WSL split update passes safe cwd + interop env to installer execFn
+    const capturedOpts = [];
+    const okRes = await applyPrismSelfUpdate({
+      currentVersion: '0.7.0',
+      platform: 'linux',
+      isWsl: true,
+      lockDir,
+      pluginDir: path.join(tmp, 'wsl-plugins'),
+      fetchImpl: mkFetch(),
+      runExecFile: async (file, args, opts) => {
+        capturedOpts.push({ file, args, opts });
+        if (file === 'tar' && args[0] === '-tvzf') {
+          return { stdout: '-rw-r--r--  0 root wheel 100 Nov 26 12:00 repo-v0.9.9/install.mjs\n', stderr: '' };
+        }
+        if (file === 'tar' && args[0] === '-tzf') {
+          return { stdout: 'repo-v0.9.9/install.mjs\n', stderr: '' };
+        }
+        if (file === 'tar' && args[0] === '-xzf') {
+          const destIdx = args.indexOf('-C') + 1;
+          fs.writeFileSync(path.join(args[destIdx], 'install.mjs'), 'console.log("ok")', 'utf8');
+          return { stdout: '', stderr: '' };
+        }
+        return { stdout: 'OK', stderr: '' };
+      }
+    });
+    assert.equal(okRes.ok, true);
+    assert.ok(capturedOpts[0].opts && typeof capturedOpts[0].opts.cwd === 'string' && capturedOpts[0].opts.cwd.length > 0);
+    assert.ok(capturedOpts[0].opts && capturedOpts[0].opts.env && typeof capturedOpts[0].opts.env === 'object');
+
+    // 2. BSD tar traversal in -tzf must be blocked
+    await assert.rejects(
+      () => applyPrismSelfUpdate({
+        currentVersion: '0.7.0',
+        platform: 'darwin',
+        isWsl: false,
+        lockDir,
+        fetchImpl: mkFetch(),
+        runExecFile: async (file, args) => {
+          if (file === 'tar' && args[0] === '-tvzf') {
+            return { stdout: '-rw-r--r--  0 root wheel 100 Nov 26 12:00 ../evil.txt\n', stderr: '' };
+          }
+          if (file === 'tar' && args[0] === '-tzf') {
+            return { stdout: '../evil.txt\n', stderr: '' };
+          }
+          return { stdout: '', stderr: '' };
+        }
+      }),
+      (err) => err.code === 'UNSAFE_TAR_ENTRY'
+    );
+
+    // 2b. Fail-closed when `tar -tzf` fails or returns empty (must never swallow error or trust 'OK' stub)
+    await assert.rejects(
+      () => applyPrismSelfUpdate({
+        currentVersion: '0.7.0',
+        platform: 'darwin',
+        isWsl: false,
+        lockDir,
+        fetchImpl: mkFetch(),
+        runExecFile: async (file, args) => {
+          if (file === 'tar' && args[0] === '-tvzf') {
+            return { stdout: '-rw-r--r--  0 root wheel 100 Nov 26 12:00 repo-v0.9.9/install.mjs\n', stderr: '' };
+          }
+          if (file === 'tar' && args[0] === '-tzf') {
+            throw new Error('tar -tzf failed');
+          }
+          return { stdout: '', stderr: '' };
+        }
+      }),
+      /tar -tzf failed/
+    );
+
+    // 3. Absolute path in -tzf must be blocked
+    await assert.rejects(
+      () => applyPrismSelfUpdate({
+        currentVersion: '0.7.0',
+        platform: 'darwin',
+        isWsl: false,
+        lockDir,
+        fetchImpl: mkFetch(),
+        runExecFile: async (file, args) => {
+          if (file === 'tar' && args[0] === '-tvzf') {
+            return { stdout: '-rw-r--r--  0 root wheel 100 Nov 26 12:00 /etc/passwd\n', stderr: '' };
+          }
+          if (file === 'tar' && args[0] === '-tzf') {
+            return { stdout: '/etc/passwd\n', stderr: '' };
+          }
+          return { stdout: '', stderr: '' };
+        }
+      }),
+      (err) => err.code === 'UNSAFE_TAR_ENTRY'
+    );
+
+    // 4. Symlink & hardlink entries in -tvzf must be blocked
+    for (const badLine of [
+      'lrwxr-xr-x  0 root wheel 0 Nov 26 12:00 repo-v0.9.9/link -> /etc/passwd\n',
+      'hrw-r--r--  0 root wheel 0 Nov 26 12:00 repo-v0.9.9/hard link to /etc/passwd\n'
+    ]) {
+      await assert.rejects(
+        () => applyPrismSelfUpdate({
+          currentVersion: '0.7.0',
+          platform: 'darwin',
+          isWsl: false,
+          lockDir,
+          fetchImpl: mkFetch(),
+          runExecFile: async (file, args) => {
+            if (file === 'tar' && args[0] === '-tvzf') return { stdout: badLine, stderr: '' };
+            return { stdout: '', stderr: '' };
+          }
+        }),
+        (err) => err.code === 'UNSAFE_TAR_ENTRY'
+      );
+    }
+
+    // 5. WSL2 EACCES PowerShell fallback sets $ErrorActionPreference='Stop', checks $p null, and translates SmartScreen error
+    let decodedPsFallback = '';
+    await assert.rejects(
+      () => applyPrismSelfUpdate({
+        currentVersion: '0.7.0',
+        platform: 'linux',
+        isWsl: true,
+        lockDir,
+        pluginDir: path.join(tmp, 'wsl-plugins-fallback'),
+        fetchImpl: mkFetch(),
+        runExecFile: async (file, args) => {
+          if (file === 'wslpath') return { stdout: 'C:\\Temp\\Anti-Claude-Prism-Suite-Setup.exe\n', stderr: '' };
+          if (/powershell/i.test(file)) {
+            const encIdx = args.indexOf('-EncodedCommand');
+            if (encIdx !== -1) {
+              decodedPsFallback = Buffer.from(args[encIdx + 1], 'base64').toString('utf16le');
+            }
+            throw new Error('Blocked by SmartScreen Defender');
+          }
+          const e = new Error('spawn EACCES');
+          e.code = 'EACCES';
+          throw e;
+        }
+      }),
+      (err) => err.code === 'WINDOWS_SECURITY_BLOCKED'
+    );
+    assert.match(decodedPsFallback, /\$ErrorActionPreference\s*=\s*'Stop'/);
+    assert.match(decodedPsFallback, /if\s*\(\$null\s*-eq\s*\$p\)\s*\{\s*exit 1\s*\}/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('audit #14, #18 & #20: bare JWT redaction, POSIX relauncher escaping/env strip, handoff search >100, saveFileContent OOM guard & listDirectory slice', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-audit141820-'));
+  let memStore = null;
+  let server = null;
+  try {
+    // 1. Bare 3-segment JWT redaction in both redactSensitiveText and searchTranscripts
+    const fakeJwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6ImxlYWtAZXhhbXBsZS5jb20ifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+    const redacted = redactSensitiveText(`audit-marker token=${fakeJwt} raw ${fakeJwt}`);
+    assert.equal(redacted.includes('eyJhbGci'), false);
+    assert.match(redacted, /\[REDACTED_JWT\]/);
+
+    const brainDir = path.join(tmp, 'brain');
+    const logDir = path.join(brainDir, 'sess-jwt-1', '.system_generated', 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(logDir, 'transcript.jsonl'),
+      `${JSON.stringify({ role: 'assistant', text: `jwt-needle-marker ${fakeJwt}` })}\n`,
+      'utf8'
+    );
+    const searchRes = searchTranscripts({ query: 'jwt-needle-marker', brainDir });
+    assert.equal(searchRes.ok, true);
+    assert.equal(searchRes.results.length, 1);
+    assert.equal(searchRes.results[0].snippet.includes('eyJhbGci'), false);
+    assert.match(searchRes.results[0].snippet, /\[REDACTED_JWT\]/);
+
+    // 2. POSIX relauncher single-quote escaping + stripped Electron/Antigravity env keys
+    for (const plat of ['darwin', 'linux']) {
+      const spawns = [];
+      const trickyTarget = plat === 'darwin'
+        ? "/Applications/Antigravity.app"
+        : "/tmp/dir'$(whoami)`id`/Antigravity.AppImage";
+      const relauncher = createClientRelauncher({
+        platform: plat,
+        isWsl: false,
+        homeDir: tmp,
+        env: {
+          PATH: '/usr/bin',
+          APPIMAGE: trickyTarget,
+          ELECTRON_RUN_AS_NODE: '1',
+          NODE_OPTIONS: '--inspect',
+          ANTIGRAVITY_LS_ADDRESS: '127.0.0.1:1234',
+          ANTIGRAVITY_CSRF_TOKEN: 'secret-csrf',
+          ANTIGRAVITY_AGENTAPI_EXE: '/tmp/agentapi',
+          ANTIGRAVITY_SIDECAR_FOO: 'leak'
+        },
+        existsSync: (p) => p === trickyTarget,
+        spawnDetached: (bin, args, opts) => {
+          spawns.push({ bin, args, opts });
+          return true;
+        }
+      });
+      const r = relauncher.scheduleRelaunch({ dryRun: false });
+      assert.equal(r.ok, true);
+      assert.equal(spawns.length, 1);
+      assert.equal(spawns[0].bin, '/bin/sh');
+      const shCmd = spawns[0].args[1];
+      if (plat === 'linux') {
+        assert.match(shCmd, /'\/tmp\/dir'\\''\$\(whoami\)`id`\/Antigravity\.AppImage'/, 'APPIMAGE must be POSIX single-quoted');
+      }
+      const childEnv = spawns[0].opts.env;
+      assert.equal(childEnv.PATH, '/usr/bin');
+      assert.equal('ELECTRON_RUN_AS_NODE' in childEnv, false);
+      assert.equal('NODE_OPTIONS' in childEnv, false);
+      assert.equal('ANTIGRAVITY_LS_ADDRESS' in childEnv, false);
+      assert.equal('ANTIGRAVITY_CSRF_TOKEN' in childEnv, false);
+      assert.equal('ANTIGRAVITY_AGENTAPI_EXE' in childEnv, false);
+      assert.equal('ANTIGRAVITY_SIDECAR_FOO' in childEnv, false);
+    }
+
+    // 3. Handoff memory search() finds entries beyond the 100-item list() cap
+    memStore = createHandoffMemoryStore({ stateDir: path.join(tmp, 'mem-state'), maxEntries: 200 });
+    const baseMs = Date.now() - 200_000;
+    for (let i = 1; i <= 125; i++) {
+      memStore.store({
+        project: 'demo',
+        slot: 'main',
+        createdAtMs: baseMs + i * 1000,
+        summary: i === 5 ? 'ancient-needle-120 milestone' : `entry-${i}`
+      });
+    }
+    const listed = memStore.list({ project: 'demo', limit: 100 });
+    assert.equal(listed.entries.length, 100);
+    assert.equal(listed.entries.some((e) => e.summary.includes('ancient-needle-120')), false);
+    const searched = memStore.search({ project: 'demo', query: 'ancient-needle-120' });
+    assert.equal(searched.ok, true);
+    assert.ok(searched.entries.length >= 1);
+    assert.match(searched.entries[0].summary, /ancient-needle-120/);
+
+    // 4. saveFileContent size guard before readFileSync & listDirectory 400-item slice
+    const workDir = path.join(tmp, 'work');
+    fs.mkdirSync(workDir, { recursive: true });
+    server = createPrismFilesServer({
+      dataDir: path.join(tmp, 'srv-data'),
+      accountStateDir: path.join(tmp, 'srv-state'),
+      defaultRoot: workDir
+    });
+
+    const editFile = path.join(workDir, 'note.txt');
+    fs.writeFileSync(editFile, 'hello', 'utf8');
+    const preview = server.readFilePreview(editFile);
+    assert.equal(preview.ok, true);
+    // Externally bloat file beyond 1 MiB MAX_SAVE_BYTES
+    fs.writeFileSync(editFile, Buffer.alloc(1024 * 1024 + 4096, 0x61));
+    const bloatedSave = server.saveFileContent(editFile, 'small', preview.mtimeMs, preview.baseHash);
+    assert.equal(bloatedSave.ok, false);
+    assert.equal(bloatedSave.conflict, true);
+
+    const bigDir = path.join(tmp, 'big-dir');
+    fs.mkdirSync(path.join(bigDir, 'aaa-folder'), { recursive: true });
+    fs.mkdirSync(path.join(bigDir, 'zzz-folder'), { recursive: true });
+    for (let i = 0; i < 420; i++) {
+      fs.writeFileSync(path.join(bigDir, `f-${String(i).padStart(3, '0')}.txt`), 'x');
+    }
+    const dirRes = server.listDirectory(bigDir);
+    assert.equal(dirRes.ok, true);
+    assert.equal(dirRes.total, 422);
+    assert.equal(dirRes.truncated, true);
+    assert.equal(dirRes.entries.length, 400);
+    assert.equal(dirRes.entries[0].isDir, true);
+    assert.equal(dirRes.entries[1].isDir, true);
+  } finally {
+    try { memStore?.close?.(); } catch {}
+    try { server?.close?.(); } catch {}
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test('audit #15: strict active-email match, no-backup exclusion, unified poolHealth/standbyScore, and null-safe evalWindowPctClient', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-audit15-'));
+  try {
+    const store = new Map();
+    const mkBlob = (email, tok) => Buffer.from(JSON.stringify({ id_token_email: email, refresh_token: tok }), 'utf8');
+    const mockRun = (_bin, _args, { input = '' } = {}) => {
+      const req = JSON.parse(input);
+      const handle = (r) => {
+        if (r.op === 'probe') return { ok: true };
+        if (r.op === 'read') {
+          const b = store.get(r.target);
+          return b ? { ok: true, found: true, blobB64: b.toString('base64') } : { ok: true, found: false };
+        }
+        if (r.op === 'write') {
+          store.set(r.target, Buffer.from(r.blobB64, 'base64'));
+          return { ok: true, written: true };
+        }
+        if (r.op === 'delete') {
+          return { ok: true, deleted: store.delete(r.target) };
+        }
+        return { ok: true };
+      };
+      if (req.op === 'batch') return { status: 0, stdout: `${JSON.stringify({ ok: true, results: req.ops.map(handle) })}\n`, stderr: '' };
+      return { status: 0, stdout: `${JSON.stringify(handle(req))}\n`, stderr: '' };
+    };
+
+    const vault = createAccountVault({ platform: 'win32', isWsl: false, homeDir: tmp, runCmd: mockRun, enableBatch: true });
+    const mgr = createAccountManager({ stateDir: path.join(tmp, 'state'), vault, disableLocalQuotaScan: true });
+    mgr.setEnabled(true);
+
+    const futureIso = new Date(Date.now() + 3 * 86400_000).toISOString();
+    store.set('gemini:antigravity', mkBlob('alpha@example.com', 't-a'));
+    const capA = mgr.captureCurrentAccount({ alias: 'Alpha', role: 'primary', priority: 1 });
+    mgr.updateAccount(capA.account.id, { quota: { window5hPct: 90, window7dPct: 80, reset5hAt: futureIso, reset7dAt: futureIso } });
+
+    store.set('gemini:antigravity', mkBlob('beta@example.com', 't-b'));
+    const capB = mgr.captureCurrentAccount({ alias: 'Beta', role: 'backup', priority: 2 });
+    mgr.updateAccount(capB.account.id, { quota: { window5hPct: 95, window7dPct: 95, reset5hAt: futureIso, reset7dAt: futureIso } });
+
+    // Externally switch active vault back to alpha while state.activeAccountId still points to beta
+    store.set('gemini:antigravity', mkBlob('alpha@example.com', 't-a'));
+    const st1 = mgr.getStatus({ forceRefresh: true });
+    const activeFlags = st1.accounts.filter((a) => a.isCurrentActive);
+    assert.equal(activeFlags.length, 1, 'Must never mark two accounts isCurrentActive simultaneously');
+    assert.equal(activeFlags[0].email, 'alpha@example.com');
+    for (const acc of st1.accounts) {
+      assert.equal(typeof acc.standbyScore, 'number');
+      assert.ok(acc.poolHealth && typeof acc.poolHealth.hasKnown === 'boolean');
+    }
+
+    // Remove Beta's saved backup from vault -> Beta must NOT be recommended
+    vault.deleteSaved(capB.account.id);
+    const st2 = mgr.getStatus({ forceRefresh: true });
+    const betaEntry = st2.accounts.find((a) => a.id === capB.account.id);
+    assert.equal(betaEntry.vaultHasBackup, false);
+    assert.equal(st2.recommendation.recommended, null, 'Account with vaultHasBackup=false must be excluded from recommendations');
+
+    // Verify app.html evalWindowPctClient returns null (not 100%) for null/undefined even if reset timestamp is in the past
+    const appHtml = fs.readFileSync(path.join(REPO, 'plugin', 'ui', 'app.html'), 'utf8');
+    const fnMatch = appHtml.match(/const evalWindowPctClient = \([\s\S]*?\n\s{10}\};/);
+    assert.ok(fnMatch, 'evalWindowPctClient must exist in app.html');
+    const evalWindowPctClient = vm.runInNewContext(`(${fnMatch[0].replace(/^const evalWindowPctClient = /, '').replace(/;\s*$/, '')})`);
+    assert.deepEqual({ ...evalWindowPctClient(null, '2020-01-01T00:00:00Z', true) }, { pct: null, passed: false });
+    assert.deepEqual({ ...evalWindowPctClient(undefined, '2020-01-01T00:00:00Z', true) }, { pct: null, passed: false });
+    assert.deepEqual({ ...evalWindowPctClient(10, '2020-01-01T00:00:00Z', false) }, { pct: 100, passed: true });
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('audit #9, #11, #12 & #13: daemon symlink/sensitive/sidecar/CDP guards, 14d->84d usage ledger cache, and install/uninstall safety', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-audit9111213-'));
+  try {
+    // 1. Sensitive source path blocks (~/.gemini/config, ~/.gemini/antigravity, .env*)
+    const homeDir = os.homedir();
+    assert.equal(isSensitiveSourcePath(path.join(homeDir, '.gemini', 'config', 'settings.json')), true);
+    assert.equal(isSensitiveSourcePath(path.join(homeDir, '.gemini', 'antigravity', 'secret.db')), true);
+    assert.equal(isSensitiveSourcePath(path.join(tmp, '.env')), true);
+    assert.equal(isSensitiveSourcePath(path.join(tmp, '.env.production')), true);
+    assert.equal(isSensitiveSourcePath(path.join(tmp, 'README.md')), false);
+
+    // 2. saveProjectContext blocks symlink AGENTS.md pointing outside project
+    const projA = path.join(tmp, 'proj-a');
+    const outsideFile = path.join(tmp, 'outside-secret.md');
+    fs.mkdirSync(projA, { recursive: true });
+    fs.writeFileSync(outsideFile, 'DO-NOT-OVERWRITE', 'utf8');
+    let symlinkCreated = false;
+    try {
+      fs.symlinkSync(outsideFile, path.join(projA, 'AGENTS.md'), 'file');
+      symlinkCreated = true;
+    } catch {
+      // On Windows without Developer Mode, directory junction tests the same checkProjectSubpathNoSymlink guard
+      const outsideDir = path.join(tmp, 'outside-ac');
+      fs.mkdirSync(outsideDir, { recursive: true });
+      fs.symlinkSync(outsideDir, path.join(projA, '.anti-claude'), 'junction');
+      symlinkCreated = true;
+    }
+    if (symlinkCreated) {
+      const regFile = path.join(tmp, 'projects-reg.json');
+      const symRes = saveProjectContext({ dirPath: projA, instructions: 'pwned' }, { registryFile: regFile });
+      assert.equal(symRes.ok, false, 'saveProjectContext must reject symlinked AGENTS.md or .anti-claude');
+      assert.equal(fs.readFileSync(outsideFile, 'utf8'), 'DO-NOT-OVERWRITE');
+    }
+
+    // 3. saveProjectScheduledTask cannot hijack another project's sidecar by forging folderPath
+    const proj1 = path.join(tmp, 'proj-1');
+    const proj2 = path.join(tmp, 'proj-2');
+    const sidecarsDir = path.join(tmp, 'sidecars');
+    fs.mkdirSync(proj1, { recursive: true });
+    fs.mkdirSync(proj2, { recursive: true });
+    const foreignScDir = path.join(sidecarsDir, 'foreign-task');
+    fs.mkdirSync(foreignScDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(foreignScDir, 'sidecar.json'),
+      JSON.stringify({
+        created_by: 'anti-claude',
+        anti_claude_project_dir: proj2,
+        agent_permissions: { workspace_uris: [`file://${proj2.replace(/\\/g, '/')}`] }
+      }),
+      'utf8'
+    );
+    const hijackRes = saveProjectScheduledTask(
+      {
+        dirPath: proj1,
+        task: {
+          name: 'Hijack',
+          description: 'Try to overwrite proj2 sidecar',
+          instructions: 'evil',
+          frequency: 'daily',
+          folderPath: proj2,
+          sidecarId: 'foreign-task'
+        }
+      },
+      { sidecarsDir, registryFile: path.join(tmp, 'reg.json') }
+    );
+    assert.equal(hijackRes.ok, false);
+    assert.equal(hijackRes.error, 'sidecar_not_in_project');
+
+    // 4. HOST_IDENTITY_PROBE_EXPR does not treat bare vscode-file:// without Antigravity preload/config as host
+    const runProbe = (ctx) => vm.runInNewContext(HOST_IDENTITY_PROBE_EXPR, ctx);
+    assert.equal(
+      runProbe({
+        window: { location: { protocol: 'https:', hostname: 'example.com', href: 'https://example.com/' } },
+        navigator: { userAgent: 'Mozilla/5.0 Chrome/130' },
+        document: { readyState: 'complete' }
+      }),
+      'non_host'
+    );
+    assert.equal(
+      runProbe({
+        window: { location: { protocol: 'vscode-file:', hostname: 'vscode-app', href: 'vscode-file://vscode-app/index.html' } },
+        navigator: { userAgent: 'Mozilla/5.0 Electron/34.0.0' },
+        document: { readyState: 'complete' }
+      }),
+      'non_host'
+    );
+    assert.equal(
+      runProbe({
+        window: {
+          location: { protocol: 'vscode-file:', hostname: 'vscode-app', href: 'vscode-file://vscode-app/index.html' },
+          __APP_CONFIG__: { productName: 'antigravity' }
+        },
+        navigator: { userAgent: 'Mozilla/5.0 Electron/34.0.0' },
+        document: { readyState: 'complete' }
+      }),
+      'host'
+    );
+    assert.equal(
+      runProbe({
+        window: { location: { protocol: 'plugin:', hostname: 'swarm--demo', href: 'plugin://swarm--demo/' } },
+        navigator: { userAgent: 'Mozilla/5.0 Electron/34.0.0' },
+        document: { readyState: 'complete' }
+      }),
+      'swarm'
+    );
+
+    // 5. collectUsageSummary 14-day query followed by 84-day query preserves 40-day-old bucket in cache
+    let DatabaseSync = null;
+    try { ({ DatabaseSync } = await import('node:sqlite')); } catch {}
+    if (DatabaseSync) {
+      const encVarint = (n) => {
+        const out = [];
+        let v = Math.floor(n);
+        while (v >= 0x80) { out.push((v & 0x7f) | 0x80); v = Math.floor(v / 128); }
+        out.push(v & 0x7f);
+        return out;
+      };
+      const encFV = (f, v) => [(f << 3) | 0, ...encVarint(v)];
+      const encFB = (f, bytes) => [(f << 3) | 2, ...encVarint(bytes.length), ...bytes];
+
+      const convDir = path.join(tmp, 'conversations');
+      fs.mkdirSync(convDir, { recursive: true });
+      const dbPath = path.join(convDir, '11111111-2222-3333-4444-555555555555.db');
+      const nowMs = Date.UTC(2026, 10, 26, 12, 0, 0);
+      const sec40d = Math.floor((nowMs - 40 * 86400_000) / 1000);
+      const sec3d = Math.floor((nowMs - 3 * 86400_000) / 1000);
+      const mkGenBlob = (inTok, outTok) => Buffer.from(encFB(1, encFB(4, [...encFV(2, inTok), ...encFV(3, outTok)])));
+      const mkStepMeta = (sec) => Buffer.from(encFB(1, encFV(1, sec)));
+
+      const db = new DatabaseSync(dbPath);
+      db.exec('CREATE TABLE gen_metadata (idx INTEGER, data BLOB); CREATE TABLE steps (idx INTEGER, step_type INTEGER, metadata BLOB);');
+      const insGen = db.prepare('INSERT INTO gen_metadata (idx, data) VALUES (?, ?)');
+      const insStep = db.prepare('INSERT INTO steps (idx, step_type, metadata) VALUES (?, 15, ?)');
+      insGen.run(0, mkGenBlob(4000, 1000));
+      insStep.run(0, mkStepMeta(sec40d));
+      insGen.run(1, mkGenBlob(2000, 500));
+      insStep.run(1, mkStepMeta(sec3d));
+      db.close();
+      const recentDate = new Date(nowMs - 2 * 86400_000);
+      fs.utimesSync(dbPath, recentDate, recentDate);
+
+      const cacheFile = path.join(tmp, 'usage-ledger.json');
+      const u14 = collectUsageSummary({ days: 14, nowMs, conversationsDirs: [convDir], cacheFile, force: true });
+      assert.equal(u14.ok, true);
+      assert.equal(u14.totalWindowTokens, 2500);
+
+      const u84 = collectUsageSummary({ days: 84, nowMs, conversationsDirs: [convDir], cacheFile, force: true });
+      assert.equal(u84.ok, true);
+      assert.equal(u84.totalWindowTokens, 7500, '84-day query after 14-day query must preserve 40-day-old usage bucket');
+      const sumIn84 = u84.dailyHistory.reduce((acc, d) => acc + d.inputTokens, 0);
+      const sumOut84 = u84.dailyHistory.reduce((acc, d) => acc + d.outputTokens, 0);
+      assert.equal(sumIn84, 6000);
+      assert.equal(sumOut84, 1500);
+    }
+
+    // 6. installKernel preserves custom user/config.json & custom.js without base/, and uninstallKernel preserves runtimeDir on daemon teardown error
+    const kState = path.join(tmp, 'kernel-state');
+    const kUser = path.join(kState, 'user');
+    fs.mkdirSync(kUser, { recursive: true });
+    fs.writeFileSync(path.join(kUser, 'config.json'), JSON.stringify({ customOnly: 'preserve-me' }), 'utf8');
+    fs.writeFileSync(path.join(kUser, 'custom.js'), '// user custom hook\n', 'utf8');
+    installKernel({ userDir: kUser, activateDaemon: false });
+    assert.equal(JSON.parse(fs.readFileSync(path.join(kUser, 'config.json'), 'utf8')).customOnly, 'preserve-me');
+    assert.match(fs.readFileSync(path.join(kUser, 'custom.js'), 'utf8'), /user custom hook/);
+
+    // Simulate failing daemon deactivation during uninstallKernel
+    const failState = path.join(tmp, 'fail-uninst-state');
+    const failUser = path.join(failState, 'user');
+    const failRuntime = path.join(failState, 'runtime');
+    fs.mkdirSync(failRuntime, { recursive: true });
+    fs.writeFileSync(path.join(failRuntime, 'install.mjs'), 'process.exit(1);\n', 'utf8');
+    const failRes = uninstallKernel({ userDir: failUser, stateDir: failState, deactivateDaemon: true });
+    assert.ok(failRes.daemonDeactivateError, 'Must surface daemonDeactivateError when daemon teardown fails');
+    assert.equal(fs.existsSync(failRuntime), true, 'Must preserve runtimeDir when daemon teardown fails');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('audit & review #1, #5-#10, #15, #19, #21, #22: behavioral regression tests across UI, extensions, kernel, installers, and fork-session', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-review22-'));
+  try {
+    // 1. Every inline <script> block in app.html & inline.html parses cleanly via vm.Script
+    for (const rel of ['plugin/ui/app.html', 'plugin/ui/inline.html']) {
+      const html = fs.readFileSync(path.join(REPO, rel), 'utf8');
+      const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)];
+      assert.ok(scripts.length >= 1, `${rel} must contain inline script`);
+      for (let i = 0; i < scripts.length; i++) {
+        assert.doesNotThrow(() => new vm.Script(scripts[i][1], { filename: `${rel}#script-${i}` }));
+      }
+    }
+
+    const jsSrc = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite.js'), 'utf8');
+    const wfSrc = fs.readFileSync(path.join(REPO, 'extensions', 'prism-suite-workflow.js'), 'utf8');
+    const appHtml = fs.readFileSync(path.join(REPO, 'plugin', 'ui', 'app.html'), 'utf8');
+
+    // 2. Review #1 behavioral test: extractCleanFinalAnswer preserves sibling [data-markdown-root] prose & <pre>
+    const serializeStart = wfSrc.indexOf('function serializeCleanDomToText(root) {');
+    const wfEnd = wfSrc.indexOf('let activeCopyIntercept = null;', serializeStart);
+    assert.ok(serializeStart > 0 && wfEnd > serializeStart, 'extractCleanFinalAnswer slice found');
+    const cleanSlice = wfSrc.slice(serializeStart, wfEnd);
+    const thoughtSelMatch = wfSrc.match(/const THOUGHT_OR_TOOL_SELECTORS = \[[\s\S]*?\]\.join\([^)]+\);/);
+    const summaryReMatch = wfSrc.match(/const SUMMARY_BTN_RE = [^\n]+;/);
+    assert.ok(thoughtSelMatch && summaryReMatch);
+
+    // Lightweight DOM element implementation supporting matches/querySelector/querySelectorAll/contains/closest/cloneNode/remove/firstChild/nextSibling
+    const makeDomNode = (tag, attrs = {}, text = '') => {
+      const node = {
+        tagName: tag.toUpperCase(),
+        nodeType: 1,
+        attrs: { ...attrs },
+        children: [],
+        childNodes: [],
+        parentElement: null,
+        _text: text,
+        get firstChild() { return this.childNodes[0] || null; },
+        get nextSibling() {
+          if (!this.parentElement) return null;
+          const idx = this.parentElement.childNodes.indexOf(this);
+          return idx >= 0 && idx + 1 < this.parentElement.childNodes.length ? this.parentElement.childNodes[idx + 1] : null;
+        },
+        get textContent() {
+          if (this.children.length === 0) return this._text;
+          return this.childNodes.map((c) => (c.nodeType === 3 ? c.nodeValue : c.textContent)).join('');
+        },
+        get innerText() { return this.textContent; },
+        get nextElementSibling() {
+          if (!this.parentElement) return null;
+          const idx = this.parentElement.children.indexOf(this);
+          return idx >= 0 && idx + 1 < this.parentElement.children.length ? this.parentElement.children[idx + 1] : null;
+        },
+        getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; },
+        hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k); },
+        append(ch) {
+          ch.parentElement = this;
+          this.children.push(ch);
+          this.childNodes.push(ch);
+          return ch;
+        },
+        remove() {
+          if (!this.parentElement) return;
+          const p = this.parentElement;
+          p.children = p.children.filter((c) => c !== this);
+          p.childNodes = p.childNodes.filter((c) => c !== this);
+          this.parentElement = null;
+        },
+        contains(other) {
+          if (other === this) return true;
+          return this.children.some((c) => c.contains(other));
+        },
+        matches(selList) {
+          return String(selList).split(',').map((s) => s.trim()).filter(Boolean).some((sel) => {
+            if (sel === 'pre') return this.tagName === 'PRE';
+            if (sel === 'code') return this.tagName === 'CODE';
+            if (sel === 'button') return this.tagName === 'BUTTON';
+            if (sel === 'button[aria-expanded]') return this.tagName === 'BUTTON' && this.hasAttribute('aria-expanded');
+            if (sel === '[data-markdown-root]') return this.hasAttribute('data-markdown-root');
+            const mEq = sel.match(/^\[([a-z0-9_-]+)="([^"]+)"\]$/i);
+            if (mEq) return this.getAttribute(mEq[1]) === mEq[2];
+            const mSub = sel.match(/^\[([a-z0-9_-]+)\*="([^"]+)"\]$/i);
+            if (mSub) return String(this.getAttribute(mSub[1]) || '').includes(mSub[2]);
+            return false;
+          });
+        },
+        closest(selList) {
+          let cur = this;
+          while (cur) {
+            if (cur.matches(selList)) return cur;
+            cur = cur.parentElement;
+          }
+          return null;
+        },
+        querySelectorAll(selList) {
+          const out = [];
+          const walk = (el) => {
+            for (const c of el.children) {
+              if (c.matches(selList)) out.push(c);
+              walk(c);
+            }
+          };
+          walk(this);
+          return out;
+        },
+        querySelector(selList) { return this.querySelectorAll(selList)[0] || null; },
+        cloneNode(deep = false) {
+          const copy = makeDomNode(this.tagName, this.attrs, this._text);
+          if (deep) {
+            for (const c of this.children) copy.append(c.cloneNode(true));
+          }
+          return copy;
+        }
+      };
+      if (text) {
+        const txtNode = {
+          nodeType: 3,
+          nodeValue: text,
+          parentElement: node,
+          get nextSibling() {
+            const idx = node.childNodes.indexOf(this);
+            return idx >= 0 && idx + 1 < node.childNodes.length ? node.childNodes[idx + 1] : null;
+          }
+        };
+        node.childNodes.push(txtNode);
+      }
+      return node;
+    };
+
+    const extractCleanFinalAnswer = vm.runInNewContext(
+      `(function() {
+        const Node = { TEXT_NODE: 3, ELEMENT_NODE: 1 };
+        ${thoughtSelMatch[0]}
+        ${summaryReMatch[0]}
+        ${cleanSlice}
+        return extractCleanFinalAnswer;
+      })()`
+    );
+
+    // Scenario A: thinking trigger & thinking body share parent with [data-markdown-root] prose
+    const msgA = makeDomNode('div', { 'data-testid': 'assistant-message' });
+    const bodyA = msgA.append(makeDomNode('div', { class: 'turn-body' }));
+    bodyA.append(makeDomNode('button', { 'data-testid': 'thinking-collapsible-trigger' }, 'Thought for 4s'));
+    bodyA.append(makeDomNode('div', { class: 'thinking-body' }, 'hidden internal reasoning'));
+    const mdA = bodyA.append(makeDomNode('div', { 'data-markdown-root': 'true' }));
+    mdA.append(makeDomNode('p', {}, 'Final prose answer must survive'));
+    const resA = extractCleanFinalAnswer(msgA);
+    assert.match(resA.text, /Final prose answer must survive/);
+    assert.doesNotMatch(resA.text, /hidden internal reasoning|Thought for 4s/);
+
+    // Scenario B: two [data-markdown-root] blocks (one prose-only, one with <pre>) must BOTH survive
+    const msgB = makeDomNode('div');
+    const bodyB = msgB.append(makeDomNode('div'));
+    bodyB.append(makeDomNode('button', { 'data-testid': 'thinking-collapsible-trigger' }, 'Thought'));
+    bodyB.append(makeDomNode('div', {}, 'internal thought'));
+    bodyB.append(makeDomNode('div', { 'data-markdown-root': 'true' }, 'First paragraph conclusion'));
+    const mdCodeB = bodyB.append(makeDomNode('div', { 'data-markdown-root': 'true' }));
+    mdCodeB.append(makeDomNode('pre', {}, 'const x = 42;'));
+    const resB = extractCleanFinalAnswer(msgB);
+    assert.match(resB.text, /First paragraph conclusion/);
+    assert.match(resB.text, /const x = 42;/);
+    assert.doesNotMatch(resB.text, /internal thought/);
+
+    // 3. Review #8 behavioral test: SSH paste pre-filter intercepts quoted passwords with spaces
+    const sshPasteReMatch = wfSrc.match(/if \(!raw \|\| !(\/\^\\s\*[^\n]+\/i)\.test\(raw\)\)/);
+    assert.ok(sshPasteReMatch, 'SSH paste pre-filter regex must exist');
+    const sshPasteRe = vm.runInNewContext(sshPasteReMatch[1]);
+    assert.equal(sshPasteRe.test('SSHPASS="my pass" sshpass -e ssh -p 2200 root@1.2.3.4'), true);
+    assert.equal(sshPasteRe.test("SSHPASS='secret 123' env -u FOO sudo -u ops ssh root@10.0.0.1"), true);
+    assert.equal(sshPasteRe.test('plain text without ssh command'), false);
+
+    // 4. Review #6 & #7 behavioral checks: CSS var sanitizer, bridge origin whitelists, handshake & saveSeq guard
+    const cssVarFnMatch = appHtml.match(/function isSafeCssVarValue\(raw\) \{[\s\S]*?\n\s{6}\}/);
+    assert.ok(cssVarFnMatch, 'isSafeCssVarValue must exist in app.html');
+    const isSafeCssVarValue = vm.runInNewContext(`(${cssVarFnMatch[0]})`);
+    assert.equal(isSafeCssVarValue('#1e293b'), true);
+    assert.equal(isSafeCssVarValue('rgb(15, 23, 42)'), true);
+    assert.equal(isSafeCssVarValue('url(https://evil.example/x)'), false);
+    assert.equal(isSafeCssVarValue('red; background:url(x)'), false);
+
+    const trustOrigFnMatch = jsSrc.match(/function isTrustedBridgeOrigin\(origin\) \{[\s\S]*?\n\s{2}\}/);
+    assert.ok(trustOrigFnMatch, 'isTrustedBridgeOrigin must exist in prism-suite.js');
+    const isTrustedBridgeOrigin = vm.runInNewContext(`(${trustOrigFnMatch[0]})`, { window: { location: { origin: 'http://127.0.0.1:1234' } } });
+    assert.equal(isTrustedBridgeOrigin('vscode-file://vscode-app'), true);
+    assert.equal(isTrustedBridgeOrigin('http://[::1]:8080'), true);
+    assert.equal(isTrustedBridgeOrigin('http://127.0.0.1:9222'), true);
+    assert.equal(isTrustedBridgeOrigin('https://evil.example.com'), false);
+
+    assert.match(appHtml, /if \(!mainBridgeSessionId \|\| !mainBridgeWin\) return;/);
+    assert.match(appHtml, /vscode-file/);
+    assert.match(appHtml, /if \(appState\.preview\.seq === saveSeq && appState\.preview\.data === prev && appState\.preview\.saving\)/);
+    assert.match(appHtml, /hasStalePassedReset/);
+    assert.match(jsSrc, /ALLOWED_BRIDGE_TABS = new Set\(\[[^\]]*'models'[^\]]*\]\)/);
+    assert.match(jsSrc, /axolotl/);
+    assert.match(fs.readFileSync(path.join(REPO, 'installer', 'win', 'PrismSuiteInstaller.cs'), 'utf8'), /0\.7\.0\.0/);
+    assert.doesNotMatch(jsSrc, /window\.ctx\?\.onCleanup/, 'Must use lexical ctx or __AG_PATCH_CTX__, not window.ctx');
+
+    // 5. Review #9, #10, #19, #21 kernel behavioral checks:
+    // 5a. isSensitiveSourcePath blocks Windows ADS, trailing spaces/dots, and Antigravity OAuth token paths
+    const homeDir = os.homedir();
+    assert.equal(isSensitiveSourcePath('C:\\work\\.env::$DATA'), true);
+    assert.equal(isSensitiveSourcePath('C:\\work\\.env '), true);
+    assert.equal(isSensitiveSourcePath('C:\\work\\id_rsa.'), true);
+    assert.equal(isSensitiveSourcePath(path.join(homeDir, '.gemini', 'jetski-standalone-oauth-token')), true);
+    assert.equal(isSensitiveSourcePath(path.join(homeDir, '.config', 'antigravity', 'credential-user-scope')), true);
+
+    // 5b. deleteProjectScheduledTask rejects symlink/junction .anti-claude pointing outside project
+    const delProj = path.join(tmp, 'del-proj');
+    const outsideAc = path.join(tmp, 'outside-ac');
+    fs.mkdirSync(delProj, { recursive: true });
+    fs.mkdirSync(outsideAc, { recursive: true });
+    const victimMeta = path.join(outsideAc, 'project-context.json');
+    fs.writeFileSync(victimMeta, JSON.stringify({ scheduledTasks: [{ id: 't1', name: 'x' }] }), 'utf8');
+    fs.symlinkSync(outsideAc, path.join(delProj, '.anti-claude'), process.platform === 'win32' ? 'junction' : 'dir');
+    const delRes = deleteProjectScheduledTask(
+      { dirPath: delProj, taskId: 't1' },
+      { sidecarsDir: path.join(tmp, 'del-sidecars'), registryFile: path.join(tmp, 'del-reg.json') }
+    );
+    assert.equal(delRes.ok, false, 'deleteProjectScheduledTask must reject junction/symlink .anti-claude');
+    assert.equal(fs.existsSync(victimMeta), true, 'Outside project-context.json must not be deleted');
+
+    // 5c. HOST_IDENTITY_PROBE_EXPR rejects spoofed window.electronNative using built-in native functions (even with name cleared)
+    const spoofedWin = { location: { protocol: 'http:', hostname: 'localhost', href: 'http://localhost:3000/' } };
+    const spoofFn = Object.toString;
+    const spoofObj = Object.freeze({ getZoomLevel: spoofFn, setTitleBarOverlay: Array.isArray, openExternal: Math.abs });
+    Object.defineProperty(spoofedWin, 'electronNative', { value: spoofObj, writable: false, configurable: false });
+    const spoofResult = vm.runInNewContext(HOST_IDENTITY_PROBE_EXPR, {
+      window: spoofedWin,
+      navigator: { userAgent: 'Mozilla/5.0 Electron/34.0.0' },
+      document: { readyState: 'complete' }
+    });
+    assert.equal(spoofResult, 'non_host', 'Spoofed built-in functions must NOT pass Electron contextBridge probe');
+
+    // 5d. buildWinStartupVbs propagates ANTI_CLAUDE_STATE_DIR & ANTI_CLAUDE_USER_DIR
+    const vbsSrc = buildWinStartupVbs('C:\\Node\\node.exe', 'C:\\State\\runtime\\core\\daemon.mjs', 'C:\\State\\user', 'C:\\State');
+    assert.match(vbsSrc, /ANTI_CLAUDE_STATE_DIR/);
+    assert.match(vbsSrc, /ANTI_CLAUDE_USER_DIR/);
+
+    // 5e. statusline.mjs strips ESC charset / DECALN / C1 / backspace and exits cleanly on >260KB stdin
+    const slScript = path.join(REPO, 'vendor', 'anti-claude', 'cli', 'statusline.mjs');
+    const slDirty = spawnSync(process.execPath, [slScript], {
+      input: JSON.stringify({ model: { display_name: 'Model\x1b(0\x1b#8\x08\x90evil\x9cOK' }, workspace: { current_dir: '/tmp/a\x08b' } }),
+      encoding: 'utf8',
+      timeout: 10000
+    });
+    assert.equal(slDirty.status, 0);
+    assert.equal(slDirty.stdout.includes('\x1b(0'), false);
+    assert.equal(slDirty.stdout.includes('\x1b#8'), false);
+    assert.equal(slDirty.stdout.includes('\x08'), false);
+    assert.equal(slDirty.stdout.includes('\x90'), false);
+
+    const slBig = spawnSync(process.execPath, [slScript], {
+      input: 'x'.repeat(270 * 1024),
+      encoding: 'utf8',
+      timeout: 10000
+    });
+    assert.equal(slBig.status, 0);
+
+    // 6. Review #5 & #19 real isolated installKernel(activateDaemon:true) + uninstallKernel(deactivateDaemon:true)
+    //    using NO_LAUNCHD/NO_CDP/NO_FONTS/NO_NETWORK env guards (zero host side effects):
+    //    verifies untouched --skip-user-layer templates are removed while user-edited files survive!
+    const isoState = path.join(tmp, 'iso-kernel');
+    const isoUser = path.join(isoState, 'user');
+    const prevEnvs = {
+      ANTI_CLAUDE_NO_LAUNCHD: process.env.ANTI_CLAUDE_NO_LAUNCHD,
+      ANTI_CLAUDE_NO_CDP: process.env.ANTI_CLAUDE_NO_CDP,
+      ANTI_CLAUDE_NO_FONTS: process.env.ANTI_CLAUDE_NO_FONTS,
+      ANTI_CLAUDE_NO_NETWORK: process.env.ANTI_CLAUDE_NO_NETWORK
+    };
+    try {
+      process.env.ANTI_CLAUDE_NO_LAUNCHD = '1';
+      process.env.ANTI_CLAUDE_NO_CDP = '1';
+      process.env.ANTI_CLAUDE_NO_FONTS = '1';
+      process.env.ANTI_CLAUDE_NO_NETWORK = '1';
+      installKernel({ userDir: isoUser, stateDir: isoState, activateDaemon: true });
+      assert.equal(fs.existsSync(path.join(isoState, 'install-state.json')), true);
+      assert.equal(fs.existsSync(path.join(isoUser, 'custom.css')), true);
+      // Customize config.json, leave custom.css / custom.js / i18n.override.json untouched
+      const cfgPath = path.join(isoUser, 'config.json');
+      const cfgObj = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      cfgObj.userKeepFlag = 'keep-across-uninstall';
+      fs.writeFileSync(cfgPath, `${JSON.stringify(cfgObj, null, 2)}\n`, 'utf8');
+
+      const unIso = uninstallKernel({ userDir: isoUser, stateDir: isoState, deactivateDaemon: true });
+      assert.equal(unIso.daemonDeactivateError, null);
+      assert.equal(fs.existsSync(path.join(isoState, 'runtime')), false);
+      assert.equal(fs.existsSync(path.join(isoUser, 'custom.css')), false, 'Untouched --skip-user-layer template must be cleaned on host uninstall');
+      assert.equal(fs.existsSync(cfgPath), true, 'User-modified config.json must be preserved');
+      assert.equal(JSON.parse(fs.readFileSync(cfgPath, 'utf8')).userKeepFlag, 'keep-across-uninstall');
+    } finally {
+      for (const [k, v] of Object.entries(prevEnvs)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+
+    // 7. Review #15 fork-session.mjs behavioral checks: --json INVALID_ARGS, live lock rejection & dead-PID lock atomic recovery
+    const forkScript = path.join(REPO, 'scripts', 'fork-session.mjs');
+    const forkBad = spawnSync(process.execPath, [forkScript, '--json'], { encoding: 'utf8', timeout: 10000 });
+    assert.notEqual(forkBad.status, 0);
+    const parsedBad = JSON.parse(forkBad.stdout.trim());
+    assert.equal(parsedBad.ok, false);
+    assert.equal(parsedBad.code, 'INVALID_ARGS');
+
+    const forkHome = path.join(tmp, 'fork-home');
+    const forkLockDir = path.join(forkHome, '.gemini', 'antigravity', 'prism-suite');
+    fs.mkdirSync(forkLockDir, { recursive: true });
+    const forkLockFile = path.join(forkLockDir, 'fork-session.lock');
+    const forkEnv = { ...process.env, HOME: forkHome, USERPROFILE: forkHome };
+
+    // Live PID lock -> must return FORK_LOCK_BUSY
+    fs.writeFileSync(forkLockFile, JSON.stringify({ pid: process.pid, lockToken: 'live-tok', createdAt: Date.now() }), 'utf8');
+    const forkBusy = spawnSync(
+      process.execPath,
+      [forkScript, 'conv-1234', '--json', '--port-file', path.join(tmp, 'nonexistent-port')],
+      { encoding: 'utf8', env: forkEnv, timeout: 10000 }
+    );
+    assert.notEqual(forkBusy.status, 0);
+    assert.equal(JSON.parse(forkBusy.stdout.trim()).code, 'FORK_LOCK_BUSY');
+
+    // Dead PID lock -> must be reclaimed atomically (fails on missing port file, NOT FORK_LOCK_BUSY)
+    fs.writeFileSync(forkLockFile, JSON.stringify({ pid: 99999999, lockToken: 'dead-tok', createdAt: Date.now() }), 'utf8');
+    const forkReclaim = spawnSync(
+      process.execPath,
+      [forkScript, 'conv-1234', '--json', '--port-file', path.join(tmp, 'nonexistent-port')],
+      { encoding: 'utf8', env: forkEnv, timeout: 10000 }
+    );
+    assert.notEqual(forkReclaim.status, 0);
+    const reclaimOut = JSON.parse(forkReclaim.stdout.trim());
+    assert.notEqual(reclaimOut.code, 'FORK_LOCK_BUSY', 'Dead PID lock must be reclaimed immediately');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
