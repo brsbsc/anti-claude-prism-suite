@@ -839,9 +839,29 @@
       }
     }
     window.addEventListener('popstate', triggerRouteCheck);
+    let routeVisRaf = 0;
+    let routeVisTimer = 0;
     document.addEventListener('visibilitychange', () => {
+      if (routeVisRaf) {
+        cancelAnimationFrame(routeVisRaf);
+        routeVisRaf = 0;
+      }
+      if (routeVisTimer) {
+        clearTimeout(routeVisTimer);
+        routeVisTimer = 0;
+      }
       if (!document.hidden && typeof window.__ag_check_route_fn === 'function') {
-        window.__ag_check_route_fn();
+        routeVisRaf = requestAnimationFrame(() => {
+          routeVisRaf = requestAnimationFrame(() => {
+            routeVisRaf = 0;
+            routeVisTimer = setTimeout(() => {
+              routeVisTimer = 0;
+              if (!document.hidden && typeof window.__ag_check_route_fn === 'function') {
+                window.__ag_check_route_fn();
+              }
+            }, 140);
+          });
+        });
       }
     });
   }

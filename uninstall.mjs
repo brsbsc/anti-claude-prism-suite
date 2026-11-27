@@ -14,7 +14,9 @@ import { fileURLToPath } from 'node:url';
 import {
   EXTENSION_FILES,
   KERNEL_USER_LAYER_FILES,
+  resolveChromeBridgeTargetDir,
   resolvePluginsDir,
+  resolvePrismCuaTargetDir,
   resolvePrismFilesTargetDir,
   resolveStateDirFromUserDir,
   resolveUserDir
@@ -120,17 +122,55 @@ export function uninstallKernel({ userDir = resolveUserDir(), stateDir, deactiva
   return { stateDir: resolvedStateDir, runtimeDir, removed, daemonDeactivateError };
 }
 
+export function uninstallChromeBridge({ userDir = resolveUserDir(), stateDir } = {}) {
+  const targetDir = resolveChromeBridgeTargetDir(userDir, stateDir);
+  if (path.basename(targetDir).toLowerCase() !== 'chrome-bridge') {
+    throw new Error(`Unsafe chrome-bridge target directory: ${targetDir}`);
+  }
+  const removed = [];
+  const lst = fs.lstatSync(targetDir, { throwIfNoEntry: false });
+  if (lst && !lst.isSymbolicLink()) {
+    fs.rmSync(targetDir, { recursive: true, force: true });
+    removed.push(targetDir);
+  }
+  const suiteDir = path.dirname(targetDir);
+  if (path.basename(suiteDir).toLowerCase() === 'prism-suite') {
+    try {
+      const suiteLst = fs.lstatSync(suiteDir, { throwIfNoEntry: false });
+      if (suiteLst && suiteLst.isDirectory() && !suiteLst.isSymbolicLink() && fs.readdirSync(suiteDir).length === 0) {
+        fs.rmSync(suiteDir, { recursive: false });
+      }
+    } catch {}
+  }
+  return { targetDir, removed };
+}
+
 export function uninstallPlugin({ pluginsDir = resolvePluginsDir() } = {}) {
   const targetDir = resolvePrismFilesTargetDir(pluginsDir);
   if (path.basename(targetDir).toLowerCase() !== 'prism-files') {
     throw new Error(`Unsafe plugin target directory: ${targetDir}`);
   }
 
-  if (fs.existsSync(targetDir)) {
+  const removed = [];
+  const filesLst = fs.lstatSync(targetDir, { throwIfNoEntry: false });
+  if (filesLst && !filesLst.isSymbolicLink()) {
     fs.rmSync(targetDir, { recursive: true, force: true });
-    return { targetDir, removed: [targetDir] };
+    removed.push(targetDir);
   }
-  return { targetDir, removed: [] };
+
+  const cuaTargetDir = resolvePrismCuaTargetDir(pluginsDir);
+  const cuaRemoved = [];
+  if (path.basename(cuaTargetDir).toLowerCase() === 'prism-cua') {
+    const cuaLst = fs.lstatSync(cuaTargetDir, { throwIfNoEntry: false });
+    if (cuaLst && !cuaLst.isSymbolicLink()) {
+      fs.rmSync(cuaTargetDir, { recursive: true, force: true });
+      cuaRemoved.push(cuaTargetDir);
+    }
+  }
+
+  return cuaRemoved.length
+    ? { targetDir, removed, cuaTargetDir, cuaRemoved }
+    : { targetDir, removed };
 }
 
 export function uninstallAll({
@@ -154,6 +194,7 @@ export function uninstallAll({
   const removeKernel = withKernel !== undefined ? Boolean(withKernel) : argv.includes('--with-kernel');
 
   const extensions = onlyPlugin ? null : uninstallExtensions({ userDir: resolvedUserDir });
+  const chromeBridge = onlyPlugin ? null : uninstallChromeBridge({ userDir: resolvedUserDir });
   const plugin = onlyExt ? null : uninstallPlugin({ pluginsDir: resolvedPluginsDir });
 
   let kernel = null;
@@ -164,7 +205,7 @@ export function uninstallAll({
     kernel = uninstallKernel({ userDir: resolvedUserDir, deactivateDaemon: shouldDeactivate });
   }
 
-  return { extensions, plugin, kernel };
+  return { extensions, chromeBridge, plugin, kernel };
 }
 
 function printHelp() {
@@ -215,11 +256,17 @@ if (isMain) {
       console.log(`[Bundled Anti-Claude Kernel] No bundled runtime found in: ${res.kernel.stateDir}`);
     }
   }
+  if (res.chromeBridge && res.chromeBridge.removed.length) {
+    console.log(`[Chrome/Edge MV3 CUA Bridge] Removed: ${res.chromeBridge.targetDir}`);
+  }
   if (res.plugin) {
     if (res.plugin.removed.length) {
       console.log(`[Antigravity Plugin: prism-files] Removed: ${res.plugin.targetDir}`);
     } else {
       console.log(`[Antigravity Plugin: prism-files] Not found at: ${res.plugin.targetDir}`);
+    }
+    if (res.plugin.cuaRemoved?.length) {
+      console.log(`[Antigravity Plugin: prism-cua] Removed: ${res.plugin.cuaTargetDir}`);
     }
   }
 }

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { installExtensions, installKernel, installPlugin, installAll } from '../install.mjs';
 import { uninstallExtensions, uninstallKernel, uninstallPlugin, uninstallAll } from '../uninstall.mjs';
 import { inspectLocalDaemon } from '../scripts/check-upstream.mjs';
@@ -1546,11 +1546,11 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
     const pluginJson = JSON.parse(fs.readFileSync(path.join(REPO, 'plugin', 'plugin.json'), 'utf8'));
 
-    assert.equal(pkgJson.version, '0.7.0');
-    assert.equal(pluginJson.version, '0.7.0');
+    assert.equal(pkgJson.version, '0.8.0');
+    assert.equal(pluginJson.version, '0.8.0');
     assert.ok(Array.isArray(pluginJson.suggested_prompts) && pluginJson.suggested_prompts.length <= 3);
     assert.equal(Object.keys(pkgJson.dependencies || {}).length, 0, 'Must maintain zero external runtime npm dependencies');
-    assert.match(jsSrc, /SUITE_VERSION = '0\.7\.0'/);
+    assert.match(jsSrc, /SUITE_VERSION = '0\.8\.0'/);
     assert.match(jsSrc, /COOKIE_PREFS_KEY = 'ag_prism_prefs_v1'/);
     assert.match(jsSrc, /getActiveInputBox/);
     assert.match(jsSrc, /getInputBoxEl: getActiveInputBox/);
@@ -1578,7 +1578,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(wfSrc, /composerFileDrop/);
     assert.match(jsSrc, /ag_claude_ux_quota_cache_v1/);
     assert.match(jsSrc, /readAntiClaudeQuotaCache/);
-    assert.match(inlineHtml, /version: '0\.7\.0'/);
+    assert.match(inlineHtml, /version: '0\.8\.0'/);
     assert.match(jsSrc, /__agPrismBridge/);
     assert.match(jsSrc, /bridge-ping/);
     assert.match(jsSrc, /bridge-pong/);
@@ -1610,7 +1610,7 @@ test('v0.5.0 polish: incremental quota bridge, auto-capture uncaptured account w
     assert.match(csSrc, /EnsureDebugPortOnUserShortcuts/);
     assert.match(csSrc, /InstallKernel/);
     assert.match(csSrc, /prism-suite-00-prefs\.js/);
-    assert.match(csSrc, /v0\.7\.0/);
+    assert.match(csSrc, /v0\.8\.0/);
     const installPluginSlice = csSrc.slice(csSrc.indexOf('public static int InstallPlugin('), csSrc.indexOf('private static bool IsReparsePoint('));
     assert.doesNotMatch(installPluginSlice, /Directory\.Delete\(targetDir,\s*true\)/, 'InstallPlugin must update in-place without deleting prism-files root');
   } finally {
@@ -3736,9 +3736,9 @@ test('audit & review #1, #5-#10, #15, #19, #21, #22: behavioral regression tests
     assert.match(appHtml, /vscode-file/);
     assert.match(appHtml, /if \(appState\.preview\.seq === saveSeq && appState\.preview\.data === prev && appState\.preview\.saving\)/);
     assert.match(appHtml, /hasStalePassedReset/);
-    assert.match(jsSrc, /ALLOWED_BRIDGE_TABS = new Set\(\[[^\]]*'models'[^\]]*\]\)/);
+    assert.match(jsSrc, /ALLOWED_BRIDGE_TABS = new Set\(\[[^\]]*'models'[^\]]*'cua'[^\]]*\]\)/);
     assert.match(jsSrc, /axolotl/);
-    assert.match(fs.readFileSync(path.join(REPO, 'installer', 'win', 'PrismSuiteInstaller.cs'), 'utf8'), /0\.7\.0\.0/);
+    assert.match(fs.readFileSync(path.join(REPO, 'installer', 'win', 'PrismSuiteInstaller.cs'), 'utf8'), /0\.8\.0\.0/);
     assert.doesNotMatch(jsSrc, /window\.ctx\?\.onCleanup/, 'Must use lexical ctx or __AG_PATCH_CTX__, not window.ctx');
 
     // 5. Review #9, #10, #19, #21 kernel behavioral checks:
@@ -4451,3 +4451,235 @@ test('full audit hardening: Model Hub, Profile, Memory, Vault/Relay, MCP, Self-U
   }
 });
 
+test('v0.8.0 prism-cua end-to-end broker/MCP roundtrip, batch_actions, safety/CAPTCHA/Esc guards, MV3 bridge, dual-plugin installer, and zero-blank restore', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-v080-cua-'));
+  let broker = null;
+  try {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const { createCuaBroker, CUA_EXTENSION_ID } = await import(
+      pathToFileURL(path.join(repoRoot, 'vendor', 'anti-claude', 'core', 'cua-broker.mjs')).href
+    );
+    const { createPrismCuaServer, TOOLS: CUA_TOOLS } = await import(
+      pathToFileURL(path.join(repoRoot, 'plugin-cua', 'server', 'index.mjs')).href
+    );
+
+    // 1. Strict 3-tool model visibility & default-disabled plugin manifest
+    const cuaPluginJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'plugin-cua', 'plugin.json'), 'utf8'));
+    assert.equal(cuaPluginJson.name, 'prism-cua');
+    assert.equal(cuaPluginJson.version, '0.8.0');
+    assert.equal(cuaPluginJson.disabled, true, 'prism-cua must ship disabled by default');
+    assert.deepEqual(CUA_TOOLS.map((t) => t.name), ['cua_status', 'cua_observe', 'cua_act']);
+
+    // 2. Deterministic Chrome MV3 SPKI public key -> exact 32-char Extension ID check
+    const mv3Manifest = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, 'extensions', 'chrome-cua-bridge', 'manifest.json'), 'utf8')
+    );
+    const spkiDer = Buffer.from(mv3Manifest.key, 'base64');
+    const shaHex = crypto.createHash('sha256').update(spkiDer).digest('hex').slice(0, 32);
+    const derivedExtId = [...shaHex].map((c) => String.fromCharCode(97 + parseInt(c, 16))).join('');
+    assert.equal(derivedExtId, CUA_EXTENSION_ID);
+    assert.equal(derivedExtId, 'lbmibnghmlnidfiihkegicaejaacmkca');
+
+    // 3. Minimize-to-restore zero-blank-screen static invariants
+    const suiteJs = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite.js'), 'utf8');
+    const fxJs = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite-fx.js'), 'utf8');
+    const fxCss = fs.readFileSync(path.join(repoRoot, 'extensions', 'prism-suite-fx.css'), 'utf8');
+    const daemonSrc = fs.readFileSync(path.join(repoRoot, 'vendor', 'anti-claude', 'core', 'daemon.mjs'), 'utf8');
+    assert.match(suiteJs, /restoreWakeRaf2\s*=\s*requestAnimationFrame/);
+    assert.match(fxJs, /fxRestoreRaf2\s*=\s*requestAnimationFrame/);
+    assert.match(daemonSrc, /__agSyncHostVisibility/);
+    assert.match(daemonSrc, /setFastWindowRestoreShortcut/);
+    const railSlice = fxCss.slice(fxCss.indexOf('#ag-ps-outline-rail {'), fxCss.indexOf('#ag-ps-rail-tip {'));
+    assert.doesNotMatch(railSlice, /backdrop-filter/, 'Persistent outline rail must avoid offscreen backdrop-filter');
+
+    // 4. Dual-plugin installAll / uninstallAll roundtrip
+    const userDir = path.join(tmp, 'user');
+    const pluginsDir = path.join(tmp, 'plugins');
+    fs.mkdirSync(path.join(pluginsDir, 'sibling-keep'), { recursive: true });
+    fs.writeFileSync(path.join(pluginsDir, 'sibling-keep', 'plugin.json'), '{"name":"sibling-keep"}\n');
+    const instRes = installAll({ userDir, pluginsDir, skipKernel: true });
+    assert.ok(fs.existsSync(path.join(pluginsDir, 'prism-files', 'plugin.json')));
+    assert.ok(fs.existsSync(path.join(pluginsDir, 'prism-cua', 'plugin.json')));
+    assert.ok(instRes.plugin?.cuaTargetDir, 'installAll must deploy prism-cua');
+    uninstallAll({ userDir, pluginsDir, removeKernel: false });
+    assert.ok(!fs.existsSync(path.join(pluginsDir, 'prism-files')));
+    assert.ok(!fs.existsSync(path.join(pluginsDir, 'prism-cua')));
+    assert.ok(fs.existsSync(path.join(pluginsDir, 'sibling-keep', 'plugin.json')), 'Sibling plugins must remain intact');
+
+    // 5. Live HTTP CUA Broker <-> prism-cua MCP Server E2E roundtrip (Consent, Batch, Idempotency, Esc, CAPTCHA, MV3 NM)
+    let savedValue = '';
+    let simulateEscOnNextAct = false;
+    let simulateCaptchaOnNextObserve = false;
+    let actCalls = 0;
+
+    const prismSuiteDir = path.join(tmp, 'prism-suite');
+    const wslGeminiDir = path.join(tmp, 'wsl-gemini');
+    fs.mkdirSync(wslGeminiDir, { recursive: true });
+
+    broker = createCuaBroker({
+      allowNonWin32ForTest: true,
+      homeDir: tmp,
+      prismSuiteDir,
+      wslAdapterIp: null,
+      discoverWslGeminiDirs: () => [wslGeminiDir],
+      mockWorkerRunner: async ({ cmd, stdin }) => {
+        if (cmd === 'list-windows') {
+          return {
+            ok: true,
+            windows: [
+              { hwnd: '0x002004A0', title: '记事本 - 测试文档', processName: 'notepad.exe', className: 'Notepad', isElectron: false, isElevated: false },
+              { hwnd: '0x00200999', title: 'C:\\Users\\Admin\\.codex\\auth.json', processName: 'notepad.exe', className: 'Notepad', isElectron: false, isElevated: false }
+            ]
+          };
+        }
+        if (cmd === 'consent') {
+          return {
+            ok: true,
+            granted: true,
+            state: stdin?.needAct ? 'ARMED_INTERACTIVE' : 'ARMED_READONLY',
+            durationMinutes: 15,
+            scope: { type: 'desktop_safe' }
+          };
+        }
+        if (cmd === 'observe') {
+          if (simulateCaptchaOnNextObserve) {
+            return {
+              ok: true,
+              window: { hwnd: stdin.hwnd, title: '安全检查 - Cloudflare Turnstile', processName: 'chrome.exe' },
+              elements: [{ ref: '@w1', role: 'checkbox', name: 'Verify you are human' }]
+            };
+          }
+          return {
+            ok: true,
+            window: { hwnd: stdin.hwnd, title: '记事本 - 测试文档', processName: 'notepad.exe' },
+            elements: [
+              { ref: '@w1', role: 'edit', name: '正文编辑区', value: savedValue, bounds: { x: 100, y: 120, width: 300, height: 200 } },
+              { ref: '@w2', role: 'edit', name: '口令输入', isPassword: true, value: 'super-secret', bounds: { x: 100, y: 340, width: 200, height: 28 } },
+              { ref: '@w3', role: 'button', name: '保存', bounds: { x: 160, y: 390, width: 80, height: 30 } }
+            ],
+            screenshotBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+            mimeType: 'image/png'
+          };
+        }
+        if (cmd === 'act') {
+          if (simulateEscOnNextAct) {
+            return { ok: false, code: 'USER_ESC_ABORTED', error: '用户按下 Esc 紧急中断' };
+          }
+          actCalls += 1;
+          if (stdin?.step?.op === 'type_text') {
+            savedValue = stdin.step.text;
+          }
+          return { ok: true, executed: stdin?.step?.op };
+        }
+        if (cmd === 'release-modifiers') {
+          return { ok: true };
+        }
+        return { ok: true };
+      }
+    });
+
+    const started = await broker.start();
+    assert.ok(started.endpoints.length >= 1);
+    const wslBrokerPath = path.join(wslGeminiDir, 'antigravity', 'prism-suite', 'cua-broker.json');
+    assert.ok(fs.existsSync(wslBrokerPath), 'Broker must sync cua-broker.json to WSL gemini dir');
+
+    const cuaServer = createPrismCuaServer({
+      brokerFilePath: wslBrokerPath,
+      minPacingMs: 0
+    });
+
+    // 5a. Status auto-enumerates windows & hides/flags protected .codex window
+    const stRes = await cuaServer.handleToolCall('cua_status', { includeWindows: true });
+    assert.equal(stRes.structuredContent.ok, true);
+    assert.equal(stRes.structuredContent.state, 'DISARMED');
+    assert.equal(stRes.structuredContent.windows.some((w) => w.blocked === true), true, 'Sensitive .codex window must be marked blocked');
+
+    // 5b. Observe auto-triggers readonly consent, resolves titleContains, redacts password, & attaches image
+    const obsRes = await cuaServer.handleToolCall('cua_observe', {
+      target: 'desktop',
+      titleContains: '测试文档',
+      includeScreenshot: true
+    });
+    assert.equal(obsRes.structuredContent.ok, true);
+    assert.equal(broker.state, 'ARMED_READONLY');
+    assert.match(obsRes.content[0].text, /\[UNTRUSTED_CUA_OBSERVATION source=cua tainted=true\]/);
+    assert.doesNotMatch(obsRes.content[0].text, /super-secret/, 'Password value must never leak');
+    assert.equal(obsRes.content[1].type, 'image');
+
+    // 5c. Blocking password field action before touching OS
+    const pwdAct = await cuaServer.handleToolCall('cua_act', {
+      target: 'desktop',
+      hwnd: '0x002004A0',
+      actions: [{ op: 'type_text', ref: '@w2', text: 'attempt' }]
+    });
+    assert.equal(pwdAct.isError, true);
+    assert.equal(pwdAct.structuredContent.code, 'PASSWORD_FIELD_BLOCKED');
+
+    // 5d. Declarative batch_actions upgrades to ARMED_INTERACTIVE, verifies expectBefore/expectAfter, computes diff & caches idempotencyKey
+    const batchRes = await cuaServer.handleToolCall('cua_act', {
+      target: 'desktop',
+      hwnd: '0x002004A0',
+      idempotencyKey: 'idem-save-1',
+      actions: [
+        { op: 'click', ref: '@w1', expectBefore: { titleContains: '记事本', refExists: '@w1' } },
+        { op: 'type_text', ref: '@w1', text: 'Hello Prism CUA', expectAfter: { textContains: 'Hello Prism CUA' } },
+        { op: 'click', ref: '@w3' }
+      ]
+    });
+    assert.equal(batchRes.structuredContent.ok, true);
+    assert.equal(broker.state, 'ARMED_INTERACTIVE');
+    assert.equal(actCalls, 3);
+    assert.match(batchRes.content[0].text, /Hello Prism CUA/);
+
+    const batchDup = await cuaServer.handleToolCall('cua_act', {
+      target: 'desktop',
+      hwnd: '0x002004A0',
+      idempotencyKey: 'idem-save-1',
+      actions: [
+        { op: 'click', ref: '@w1', expectBefore: { titleContains: '记事本', refExists: '@w1' } },
+        { op: 'type_text', ref: '@w1', text: 'Hello Prism CUA', expectAfter: { textContains: 'Hello Prism CUA' } },
+        { op: 'click', ref: '@w3' }
+      ]
+    });
+    assert.equal(batchDup.structuredContent.idempotencyHit, true);
+    assert.equal(actCalls, 3, 'Duplicate idempotencyKey must not re-execute actions');
+
+    const batchConflict = await cuaServer.handleToolCall('cua_act', {
+      target: 'desktop',
+      hwnd: '0x002004A0',
+      idempotencyKey: 'idem-save-1',
+      actions: [{ op: 'click', ref: '@w3' }]
+    });
+    assert.equal(batchConflict.isError, true);
+    assert.equal(batchConflict.structuredContent.code, 'IDEMPOTENCY_CONFLICT', 'Reusing idempotencyKey with mutated actions must reject');
+
+    // 5e. Codex-style single-key Esc emergency interrupt disarms Broker & short-circuits batch
+    simulateEscOnNextAct = true;
+    const escRes = await cuaServer.handleToolCall('cua_act', {
+      target: 'desktop',
+      hwnd: '0x002004A0',
+      actions: [
+        { op: 'click', ref: '@w1' },
+        { op: 'type_text', ref: '@w1', text: 'should-not-run' }
+      ]
+    });
+    assert.equal(escRes.isError, true);
+    assert.equal(escRes.structuredContent.code, 'USER_ESC_ABORTED');
+    assert.equal(broker.state, 'DISARMED', 'Esc interrupt must disarm session immediately');
+    simulateEscOnNextAct = false;
+
+    // 5f. CAPTCHA challenge detection pauses Broker into PAUSED_HANDOFF
+    simulateCaptchaOnNextObserve = true;
+    const capRes = await cuaServer.handleToolCall('cua_observe', {
+      target: 'desktop',
+      hwnd: '0x002004A0'
+    });
+    assert.equal(capRes.isError, true);
+    assert.equal(capRes.structuredContent.code, 'CAPTCHA_DETECTED');
+    assert.equal(broker.state, 'PAUSED_HANDOFF');
+    assert.match(capRes.content[0].text, /\[HANDOFF REQUIRED: CAPTCHA_DETECTED\]/);
+  } finally {
+    if (broker) await broker.stop();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

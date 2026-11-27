@@ -24,7 +24,7 @@ jobs:
       - name: Verify syntax, zero dependencies, tag/changelog parity, and run tests
         shell: pwsh
         run: |
-          $files = @('install.mjs', 'uninstall.mjs') + (Get-ChildItem -Path plugin/server, scripts, vendor/anti-claude/core -Filter *.mjs | ForEach-Object { $_.FullName }) + (Get-ChildItem -Path extensions, vendor/anti-claude/core, vendor/anti-claude/user -Filter *.js | ForEach-Object { $_.FullName })
+          $files = @('install.mjs', 'uninstall.mjs') + (Get-ChildItem -Path plugin/server, plugin-cua/server, scripts, vendor/anti-claude/core -Filter *.mjs | ForEach-Object { $_.FullName }) + (Get-ChildItem -Path extensions, extensions/chrome-cua-bridge, vendor/anti-claude/core, vendor/anti-claude/user -Filter *.js | ForEach-Object { $_.FullName })
           foreach ($f in $files) { node --check $f; if ($LASTEXITCODE -ne 0) { throw "Syntax check failed: $f" } }
           node -e "const p=require('./package.json'); if(p.dependencies && Object.keys(p.dependencies).length) throw new Error('Must keep zero runtime npm dependencies');"
           if ($env:GITHUB_REF -like 'refs/tags/*') {
@@ -55,20 +55,27 @@ jobs:
           if ($p1.ExitCode -ne 0) { throw "Silent install failed: $($p1.ExitCode)" }
           if (-not (Test-Path (Join-Path $userDir "extensions\prism-suite.js"))) { throw "Missing prism-suite.js" }
           if (-not (Test-Path (Join-Path $userDir "extensions\prism-suite.css"))) { throw "Missing prism-suite.css" }
+          if (-not (Test-Path (Join-Path $tmp "prism-suite\chrome-bridge\manifest.json"))) { throw "Missing chrome-bridge\manifest.json" }
           foreach ($rel in @("plugin.json", "rules\AGENTS.md", "server\platform-utils.mjs", "server\prism-profile.mjs", "server\model-hub.mjs", "server\handoff-memory.mjs", "skills\prism-cross-model-council\SKILL.md")) {
             if (-not (Test-Path (Join-Path $pluginsDir "prism-files\$rel"))) { throw "Missing deployed plugin file: $rel" }
           }
-          # Verify second in-place update prunes stale leftover files cleanly
+          if (-not (Test-Path (Join-Path $pluginsDir "prism-cua\plugin.json"))) { throw "Missing prism-cua\plugin.json" }
+          # Verify second in-place update prunes stale leftover files cleanly across both plugins
           $stalePath = Join-Path $pluginsDir "prism-files\obsolete-stale-check.tmp"
+          $staleCuaPath = Join-Path $pluginsDir "prism-cua\obsolete-stale-cua.tmp"
           New-Item -ItemType File -Path $stalePath -Force | Out-Null
+          New-Item -ItemType File -Path $staleCuaPath -Force | Out-Null
           $pUpdate = Start-Process -FilePath $exe -ArgumentList @("--silent-install", "--no-wsl", "--test-user-dir=$userDir", "--test-plugins-dir=$pluginsDir") -Wait -PassThru
           if ($pUpdate.ExitCode -ne 0) { throw "Silent in-place update failed: $($pUpdate.ExitCode)" }
-          if (Test-Path $stalePath) { throw "In-place update failed to prune stale file" }
+          if (Test-Path $stalePath) { throw "In-place update failed to prune stale prism-files file" }
+          if (Test-Path $staleCuaPath) { throw "In-place update failed to prune stale prism-cua file" }
           if (-not (Test-Path (Join-Path $pluginsDir "prism-files\server\relaunch-client.mjs"))) { throw "Missing relaunch-client.mjs after update" }
           $p2 = Start-Process -FilePath $exe -ArgumentList @("--silent-uninstall", "--no-wsl", "--test-user-dir=$userDir", "--test-plugins-dir=$pluginsDir") -Wait -PassThru
           if ($p2.ExitCode -ne 0) { throw "Silent uninstall failed: $($p2.ExitCode)" }
           if (Test-Path (Join-Path $userDir "extensions\prism-suite.js")) { throw "prism-suite.js was not removed" }
+          if (Test-Path (Join-Path $tmp "prism-suite\chrome-bridge")) { throw "chrome-bridge was not removed" }
           if (Test-Path (Join-Path $pluginsDir "prism-files")) { throw "prism-files was not removed" }
+          if (Test-Path (Join-Path $pluginsDir "prism-cua")) { throw "prism-cua was not removed" }
           Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Upload build artifacts

@@ -3099,10 +3099,40 @@
       }
     }
 
+    let fxRestoreRaf1 = 0;
+    let fxRestoreRaf2 = 0;
+    let fxRestoreTimer = 0;
+    let fxResizeRaf = 0;
+    let lastRestoreSyncAt = 0;
+
+    function cancelFxRestoreSchedule() {
+      if (fxRestoreRaf1) {
+        cancelAnimationFrame(fxRestoreRaf1);
+        fxRestoreRaf1 = 0;
+      }
+      if (fxRestoreRaf2) {
+        cancelAnimationFrame(fxRestoreRaf2);
+        fxRestoreRaf2 = 0;
+      }
+      if (fxRestoreTimer) {
+        clearTimeout(fxRestoreTimer);
+        fxRestoreTimer = 0;
+      }
+    }
+
+    onCleanup(() => {
+      cancelFxRestoreSchedule();
+      if (fxResizeRaf) {
+        cancelAnimationFrame(fxResizeRaf);
+        fxResizeRaf = 0;
+      }
+    });
+
     // Window focus / blur / visibility handlers via AbortController
     function onVisibilityOrFocusChange() {
       if (disposed) return;
       windowFocused = typeof document.hasFocus === 'function' ? document.hasFocus() : !document.hidden;
+      cancelFxRestoreSchedule();
       if (document.hidden) {
         orbHovering = false;
         orbTargetTiltX = 0;
@@ -3124,14 +3154,27 @@
         }
       } else {
         stopHiddenUnreadPoll();
-        clearUnreadBadge();
-        syncAll('visibility');
+        // Let browser paint first restored frame before touching DOM or reading layout
+        fxRestoreRaf1 = requestAnimationFrame(() => {
+          fxRestoreRaf1 = 0;
+          fxRestoreRaf2 = requestAnimationFrame(() => {
+            fxRestoreRaf2 = 0;
+            fxRestoreTimer = window.setTimeout(() => {
+              fxRestoreTimer = 0;
+              if (disposed || document.hidden) return;
+              lastRestoreSyncAt = Date.now();
+              clearUnreadBadge();
+              syncAll('visibility');
+            }, 150);
+          });
+        });
       }
     }
 
     window.addEventListener('focus', () => {
       if (disposed) return;
       windowFocused = true;
+      if (fxRestoreRaf1 || fxRestoreRaf2 || fxRestoreTimer) return;
       clearUnreadBadge();
       if (shouldRunScheduler(Date.now())) ensureScheduler();
     }, { signal });
@@ -3148,12 +3191,17 @@
     window.addEventListener('resize', () => {
       if (disposed) return;
       scheduleThrottledMeasure();
-      if (orbCanvas && getPrefs().thinkingOrb) syncOrbCanvasDpr(false);
-      if (railEl) positionOutlineRail();
-      if (quotaNudgeEl) positionQuotaNudge();
-      if (isConversationRoute() && getWantedOverviewOpen() === true && !isOverviewOpenNow()) {
-        scheduleEnsureOverviewOpen('layout', 110);
-      }
+      if (fxResizeRaf) return;
+      fxResizeRaf = requestAnimationFrame(() => {
+        fxResizeRaf = 0;
+        if (disposed || document.hidden) return;
+        if (orbCanvas && getPrefs().thinkingOrb) syncOrbCanvasDpr(false);
+        if (railEl) positionOutlineRail();
+        if (quotaNudgeEl) positionQuotaNudge();
+        if (isConversationRoute() && getWantedOverviewOpen() === true && !isOverviewOpenNow()) {
+          scheduleEnsureOverviewOpen('layout', 140);
+        }
+      });
     }, { passive: true, signal });
 
     window.addEventListener('ag-prism-overlay-change', () => {
@@ -3176,7 +3224,10 @@
         return;
       }
       if (type === 'visibility') {
-        onVisibilityOrFocusChange();
+        // Handled cleanly by native visibilitychange listener with post-paint coalescing
+        return;
+      }
+      if (type === 'tick' && (fxRestoreRaf1 || fxRestoreRaf2 || fxRestoreTimer || Date.now() - lastRestoreSyncAt < 240)) {
         return;
       }
       syncAll(type);

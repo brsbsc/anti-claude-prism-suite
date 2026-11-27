@@ -446,7 +446,58 @@ export function resolvePrismFilesTargetDir(pluginsDir) {
   return path.join(resolvedPluginsDir, 'prism-files');
 }
 
-export function installPlugin({ pluginsDir = resolvePluginsDir(), srcDir = path.join(__dirname, 'plugin') } = {}) {
+export function resolvePrismCuaTargetDir(pluginsDir) {
+  const resolvedPluginsDir = path.resolve(pluginsDir);
+  const base = path.basename(resolvedPluginsDir).toLowerCase();
+  if (base === 'prism-cua') {
+    return resolvedPluginsDir;
+  }
+  if (base === 'prism-files') {
+    return path.join(path.dirname(resolvedPluginsDir), 'prism-cua');
+  }
+  return path.join(resolvedPluginsDir, 'prism-cua');
+}
+
+export function resolveChromeBridgeTargetDir(userDir = resolveUserDir(), stateDir) {
+  const resolvedStateDir = stateDir ? path.resolve(stateDir) : resolveStateDirFromUserDir(userDir);
+  const stateBase = path.basename(resolvedStateDir).toLowerCase();
+  const stateParent = path.dirname(resolvedStateDir);
+  if ((stateBase === 'anti-claude' || stateBase === '.anti-claude') && stateParent !== resolvedStateDir) {
+    return path.join(stateParent, 'prism-suite', 'chrome-bridge');
+  }
+  return path.join(resolvedStateDir, 'prism-suite', 'chrome-bridge');
+}
+
+export function installChromeBridge({
+  userDir = resolveUserDir(),
+  stateDir,
+  srcDir = path.join(__dirname, 'extensions', 'chrome-cua-bridge')
+} = {}) {
+  const resolvedSrc = path.resolve(srcDir);
+  const targetDir = resolveChromeBridgeTargetDir(userDir, stateDir);
+  if (path.basename(targetDir).toLowerCase() !== 'chrome-bridge') {
+    throw new Error(`Unsafe chrome-bridge target directory: ${targetDir}`);
+  }
+  if (!fs.existsSync(path.join(resolvedSrc, 'manifest.json'))) {
+    return { targetDir, installed: [] };
+  }
+  if (resolvedSrc === path.resolve(targetDir)) {
+    throw new Error(`Source and target chrome-bridge directories are identical: ${targetDir}`);
+  }
+  const anchor = path.dirname(path.dirname(targetDir));
+  assertSafeDirectory(path.dirname(targetDir), anchor);
+  assertSafeDirectory(targetDir, anchor);
+  const installed = [];
+  syncDirInPlace(resolvedSrc, targetDir, installed, anchor);
+  return { targetDir, installed };
+}
+
+export function installPlugin({
+  pluginsDir = resolvePluginsDir(),
+  srcDir = path.join(__dirname, 'plugin'),
+  cuaSrcDir
+} = {}) {
+  const defaultPluginSrc = path.resolve(path.join(__dirname, 'plugin'));
   const resolvedSrc = path.resolve(srcDir);
   if (!fs.existsSync(resolvedSrc) || !fs.statSync(resolvedSrc).isDirectory()) {
     throw new Error(`Missing source plugin directory: ${resolvedSrc}`);
@@ -460,10 +511,35 @@ export function installPlugin({ pluginsDir = resolvePluginsDir(), srcDir = path.
     throw new Error(`Source and target plugin directories are identical: ${targetDir}`);
   }
 
-  fs.mkdirSync(path.dirname(targetDir), { recursive: true });
+  const pluginAnchor = path.dirname(targetDir);
+  assertSafeDirectory(targetDir, pluginAnchor);
+  fs.mkdirSync(pluginAnchor, { recursive: true });
   const installed = [];
-  syncDirInPlace(resolvedSrc, targetDir, installed);
-  return { targetDir, installed };
+  syncDirInPlace(resolvedSrc, targetDir, installed, pluginAnchor);
+
+  const effectiveCuaSrc = cuaSrcDir !== undefined
+    ? (cuaSrcDir ? path.resolve(cuaSrcDir) : null)
+    : (resolvedSrc === defaultPluginSrc ? path.resolve(path.join(__dirname, 'plugin-cua')) : null);
+
+  let cuaTargetDir = '';
+  const cuaInstalled = [];
+  if (effectiveCuaSrc && fs.existsSync(path.join(effectiveCuaSrc, 'plugin.json'))) {
+    cuaTargetDir = resolvePrismCuaTargetDir(pluginsDir);
+    if (path.basename(cuaTargetDir).toLowerCase() !== 'prism-cua') {
+      throw new Error(`Unsafe CUA plugin target directory: ${cuaTargetDir}`);
+    }
+    if (effectiveCuaSrc === path.resolve(cuaTargetDir)) {
+      throw new Error(`Source and target CUA plugin directories are identical: ${cuaTargetDir}`);
+    }
+    const cuaAnchor = path.dirname(cuaTargetDir);
+    assertSafeDirectory(cuaTargetDir, cuaAnchor);
+    fs.mkdirSync(cuaAnchor, { recursive: true });
+    syncDirInPlace(effectiveCuaSrc, cuaTargetDir, cuaInstalled, cuaAnchor);
+  }
+
+  return cuaTargetDir
+    ? { targetDir, installed, cuaTargetDir, cuaInstalled }
+    : { targetDir, installed };
 }
 
 export function installAll({
@@ -471,7 +547,9 @@ export function installAll({
   userDir,
   pluginsDir,
   extensionsSrcDir = path.join(__dirname, 'extensions'),
+  chromeBridgeSrcDir = path.join(__dirname, 'extensions', 'chrome-cua-bridge'),
   pluginSrcDir = path.join(__dirname, 'plugin'),
+  pluginCuaSrcDir = path.join(__dirname, 'plugin-cua'),
   kernelSrcDir = path.join(__dirname, 'vendor', 'anti-claude'),
   extensionsOnly,
   pluginOnly,
@@ -513,9 +591,16 @@ export function installAll({
   }
 
   const extensions = onlyPlugin ? null : installExtensions({ userDir: resolvedUserDir, srcDir: extensionsSrcDir });
-  const plugin = onlyExt ? null : installPlugin({ pluginsDir: resolvedPluginsDir, srcDir: pluginSrcDir });
+  const chromeBridge = onlyPlugin ? null : installChromeBridge({ userDir: resolvedUserDir, srcDir: chromeBridgeSrcDir });
+  const defaultPluginSrc = path.resolve(path.join(__dirname, 'plugin'));
+  const effectiveCuaSrc = path.resolve(pluginSrcDir) === defaultPluginSrc ? pluginCuaSrcDir : undefined;
+  const plugin = onlyExt ? null : installPlugin({
+    pluginsDir: resolvedPluginsDir,
+    srcDir: pluginSrcDir,
+    ...(effectiveCuaSrc !== undefined ? { cuaSrcDir: effectiveCuaSrc } : {})
+  });
 
-  return { kernel, extensions, plugin };
+  return { kernel, extensions, chromeBridge, plugin };
 }
 
 function printHelp() {
@@ -559,9 +644,15 @@ if (isMain) {
     console.log(`[Anti-Claude Extensions] Installed to: ${res.extensions.targetDir}`);
     for (const f of res.extensions.installed) console.log(`  - ${f}`);
   }
+  if (res.chromeBridge && res.chromeBridge.installed.length > 0) {
+    console.log(`[Chrome/Edge MV3 CUA Bridge] Deployed to: ${res.chromeBridge.targetDir} (${res.chromeBridge.installed.length} files)`);
+  }
   if (res.plugin) {
     console.log(`[Antigravity Plugin: prism-files] Installed to: ${res.plugin.targetDir} (${res.plugin.installed.length} files)`);
     for (const f of res.plugin.installed) console.log(`  - ${f}`);
+    if (res.plugin.cuaTargetDir && res.plugin.cuaInstalled?.length) {
+      console.log(`[Antigravity Plugin: prism-cua (default-off)] Installed to: ${res.plugin.cuaTargetDir} (${res.plugin.cuaInstalled.length} files)`);
+    }
   }
   if (res.plugin) {
     console.log('Note: Restart or reload Antigravity to activate the prism-files MCP App plugin.');

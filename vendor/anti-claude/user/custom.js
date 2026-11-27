@@ -6321,11 +6321,19 @@
     }
   }
 
-  const onWindowSidebarEvent = () => scheduleSidebarSync();
+  let sidebarFocusTimer = 0;
+  const onWindowSidebarEvent = () => {
+    if (sidebarFocusTimer) clearTimeout(sidebarFocusTimer);
+    sidebarFocusTimer = setTimeout(() => {
+      sidebarFocusTimer = 0;
+      if (typeof document.visibilityState === 'string' && document.visibilityState === 'hidden') return;
+      scheduleSidebarSync();
+    }, 150);
+  };
   bindSidebarWheelTargets();
   window.addEventListener('focus', onWindowSidebarEvent);
   window.addEventListener('blur', onWindowSidebarEvent);
-  window.addEventListener('popstate', onWindowSidebarEvent);
+  window.addEventListener('popstate', scheduleSidebarSync);
 
   /* ==========================================================================
    * 8b. Live Zero-Reload UI Localization Engine (`i18n`, off / English by default)
@@ -14061,7 +14069,7 @@
     if (disposed) return;
     if (typeof document.visibilityState === 'string' && document.visibilityState === 'hidden') return;
     if ((isOverviewPanelVisible() || quotaPopoverOpen) && Date.now() - lastForceQuotaFetchTs >= 5000) {
-      scheduleAutoQuotaRefresh(150, 4000);
+      scheduleAutoQuotaRefresh(360, 4000);
     }
   }
   window.addEventListener('focus', onQuotaVisibilityOrFocus);
@@ -14368,9 +14376,13 @@
       try { sb.removeEventListener('wheel', onSidebarWheel, true); } catch {}
     }
     boundSidebarWheelEls.clear();
+    if (sidebarFocusTimer) {
+      clearTimeout(sidebarFocusTimer);
+      sidebarFocusTimer = 0;
+    }
     window.removeEventListener('focus', onWindowSidebarEvent);
     window.removeEventListener('blur', onWindowSidebarEvent);
-    window.removeEventListener('popstate', onWindowSidebarEvent);
+    window.removeEventListener('popstate', scheduleSidebarSync);
     window.removeEventListener('focus', onQuotaVisibilityOrFocus);
     document.removeEventListener('visibilitychange', onQuotaVisibilityOrFocus);
     if (autoQuotaRefreshTimer) {
