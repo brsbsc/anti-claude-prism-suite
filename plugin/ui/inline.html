@@ -31,33 +31,8 @@
       color-scheme: light;
     }
 
-    @media (prefers-color-scheme: dark) {
-      :root:not([data-theme="light"]) {
-        --p-bg: #14171c;
-        --p-bg-subtle: #1b1f26;
-        --p-bg-hover: #232831;
-        --p-bg-active: #2c333f;
-        --p-text: #f1f5f9;
-        --p-text-secondary: #cbd5e1;
-        --p-text-muted: #94a3b8;
-        --p-border: rgba(248, 250, 252, 0.1);
-        --p-border-strong: rgba(248, 250, 252, 0.2);
-        --p-accent: #60a5fa;
-        --p-accent-soft: rgba(96, 165, 250, 0.16);
-        --p-danger: #f87171;
-        --p-danger-soft: rgba(248, 113, 113, 0.16);
-        --p-success: #34d399;
-        --p-success-soft: rgba(52, 211, 153, 0.15);
-        --p-success-border: rgba(52, 211, 153, 0.36);
-        --p-row-hover-glow: rgba(96, 165, 250, 0.07);
-        --p-toast-bg: #e2e8f0;
-        --p-toast-text: #0f172a;
-        --p-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-        color-scheme: dark;
-      }
-    }
-
-    :root[data-theme="dark"] {
+    :root[data-theme="dark"],
+    :root[data-sys-theme="dark"]:not([data-theme="light"]) {
       --p-bg: #14171c;
       --p-bg-subtle: #1b1f26;
       --p-bg-hover: #232831;
@@ -228,23 +203,20 @@
     .kind-archive { color: #b45309; background: rgba(180, 83, 9, 0.11); }
     .kind-file { color: var(--color-text-secondary, var(--p-text-muted)); }
 
-    @media (prefers-color-scheme: dark) {
-      :root:not([data-theme="light"]) .kind-dir { color: #fbbf24; background: rgba(251, 191, 36, 0.15); }
-      :root:not([data-theme="light"]) .kind-code { color: #60a5fa; background: rgba(96, 165, 250, 0.15); }
-      :root:not([data-theme="light"]) .kind-markdown { color: #22d3ee; background: rgba(34, 211, 238, 0.15); }
-      :root:not([data-theme="light"]) .kind-image { color: #34d399; background: rgba(52, 211, 153, 0.15); }
-      :root:not([data-theme="light"]) .kind-pdf { color: #fb7185; background: rgba(251, 113, 133, 0.15); }
-      :root:not([data-theme="light"]) .kind-office { color: #818cf8; background: rgba(129, 140, 248, 0.16); }
-      :root:not([data-theme="light"]) .kind-archive { color: #f59e0b; background: rgba(245, 158, 11, 0.15); }
-    }
-
-    :root[data-theme="dark"] .kind-dir { color: #fbbf24; background: rgba(251, 191, 36, 0.15); }
-    :root[data-theme="dark"] .kind-code { color: #60a5fa; background: rgba(96, 165, 250, 0.15); }
-    :root[data-theme="dark"] .kind-markdown { color: #22d3ee; background: rgba(34, 211, 238, 0.15); }
-    :root[data-theme="dark"] .kind-image { color: #34d399; background: rgba(52, 211, 153, 0.15); }
-    :root[data-theme="dark"] .kind-pdf { color: #fb7185; background: rgba(251, 113, 133, 0.15); }
-    :root[data-theme="dark"] .kind-office { color: #818cf8; background: rgba(129, 140, 248, 0.16); }
-    :root[data-theme="dark"] .kind-archive { color: #f59e0b; background: rgba(245, 158, 11, 0.15); }
+    :root[data-theme="dark"] .kind-dir,
+    :root[data-sys-theme="dark"]:not([data-theme="light"]) .kind-dir { color: #fbbf24; background: rgba(251, 191, 36, 0.15); }
+    :root[data-theme="dark"] .kind-code,
+    :root[data-sys-theme="dark"]:not([data-theme="light"]) .kind-code { color: #60a5fa; background: rgba(96, 165, 250, 0.15); }
+    :root[data-theme="dark"] .kind-markdown,
+    :root[data-sys-theme="dark"]:not([data-theme="light"]) .kind-markdown { color: #22d3ee; background: rgba(34, 211, 238, 0.15); }
+    :root[data-theme="dark"] .kind-image,
+    :root[data-sys-theme="dark"]:not([data-theme="light"]) .kind-image { color: #34d399; background: rgba(52, 211, 153, 0.15); }
+    :root[data-theme="dark"] .kind-pdf,
+    :root[data-sys-theme="dark"]:not([data-theme="light"]) .kind-pdf { color: #fb7185; background: rgba(251, 113, 133, 0.15); }
+    :root[data-theme="dark"] .kind-office,
+    :root[data-sys-theme="dark"]:not([data-theme="light"]) .kind-office { color: #818cf8; background: rgba(129, 140, 248, 0.16); }
+    :root[data-theme="dark"] .kind-archive,
+    :root[data-sys-theme="dark"]:not([data-theme="light"]) .kind-archive { color: #f59e0b; background: rgba(245, 158, 11, 0.15); }
 
     .file-meta {
       flex: 1 1 auto;
@@ -557,6 +529,7 @@
         openTargets: {
           loaded: false,
           loading: false,
+          inFlightPromise: null,
           items: [],
           menuOpen: false,
           activeIndex: -1
@@ -573,6 +546,12 @@
 
       const uiAbort = new AbortController();
       const { signal } = uiAbort;
+      const darkMediaQuery = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+      const syncSystemTheme = () => {
+        document.documentElement.dataset.sysTheme = darkMediaQuery?.matches ? 'dark' : 'light';
+      };
+      syncSystemTheme();
+      darkMediaQuery?.addEventListener?.('change', syncSystemTheme, { signal });
       let rpcCounter = 1;
       const pendingRequests = new Map();
       let toastTimer = null;
@@ -626,6 +605,15 @@
         '--sidebar-border': '--p-border'
       };
 
+      function isSafeCssVarValue(raw) {
+        if (typeof raw !== 'string') return false;
+        const v = raw.trim();
+        if (!v || v.length > 256) return false;
+        if (/[;{}]/.test(v)) return false;
+        if (/(?:url|expression)\s*\(/i.test(v)) return false;
+        return true;
+      }
+
       function applyHostContext(ctx) {
         if (!ctx || typeof ctx !== 'object') return;
         state.hostContext = { ...state.hostContext, ...ctx };
@@ -637,10 +625,11 @@
         const vars = ctx.styles && ctx.styles.variables;
         if (vars && typeof vars === 'object') {
           for (const [k, v] of Object.entries(vars)) {
-            if (typeof k === 'string' && k.startsWith('--') && typeof v === 'string' && v.trim()) {
-              document.documentElement.style.setProperty(k, v);
+            if (typeof k === 'string' && /^--[a-zA-Z0-9_-]{1,64}$/.test(k) && isSafeCssVarValue(v)) {
+              const safeVal = v.trim();
+              document.documentElement.style.setProperty(k, safeVal);
               const mapped = HOST_VAR_BRIDGE[k];
-              if (mapped) document.documentElement.style.setProperty(mapped, v);
+              if (mapped) document.documentElement.style.setProperty(mapped, safeVal);
             }
           }
         }
@@ -794,19 +783,25 @@
       }
 
       async function loadOpenTargets() {
-        if (state.openTargets.loaded || state.openTargets.loading) return state.openTargets.items;
+        if (state.openTargets.loaded) return state.openTargets.items;
+        if (state.openTargets.inFlightPromise) return state.openTargets.inFlightPromise;
         state.openTargets.loading = true;
-        try {
-          const res = await callServerTool('list_open_targets', {});
-          state.openTargets.items = Array.isArray(res?.targets) ? res.targets : [];
-          state.openTargets.loaded = true;
-        } catch {
-          state.openTargets.items = [];
-        } finally {
-          state.openTargets.loading = false;
-          render();
-        }
-        return state.openTargets.items;
+        const task = (async () => {
+          try {
+            const res = await callServerTool('list_open_targets', {});
+            state.openTargets.items = Array.isArray(res?.targets) ? res.targets : [];
+            state.openTargets.loaded = true;
+          } catch {
+            state.openTargets.items = [];
+          } finally {
+            state.openTargets.loading = false;
+            state.openTargets.inFlightPromise = null;
+            render();
+          }
+          return state.openTargets.items;
+        })();
+        state.openTargets.inFlightPromise = task;
+        return task;
       }
 
       function closeOpenWithMenu() {
@@ -856,6 +851,7 @@
       }
 
       function positionOpenWithMenu(anchorBtn) {
+        if (!anchorBtn || !anchorBtn.isConnected) return;
         const rect = anchorBtn.getBoundingClientRect();
         const menuW = Math.max(176, openWithMenuEl.offsetWidth || 184);
         const menuH = Math.min(220, openWithMenuEl.offsetHeight || 140);
@@ -876,15 +872,22 @@
         state.openTargets.menuOpen = true;
         state.openTargets.activeIndex = idx;
         openWithMenuEl.hidden = false;
+        let currentAnchor = anchorBtn;
         if (!state.openTargets.loaded) {
+          const pending = loadOpenTargets();
           renderOpenWithMenu();
-          positionOpenWithMenu(anchorBtn);
+          positionOpenWithMenu(currentAnchor);
           scheduleSizeSync();
-          await loadOpenTargets();
+          await pending;
           if (!state.openTargets.menuOpen || state.openTargets.activeIndex !== idx) return;
+          currentAnchor = listContainer.querySelector(`button[data-action="open-with"][data-index="${idx}"]`);
+          if (!currentAnchor || currentAnchor.hidden) {
+            closeOpenWithMenu();
+            return;
+          }
         }
         renderOpenWithMenu();
-        positionOpenWithMenu(anchorBtn);
+        positionOpenWithMenu(currentAnchor);
         scheduleSizeSync();
       }
 
@@ -985,6 +988,7 @@
       }
 
       function applyToolResult(params) {
+        closeOpenWithMenu();
         const sc = params?.structuredContent || params?.result?.structuredContent;
         state.loading = false;
         if (sc && typeof sc === 'object') {
@@ -1003,7 +1007,7 @@
 
       // Register message handler BEFORE calling ui/initialize
       window.addEventListener('message', (event) => {
-        if (window.parent !== window && event.source && event.source !== window.parent) return;
+        if (window.parent !== window && event.source !== window.parent) return;
         const msg = event.data;
         if (!msg || typeof msg !== 'object' || msg.jsonrpc !== '2.0') return;
 

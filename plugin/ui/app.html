@@ -36,38 +36,8 @@
       color-scheme: light;
     }
 
-    @media (prefers-color-scheme: dark) {
-      :root:not([data-theme="light"]) {
-        --p-bg: #12151a;
-        --p-bg-subtle: #181c22;
-        --p-bg-hover: #21262e;
-        --p-bg-active: #2b323d;
-        --p-bg-selected: rgba(96, 165, 250, 0.16);
-        --p-text: #f1f5f9;
-        --p-text-secondary: #cbd5e1;
-        --p-text-muted: #94a3b8;
-        --p-border: rgba(248, 250, 252, 0.1);
-        --p-border-strong: rgba(248, 250, 252, 0.2);
-        --p-accent: #60a5fa;
-        --p-accent-soft: rgba(96, 165, 250, 0.16);
-        --p-warn: #fbbf24;
-        --p-warn-soft: rgba(251, 191, 36, 0.15);
-        --p-danger: #f87171;
-        --p-danger-soft: rgba(248, 113, 113, 0.16);
-        --p-success: #34d399;
-        --p-success-soft: rgba(52, 211, 153, 0.15);
-        --p-success-border: rgba(52, 211, 153, 0.36);
-        --p-checker-a: #1b2028;
-        --p-checker-b: #242a35;
-        --p-code-bg: #161a21;
-        --p-toast-bg: #e2e8f0;
-        --p-toast-text: #0f172a;
-        --p-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-        color-scheme: dark;
-      }
-    }
-
-    :root[data-theme="dark"] {
+    :root[data-theme="dark"],
+    :root[data-sys-theme="dark"]:not([data-theme="light"]) {
       --p-bg: #12151a;
       --p-bg-subtle: #181c22;
       --p-bg-hover: #21262e;
@@ -1178,6 +1148,19 @@
       font-weight: 600;
     }
 
+    .code-gutter-plain {
+      margin: 0;
+      padding: 10px 8px;
+      text-align: right;
+      user-select: none;
+      color: var(--color-text-tertiary, var(--p-text-muted));
+      border-right: 1px solid var(--color-border-secondary, var(--p-border));
+      font-variant-numeric: tabular-nums;
+      flex-shrink: 0;
+      opacity: 0.72;
+      white-space: pre;
+    }
+
     .code-content {
       margin: 0;
       padding: 10px 12px;
@@ -2108,28 +2091,6 @@
       color: var(--color-text-secondary, var(--p-text-secondary));
     }
 
-    .relay-guide {
-      border: 1px dashed var(--color-border-primary, var(--p-border-strong));
-      border-radius: 8px;
-      padding: 7px 10px;
-      background: var(--color-background-secondary, var(--p-bg-subtle));
-      font-size: 11.5px;
-      color: var(--color-text-secondary, var(--p-text-secondary));
-    }
-
-    .relay-guide summary {
-      cursor: pointer;
-      font-weight: 600;
-      color: var(--color-text-primary, var(--p-text));
-      user-select: none;
-    }
-
-    .relay-guide ol {
-      margin: 6px 0 2px 18px;
-      padding: 0;
-      line-height: 1.55;
-    }
-
     .quota-bars {
       display: flex;
       flex-direction: column;
@@ -2312,7 +2273,8 @@
       color: #7c3aed;
     }
 
-    :root[data-theme="dark"] .pill-tier-t1 {
+    :root[data-theme="dark"] .pill-tier-t1,
+    :root[data-sys-theme="dark"]:not([data-theme="light"]) .pill-tier-t1 {
       color: #c4b5fd;
       background: rgba(139, 92, 246, 0.22);
     }
@@ -2943,6 +2905,7 @@
         openTargets: {
           loaded: false,
           loading: false,
+          inFlightPromise: null,
           items: [],
           menuOpen: false
         },
@@ -3021,6 +2984,8 @@
           selfUpdateConfirmRepair: false,
           selfUpdateInfo: null,
           selfUpdateResult: null,
+          relaunching: false,
+          relaunchScheduled: false,
           radarLoading: false,
           radarReport: null,
           openSections: {
@@ -3074,6 +3039,8 @@
           widthRatio: 0.45,
           needsDeferredRender: false,
           loading: false,
+          saving: false,
+          lineEnding: '\n',
           data: null,
           mdMode: 'preview', // 'preview' | 'source'
           imgScaleMode: 'fit', // 'fit' | '1:1'
@@ -3115,7 +3082,6 @@
       const btnHome = $('btn-home');
       const topProgressEl = $('top-progress');
       const pathBreadcrumbs = $('path-breadcrumbs');
-      const pathEditBtn = $('path-edit-btn');
       const pathInput = $('path-input');
       const btnPinDir = $('btn-pin-dir');
       const filterInput = $('filter-input');
@@ -3190,14 +3156,27 @@
 
       const uiAbort = new AbortController();
       const { signal } = uiAbort;
+      const darkMediaQuery = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+      const syncSystemTheme = () => {
+        document.documentElement.dataset.sysTheme = darkMediaQuery?.matches ? 'dark' : 'light';
+      };
+      syncSystemTheme();
+      darkMediaQuery?.addEventListener?.('change', syncSystemTheme, { signal });
+
       let rpcCounter = 1;
       const pendingRequests = new Map();
       let toastTimer = null;
       let filterDebounceTimer = null;
-      let countdownRaf = null;
+      let countdownTimer = null;
       let countdownLastSec = -1;
       let filterComposing = false;
       let bridgeSwitchApplied = false;
+      let mainBridgeWin = null;
+      let mainBridgeOrigin = '';
+      let mainBridgeSessionId = '';
+      let topProgressCount = 0;
+      let pinningInFlight = false;
+      const bootstrapTimers = [];
       let lastSyncedLiveQuotaSig = '';
       let lastSyncedLiveQuotaAt = 0;
       let latestBridgeQuota = null;
@@ -3410,7 +3389,6 @@
       let navigationIntent = {
         tab: 'browse',
         source: 'default', // 'default' | 'tool-result' | 'user' | 'external-switch'
-        priority: 0,
         expiresAt: 0
       };
 
@@ -3418,16 +3396,25 @@
         return navigationIntent.source === 'external-switch' && Date.now() < navigationIntent.expiresAt;
       }
 
-      function postBridgeToMain(payload, explicitTargetWin = null, explicitOrigin = '*') {
-        const targetWin = explicitTargetWin || (
+      function postBridgeToMain(payload, explicitTargetWin = null, explicitOrigin = '') {
+        const targetWin = explicitTargetWin || mainBridgeWin || (
           (window.top && window.top !== window)
             ? window.top
             : (window.parent && window.parent !== window ? window.parent : null)
         );
         if (!targetWin) return;
-        const safeOrigin = explicitOrigin && explicitOrigin !== 'null' ? explicitOrigin : '*';
+        const safeOrigin = explicitOrigin && explicitOrigin !== '*' && explicitOrigin !== 'null'
+          ? explicitOrigin
+          : (mainBridgeOrigin && mainBridgeOrigin !== 'null' ? mainBridgeOrigin : '*');
+        const msgPayload = {
+          __agPrismBridge: 'v1',
+          source: 'prism-files',
+          appInstanceId,
+          ...(mainBridgeSessionId ? { sessionId: mainBridgeSessionId } : {}),
+          ...payload
+        };
         try {
-          targetWin.postMessage({ __agPrismBridge: 'v1', source: 'prism-files', appInstanceId, ...payload }, safeOrigin);
+          targetWin.postMessage(msgPayload, safeOrigin);
         } catch {}
       }
 
@@ -3459,9 +3446,10 @@
         });
       }
 
-      function navigateFromExternalBridge(tab, { intentId = '', requestId = '', sessionId = '', focus = true, replyWin = null, replyOrigin = '*' } = {}) {
+      function navigateFromExternalBridge(tab, { intentId = '', requestId = '', sessionId = '', focus = true, replyWin = null, replyOrigin = '' } = {}) {
+        const ackSessionId = String(sessionId || mainBridgeSessionId || '');
         if (!['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'].includes(tab)) {
-          postBridgeToMain({ type: 'ack', intentId, requestId, sessionId, ok: false, error: 'invalid-tab' }, replyWin, replyOrigin);
+          postBridgeToMain({ type: 'ack', intentId, requestId, sessionId: ackSessionId, ok: false, error: 'invalid-tab' }, replyWin, replyOrigin);
           return;
         }
         const alreadyHandled = Boolean(intentId && processedIntentIds.has(intentId));
@@ -3476,7 +3464,6 @@
         navigationIntent = {
           tab,
           source: 'external-switch',
-          priority: 100,
           expiresAt: Date.now() + 10000
         };
         switchTab(tab, { persist: false, fromExternal: true });
@@ -3487,7 +3474,7 @@
           type: 'ack',
           intentId,
           requestId,
-          sessionId,
+          sessionId: ackSessionId,
           ok: true,
           activeTab: appState.activeTab,
           focused: Boolean(focus),
@@ -3496,6 +3483,7 @@
       }
 
       function broadcastAccountSummary(d) {
+        if (!mainBridgeSessionId || !mainBridgeWin) return;
         if (!d || typeof d !== 'object') return;
         const accs = Array.isArray(d.accounts) ? d.accounts : [];
         const activeAcc = accs.find((a) => a.isCurrentActive) || accs.find((a) => a.id === d.activeCredential?.matchedAccountId) || null;
@@ -3564,6 +3552,12 @@
             if (targetAcc && res.effectiveQuota) {
               targetAcc.effectiveQuota = res.effectiveQuota;
               targetAcc.lastQuota = res.effectiveQuota;
+              if (res.poolHealth && typeof res.poolHealth === 'object') {
+                targetAcc.poolHealth = res.poolHealth;
+              } else {
+                delete targetAcc.poolHealth;
+              }
+              delete targetAcc.standbyScore;
               if (appState.activeTab === 'accounts') renderAccounts();
             }
           }
@@ -3572,7 +3566,8 @@
 
       function setTopProgress(active) {
         if (!topProgressEl) return;
-        topProgressEl.dataset.active = active ? '1' : '0';
+        topProgressCount = Math.max(0, topProgressCount + (active ? 1 : -1));
+        topProgressEl.dataset.active = topProgressCount > 0 ? '1' : '0';
       }
 
       window.addEventListener('pagehide', () => {
@@ -3581,7 +3576,9 @@
         if (arrowPreviewTimer) clearTimeout(arrowPreviewTimer);
         if (focusFlashTimer) clearTimeout(focusFlashTimer);
         if (quotaWaitRetryTimer) clearTimeout(quotaWaitRetryTimer);
-        if (countdownRaf) cancelAnimationFrame(countdownRaf);
+        if (countdownTimer) clearInterval(countdownTimer);
+        for (const t of bootstrapTimers) clearTimeout(t);
+        bootstrapTimers.length = 0;
         for (const t of activeFeedbackTimers) clearTimeout(t);
         activeFeedbackTimers.clear();
         for (const pending of pendingRequests.values()) {
@@ -3636,6 +3633,15 @@
         '--sidebar-border': '--p-border'
       };
 
+      function isSafeCssVarValue(raw) {
+        if (typeof raw !== 'string') return false;
+        const v = raw.trim();
+        if (!v || v.length > 256) return false;
+        if (/[;{}]/.test(v)) return false;
+        if (/(?:url|expression)\s*\(/i.test(v)) return false;
+        return true;
+      }
+
       function applyHostContext(ctx) {
         if (!ctx || typeof ctx !== 'object') return;
         appState.hostContext = { ...appState.hostContext, ...ctx };
@@ -3647,10 +3653,11 @@
         const vars = ctx.styles && ctx.styles.variables;
         if (vars && typeof vars === 'object') {
           for (const [k, v] of Object.entries(vars)) {
-            if (typeof k === 'string' && k.startsWith('--') && typeof v === 'string' && v.trim()) {
-              document.documentElement.style.setProperty(k, v);
+            if (typeof k === 'string' && /^--[a-zA-Z0-9_-]{1,64}$/.test(k) && isSafeCssVarValue(v)) {
+              const safeVal = v.trim();
+              document.documentElement.style.setProperty(k, safeVal);
               const mapped = HOST_VAR_BRIDGE[k];
-              if (mapped) document.documentElement.style.setProperty(mapped, v);
+              if (mapped) document.documentElement.style.setProperty(mapped, safeVal);
             }
           }
         }
@@ -3678,8 +3685,8 @@
         });
       }
 
-      async function callServerTool(name, args = {}) {
-        const res = await sendRequest('tools/call', { name, arguments: args }, 20000);
+      async function callServerTool(name, args = {}, timeoutMs = 20000) {
+        const res = await sendRequest('tools/call', { name, arguments: args }, timeoutMs);
         if (res && res.isError) {
           const errText = res.structuredContent?.error || res.content?.find?.((c) => c.type === 'text')?.text || '工具调用失败';
           throw new Error(errText);
@@ -3824,19 +3831,25 @@
       }
 
       async function loadOpenTargets() {
-        if (appState.openTargets.loaded || appState.openTargets.loading) return appState.openTargets.items;
+        if (appState.openTargets.loaded) return appState.openTargets.items;
+        if (appState.openTargets.inFlightPromise) return appState.openTargets.inFlightPromise;
         appState.openTargets.loading = true;
-        try {
-          const res = await callServerTool('list_open_targets', {});
-          appState.openTargets.items = Array.isArray(res?.targets) ? res.targets : [];
-          appState.openTargets.loaded = true;
-        } catch {
-          appState.openTargets.items = [];
-        } finally {
-          appState.openTargets.loading = false;
-          renderPreviewHeaderOnly();
-        }
-        return appState.openTargets.items;
+        const task = (async () => {
+          try {
+            const res = await callServerTool('list_open_targets', {});
+            appState.openTargets.items = Array.isArray(res?.targets) ? res.targets : [];
+            appState.openTargets.loaded = true;
+          } catch {
+            appState.openTargets.items = [];
+          } finally {
+            appState.openTargets.loading = false;
+            appState.openTargets.inFlightPromise = null;
+            renderPreviewHeaderOnly();
+          }
+          return appState.openTargets.items;
+        })();
+        appState.openTargets.inFlightPromise = task;
+        return task;
       }
 
       function closeOpenWithMenu() {
@@ -3889,18 +3902,19 @@
           closeOpenWithMenu();
           return;
         }
+        appState.openTargets.menuOpen = true;
+        btnPreviewOpenWith.setAttribute('aria-expanded', 'true');
+        previewOpenWithMenu.hidden = false;
         if (!appState.openTargets.loaded) {
-          appState.openTargets.menuOpen = true;
-          btnPreviewOpenWith.setAttribute('aria-expanded', 'true');
-          previewOpenWithMenu.hidden = false;
+          const pending = loadOpenTargets();
           renderOpenWithMenu();
           positionPreviewOpenWithMenu();
-          await loadOpenTargets();
+          await pending;
           if (!appState.openTargets.menuOpen) return;
-        } else {
-          appState.openTargets.menuOpen = true;
-          btnPreviewOpenWith.setAttribute('aria-expanded', 'true');
-          previewOpenWithMenu.hidden = false;
+          if (!appState.preview.visible || btnPreviewOpenWith.hidden) {
+            closeOpenWithMenu();
+            return;
+          }
         }
         renderOpenWithMenu();
         positionPreviewOpenWithMenu();
@@ -4226,13 +4240,21 @@
           !appState.browse.truncated &&
           Array.isArray(appState.browse.rawEntries)
         ) {
+          ++appState.browse.seq;
+          appState.browse.loading = false;
           appState.browse.query = cleanQuery;
           appState.browse.entries = filterEntriesLocal(appState.browse.rawEntries, cleanQuery);
           renderBrowse();
           return;
         }
 
+        if (force) {
+          appState.browse.rawDir = '';
+          appState.browse.rawEntries = null;
+        }
+
         const seq = ++appState.browse.seq;
+        appState.browse.query = cleanQuery;
         appState.browse.loading = true;
         setTopProgress(true);
         if (!appState.browse.entries.length) renderBrowse();
@@ -4244,7 +4266,6 @@
           });
           if (seq !== appState.browse.seq) return;
           appState.browse.loading = false;
-          setTopProgress(false);
           if (res) {
             appState.browse.ok = res.ok !== false;
             appState.browse.error = res.error || '';
@@ -4257,7 +4278,7 @@
             if (!cleanQuery && !res.truncated && res.ok !== false) {
               appState.browse.rawDir = appState.browse.dir;
               appState.browse.rawEntries = entries;
-            } else if (cleanQuery === '' && res.truncated) {
+            } else if (appState.browse.rawDir !== appState.browse.dir || res.truncated || res.ok === false) {
               appState.browse.rawDir = '';
               appState.browse.rawEntries = null;
             }
@@ -4273,10 +4294,13 @@
         } catch (err) {
           if (seq !== appState.browse.seq) return;
           appState.browse.loading = false;
-          setTopProgress(false);
           appState.browse.ok = false;
           appState.browse.error = err?.message || '读取目录失败';
+          appState.browse.rawDir = '';
+          appState.browse.rawEntries = null;
           renderBrowse();
+        } finally {
+          setTopProgress(false);
         }
       }
 
@@ -4352,15 +4376,24 @@
         }
       }
 
+      function normalizeNewlines(text) {
+        return String(text ?? '').replace(/\r\n/g, '\n');
+      }
+
       async function togglePinPath(targetPath) {
-        if (!targetPath) return;
-        const exists = appState.prefs.pinnedPaths.includes(targetPath);
-        const next = exists
-          ? appState.prefs.pinnedPaths.filter((p) => p !== targetPath)
-          : [targetPath, ...appState.prefs.pinnedPaths].slice(0, 30);
-        const ok = await persistPrefs({ pinnedPaths: next });
-        if (ok) {
-          showToast(exists ? '已从收藏夹移除' : '已添加到收藏夹');
+        if (!targetPath || pinningInFlight) return;
+        pinningInFlight = true;
+        try {
+          const exists = appState.prefs.pinnedPaths.includes(targetPath);
+          const next = exists
+            ? appState.prefs.pinnedPaths.filter((p) => p !== targetPath)
+            : [targetPath, ...appState.prefs.pinnedPaths].slice(0, 30);
+          const ok = await persistPrefs({ pinnedPaths: next });
+          if (ok) {
+            showToast(exists ? '已从收藏夹移除' : '已添加到收藏夹');
+          }
+        } finally {
+          pinningInFlight = false;
         }
       }
 
@@ -4392,8 +4425,10 @@
         }
         appState.preview.collapsed = false;
         appState.preview.loading = true;
+        appState.preview.saving = false;
         appState.preview.editing = false;
         appState.preview.dirty = false;
+        appState.preview.lineEnding = '\n';
         appState.preview.conflictMsg = '';
         appState.preview.pendingSwitchPath = '';
         appState.preview.lineSelStart = 0;
@@ -4404,9 +4439,15 @@
           const res = await callServerTool('read_file_preview', { path: filePath });
           if (seq !== appState.preview.seq) return;
           appState.preview.loading = false;
+          const rawText = typeof res?.text === 'string' ? res.text : '';
+          appState.preview.lineEnding = /\r\n/.test(rawText) ? '\r\n' : '\n';
+          const normText = normalizeNewlines(rawText);
+          if (res && typeof res.text === 'string') {
+            res.text = normText;
+          }
           appState.preview.data = res || { ok: false, error: '无法读取文件内容', path: filePath };
           appState.preview.mdMode = 'preview';
-          appState.preview.draft = typeof res?.text === 'string' ? res.text : '';
+          appState.preview.draft = normText;
           renderPreviewDrawer();
         } catch (err) {
           if (seq !== appState.preview.seq) return;
@@ -4418,44 +4459,71 @@
 
       async function saveEditedFile() {
         const prev = appState.preview.data;
-        if (!appState.preview.editing || !prev?.path) return;
+        if (!appState.preview.editing || !prev?.path || appState.preview.saving) return false;
+        const saveSeq = appState.preview.seq;
+        const sentDraft = normalizeNewlines(appState.preview.draft);
+        const payloadContent = appState.preview.lineEnding === '\r\n'
+          ? sentDraft.replace(/\n/g, '\r\n')
+          : sentDraft;
+        appState.preview.saving = true;
+        renderPreviewHeaderOnly();
         try {
           const res = await callServerTool('save_file_content', {
             path: prev.path,
-            content: appState.preview.draft,
+            content: payloadContent,
             expectedMtimeMs: prev.mtimeMs,
             baseHash: prev.baseHash || ''
           });
+          if (appState.preview.seq !== saveSeq || appState.preview.data !== prev) return false;
           if (res && res.ok) {
-            prev.text = appState.preview.draft;
+            prev.text = sentDraft;
             prev.mtimeMs = res.mtimeMs;
             if (typeof res.baseHash === 'string') {
               prev.baseHash = res.baseHash;
             }
             prev.size = res.size;
             prev.sizeText = res.sizeText;
-            appState.preview.dirty = false;
+            const stillClean = normalizeNewlines(appState.preview.draft) === sentDraft;
+            appState.preview.dirty = !stillClean;
             appState.preview.conflictMsg = '';
-            showToast(`已保存（${res.sizeText}）`);
-            // Update entry size in current directory listing if present
-            const entry = appState.browse.entries.find((e) => e.path === prev.path);
-            if (entry) {
-              entry.size = res.size;
-              entry.sizeText = res.sizeText;
-              entry.mtimeMs = res.mtimeMs;
-              renderBrowse();
+            showToast(stillClean ? `已保存（${res.sizeText}）` : `已保存（${res.sizeText}），当前仍有未保存的新输入`);
+            // Update entry size in current directory listing without rebuilding editor textarea
+            const patchEntry = (list) => {
+              const hit = Array.isArray(list) ? list.find((e) => e.path === prev.path) : null;
+              if (!hit) return false;
+              hit.size = res.size;
+              hit.sizeText = res.sizeText;
+              hit.mtimeMs = res.mtimeMs;
+              return true;
+            };
+            const hitBrowse = patchEntry(appState.browse.entries);
+            patchEntry(appState.browse.rawEntries);
+            if (hitBrowse) {
+              const rowIdx = appState.browse.entries.findIndex((e) => e.path === prev.path);
+              const sizeEl = rowIdx >= 0
+                ? browseListWrap.querySelector(`.list-row[data-list="browse"][data-index="${rowIdx}"] .row-size`)
+                : null;
+              if (sizeEl) {
+                sizeEl.textContent = res.sizeText || '';
+              } else {
+                renderBrowse();
+              }
             }
             const nextPath = appState.preview.pendingSwitchPath;
-            if (nextPath) {
+            if (nextPath && stillClean) {
+              appState.preview.saving = false;
               appState.preview.editing = false;
               appState.preview.pendingSwitchPath = '';
               await loadPreview(nextPath, { force: true });
             } else {
-              renderPreviewDrawer();
+              appState.preview.saving = false;
+              renderPreviewHeaderOnly();
+              renderPreviewBanner();
             }
             return true;
           }
           if (res?.conflict) {
+            appState.preview.pendingSwitchPath = '';
             appState.preview.conflictMsg = res.error || '文件已在外部发生变更，请刷新后再保存';
             renderPreviewBanner();
             showToast(appState.preview.conflictMsg, true);
@@ -4464,8 +4532,15 @@
           showToast(res?.error || '保存失败', true);
           return false;
         } catch (err) {
-          showToast(err?.message || '保存失败', true);
+          if (appState.preview.seq === saveSeq && appState.preview.data === prev) {
+            showToast(err?.message || '保存失败', true);
+          }
           return false;
+        } finally {
+          if (appState.preview.seq === saveSeq && appState.preview.data === prev && appState.preview.saving) {
+            appState.preview.saving = false;
+            renderPreviewHeaderOnly();
+          }
         }
       }
 
@@ -4559,7 +4634,7 @@
         closeOpenWithMenu();
         appState.activeTab = tab;
         if (!fromExternal && persist) {
-          navigationIntent = { tab, source: 'user', priority: 80, expiresAt: 0 };
+          navigationIntent = { tab, source: 'user', expiresAt: 0 };
         }
         if (persist && RESTORABLE_TABS.includes(tab) && appState.prefs.lastTab !== tab) {
           appState.prefs.lastTab = tab;
@@ -4800,7 +4875,7 @@
         }
         // Keep breadcrumb compact on narrow widths while still preserving root + recent parent segments
         const displaySegs = segs.length > 5
-          ? [segs[0], { label: '…', path: segs[segs.length - 4].path, isEllipsis: true }, ...segs.slice(-3)]
+          ? [segs[0], { label: '…', path: segs[segs.length - 4].path }, ...segs.slice(-3)]
           : segs;
         const html = displaySegs.map((s, idx) => {
           const isLast = idx === displaySegs.length - 1;
@@ -5186,6 +5261,8 @@
         const canEdit = Boolean(data?.ok && data.editable === true);
         btnPreviewEdit.hidden = !canEdit || pv.editing;
         btnPreviewSave.hidden = !pv.editing;
+        btnPreviewSave.disabled = Boolean(pv.saving);
+        btnPreviewSave.textContent = pv.saving ? '保存中…' : '保存';
         btnPreviewCancel.hidden = !pv.editing;
 
         const wide = isWideSplitActive();
@@ -5325,8 +5402,8 @@
           ta.spellcheck = false;
           ta.value = pv.draft;
           ta.addEventListener('input', () => {
-            pv.draft = ta.value;
-            const nextDirty = pv.draft !== (data.text || '');
+            pv.draft = normalizeNewlines(ta.value);
+            const nextDirty = pv.draft !== normalizeNewlines(data.text || '');
             if (nextDirty !== pv.dirty) {
               pv.dirty = nextDirty;
               renderPreviewHeaderOnly();
@@ -5420,20 +5497,31 @@
           return;
         }
 
-        // Source / plain text view with clickable line numbers (click line, Shift+click range -> @path#L10-L25)
+        // Source / plain text view: use lightweight plain gutter over 2000 lines; clickable line numbers <= 2000 lines
+        const MAX_INTERACTIVE_GUTTER_LINES = 2000;
         const text = String(data.text ?? '');
         const lineCount = text === '' ? 1 : text.split('\n').length;
-        const range = getLineRangeSelection();
-        const nums = [];
-        for (let n = 1; n <= lineCount; n++) {
-          const isSel = Boolean(range && n >= range.start && n <= range.end);
-          nums.push(`<span class="code-ln${isSel ? ' is-selected' : ''}" data-line="${n}" title="点击选中行号（Shift+点击选区间）">${n}</span>`);
+        if (lineCount > MAX_INTERACTIVE_GUTTER_LINES) {
+          const plainNums = [];
+          for (let n = 1; n <= lineCount; n++) plainNums.push(n);
+          previewBody.innerHTML =
+            `<div class="code-view">` +
+              `<pre class="code-gutter-plain" aria-hidden="true">${plainNums.join('\n')}</pre>` +
+              `<pre class="code-content"><code>${escapeHtml(text)}</code></pre>` +
+            `</div>`;
+        } else {
+          const range = getLineRangeSelection();
+          const nums = [];
+          for (let n = 1; n <= lineCount; n++) {
+            const isSel = Boolean(range && n >= range.start && n <= range.end);
+            nums.push(`<span class="code-ln${isSel ? ' is-selected' : ''}" data-line="${n}" title="点击选中行号（Shift+点击选区间）">${n}</span>`);
+          }
+          previewBody.innerHTML =
+            `<div class="code-view">` +
+              `<div class="code-gutter" aria-label="代码行号（点击或 Shift+点击选中引用区间）">${nums.join('')}</div>` +
+              `<pre class="code-content"><code>${escapeHtml(text)}</code></pre>` +
+            `</div>`;
         }
-        previewBody.innerHTML =
-          `<div class="code-view">` +
-            `<div class="code-gutter" aria-label="代码行号（点击或 Shift+点击选中引用区间）">${nums.join('')}</div>` +
-            `<pre class="code-content"><code>${escapeHtml(text)}</code></pre>` +
-          `</div>`;
       }
 
       function renderAll() {
@@ -5463,16 +5551,18 @@
           appState.models.loading = false;
           if (prof?.remoteSync) appState.accounts.remoteSync = prof.remoteSync;
           if (prof?.memoryStorage) appState.accounts.memoryStorage = prof.memoryStorage;
-          if (!silent) setTopProgress(false);
         } catch (err) {
           if (seq !== appState.models.seq) return;
           appState.models.loading = false;
           if (!silent) {
-            setTopProgress(false);
             appState.models.error = err?.message || '读取模型中枢配置失败';
           }
+        } finally {
+          if (!silent) setTopProgress(false);
         }
-        renderModels();
+        if (seq === appState.models.seq) {
+          renderModels();
+        }
       }
 
       function buildZeroSecretAiSetupPrompt(profilePath) {
@@ -5876,7 +5966,7 @@
               const spd = m.lastSpeed;
               const speedHtml = spd
                 ? (spd.ok
-                  ? `<span class="pill" title="测速于 ${escapeHtml(spd.checkedAt || '')}">TTFT ${spd.ttftMs ?? '-'}ms${spd.tokPerSec ? ` · ${spd.tokPerSec} tok/s` : ''}</span>`
+                  ? `<span class="pill" title="测速于 ${escapeHtml(spd.checkedAt || '')}">TTFT ${escapeHtml(spd.ttftMs ?? '-')}ms${spd.tokPerSec ? ` · ${escapeHtml(spd.tokPerSec)} tok/s` : ''}</span>`
                   : `<span class="pill pill-danger" title="${escapeHtml(spd.error || '')}">测速异常</span>`)
                 : '';
               const fbText = m.fallbackModelId ? ` · 降级 → <code>${escapeHtml(m.fallbackModelId)}</code>` : '';
@@ -6036,7 +6126,6 @@
             appState.accounts.openSections.guide = true;
           }
           broadcastAccountSummary(st);
-          if (!silent) setTopProgress(false);
           if (latestBridgeQuota) {
             const curOnline = (st?.accounts || []).find((a) => a.isCurrentActive);
             if (curOnline && !curOnline.effectiveQuota) {
@@ -6048,22 +6137,48 @@
           if (seq !== appState.accounts.seq) return;
           appState.accounts.loading = false;
           if (!silent) {
-            setTopProgress(false);
             appState.accounts.error = err?.message || '读取账号接力状态失败';
           }
+        } finally {
+          if (!silent) setTopProgress(false);
         }
-        renderAccounts();
+        if (seq === appState.accounts.seq) {
+          renderAccounts();
+        }
+      }
+
+      function clearCountdownTimer() {
+        if (countdownTimer) {
+          clearInterval(countdownTimer);
+          countdownTimer = null;
+        }
+      }
+
+      function startCountdownTimer() {
+        clearCountdownTimer();
+        countdownTimer = setInterval(tickCountdownFrame, 80);
       }
 
       function stopCountdown(clearState = true) {
-        if (countdownRaf) {
-          cancelAnimationFrame(countdownRaf);
-          countdownRaf = null;
-        }
+        clearCountdownTimer();
         countdownLastSec = -1;
         if (clearState) {
           appState.accounts.countdown = null;
           renderAccounts();
+        }
+      }
+
+      function pauseCountdownForBackgroundFreeze(refMs) {
+        const cd = appState.accounts.countdown;
+        if (!cd || cd.paused || appState.accounts.switching) return;
+        clearCountdownTimer();
+        const baseNow = Number.isFinite(refMs) && refMs > 0 ? refMs : Date.now();
+        cd.paused = true;
+        cd.hiddenAtMs = 0;
+        cd.pausedRemainMs = Math.max(1000, Math.min(cd.totalMs, (cd.endAtMs || baseNow) - baseNow));
+        renderAccounts();
+        if (!document.hidden) {
+          showToast('检测到窗口后台挂起，已自动暂停切号倒计时');
         }
       }
 
@@ -6088,6 +6203,7 @@
         if (appState.accounts.countdown) appState.accounts.countdown.paused = true;
         setTopProgress(true);
         renderAccounts();
+        let switchedOk = false;
         try {
           const res = await callServerTool('accounts_switch', {
             targetId,
@@ -6098,20 +6214,26 @@
             handoff: { cwd: appState.browse.dir || appState.homeDir || '' }
           });
           appState.accounts.countdown = null;
-          appState.accounts.switching = false;
-          setTopProgress(false);
           if (res && res.ok) {
+            switchedOk = true;
             appState.accounts.lastSwitchResult = res;
+            if (res.relaunch?.ok && res.relaunch?.scheduled) {
+              appState.accounts.relaunchScheduled = true;
+            }
             showToast(res.message || '账号凭据已安全切换');
-            await loadAccountsTab({ forceRefresh: false });
           } else {
             showToast(formatAccountErrorMessage(res?.error, '切换失败'), true);
-            renderAccounts();
           }
         } catch (err) {
+          appState.accounts.countdown = null;
+          showToast(formatAccountErrorMessage(err, '切换失败'), true);
+        } finally {
           appState.accounts.switching = false;
           setTopProgress(false);
-          showToast(formatAccountErrorMessage(err, '切换失败'), true);
+        }
+        if (switchedOk) {
+          await loadAccountsTab({ forceRefresh: false });
+        } else {
           renderAccounts();
         }
       }
@@ -6123,10 +6245,24 @@
           return;
         }
         if (cd.paused || appState.accounts.switching) {
-          countdownRaf = null;
+          clearCountdownTimer();
           return;
         }
-        const remainMs = Math.max(0, cd.endAtMs - Date.now());
+        const now = Date.now();
+        if (document.hidden) {
+          if (!cd.hiddenAtMs) cd.hiddenAtMs = now;
+          if (now - cd.hiddenAtMs > 1500) {
+            pauseCountdownForBackgroundFreeze(cd.hiddenAtMs);
+          }
+          return;
+        }
+        if ((cd.hiddenAtMs && now - cd.hiddenAtMs > 1500) || (cd.lastTickAtMs && now - cd.lastTickAtMs > 1500)) {
+          pauseCountdownForBackgroundFreeze(cd.hiddenAtMs || cd.lastTickAtMs);
+          return;
+        }
+        cd.hiddenAtMs = 0;
+        cd.lastTickAtMs = now;
+        const remainMs = Math.max(0, cd.endAtMs - now);
         if (remainMs <= 0) {
           executeAccountSwitchNow(cd.targetId, cd.saveSnapshot, cd.autoRelaunch, cd.autoCaptureUncaptured !== false);
           return;
@@ -6144,22 +6280,39 @@
             ? `⏱ 即将切换并重启至 ${cd.alias} (${remainSec}s)`
             : `⏱ 即将切换至 ${cd.alias} (${remainSec}s)`;
         }
-        countdownRaf = requestAnimationFrame(tickCountdownFrame);
       }
+
+      document.addEventListener('visibilitychange', () => {
+        const cd = appState.accounts.countdown;
+        if (!cd || cd.paused || appState.accounts.switching) return;
+        const now = Date.now();
+        if (document.hidden) {
+          cd.hiddenAtMs = now;
+          return;
+        }
+        if ((cd.hiddenAtMs && now - cd.hiddenAtMs > 1500) || (cd.lastTickAtMs && now - cd.lastTickAtMs > 1500)) {
+          pauseCountdownForBackgroundFreeze(cd.hiddenAtMs || cd.lastTickAtMs);
+        } else {
+          cd.hiddenAtMs = 0;
+          cd.lastTickAtMs = now;
+        }
+      }, { signal });
 
       function startSwitchCountdown(account) {
         if (!account) return;
         stopCountdown(false);
         const totalSec = Math.max(3, Math.min(15, Number(appState.accounts.data?.countdownSeconds) || 5));
         const totalMs = totalSec * 1000;
+        const now = Date.now();
         const autoRelaunch = appState.accounts.data?.autoRelaunchAfterSwitch !== false;
         appState.accounts.countdown = {
           targetId: account.id,
           email: account.email,
           alias: account.alias || account.email,
-          totalSec,
           totalMs,
-          endAtMs: Date.now() + totalMs,
+          endAtMs: now + totalMs,
+          lastTickAtMs: now,
+          hiddenAtMs: 0,
           pausedRemainMs: totalMs,
           paused: false,
           saveSnapshot: true,
@@ -6168,7 +6321,7 @@
         };
         countdownLastSec = totalSec;
         renderAccounts();
-        countdownRaf = requestAnimationFrame(tickCountdownFrame);
+        startCountdownTimer();
       }
 
       function renderAccounts() {
@@ -6220,6 +6373,15 @@
           return;
         }
 
+        const renderRelaunchBtn = (label, extraClass = '') => {
+          const busy = Boolean(st.relaunchScheduled || st.relaunching);
+          const text = st.relaunchScheduled
+            ? '⏳ 已调度重启…'
+            : (st.relaunching ? '⏳ 正在调度重启…' : label);
+          const cls = extraClass ? `mini-btn is-primary ${extraClass}` : 'mini-btn is-primary';
+          return `<button type="button" class="${cls}" data-acc-action="relaunch-now" ${busy ? 'disabled' : ''}>${escapeHtml(text)}</button>`;
+        };
+
         const mainParts = [];
         const sideParts = [];
         if (!d || !d.enabled) {
@@ -6261,40 +6423,76 @@
           const accs = Array.isArray(d.accounts) ? d.accounts : [];
 
           const evalWindowPctClient = (pctRaw, resetIso, resetPassedFlag) => {
-            const passedByClock = Boolean(resetIso && Number.isFinite(Date.parse(resetIso)) && Date.parse(resetIso) <= Date.now());
-            if (resetPassedFlag || passedByClock) return { pct: 100, passed: true };
             if (pctRaw === undefined || pctRaw === null || typeof pctRaw === 'boolean' || (typeof pctRaw === 'string' && pctRaw.trim() === '')) {
               return { pct: null, passed: false };
             }
             const num = Number(pctRaw);
-            return Number.isFinite(num) ? { pct: Math.max(0, Math.min(100, num)), passed: false } : { pct: null, passed: false };
+            if (!Number.isFinite(num)) {
+              return { pct: null, passed: false };
+            }
+            const passedByClock = Boolean(resetIso && Number.isFinite(Date.parse(resetIso)) && Date.parse(resetIso) <= Date.now());
+            if (resetPassedFlag || passedByClock) return { pct: 100, passed: true };
+            return { pct: Math.max(0, Math.min(100, num)), passed: false };
+          };
+
+          const hasStalePassedReset = (eff) => {
+            if (!eff || typeof eff !== 'object') return false;
+            const nowMs = Date.now();
+            const isStaleWin = (rst, passed) => {
+              if (passed || !rst) return false;
+              const ts = Date.parse(rst);
+              return Number.isFinite(ts) && ts <= nowMs;
+            };
+            if (isStaleWin(eff.reset5hAt, eff.reset5hPassed) || isStaleWin(eff.reset7dAt, eff.reset7dPassed)) {
+              return true;
+            }
+            const fams = eff.families && typeof eff.families === 'object' ? eff.families : null;
+            if (fams) {
+              for (const fk of ['gemini', 'claude', 'other']) {
+                const fam = fams[fk];
+                if (!fam || typeof fam !== 'object') continue;
+                if (isStaleWin(fam.reset5hAt, fam.reset5hPassed) || isStaleWin(fam.reset7dAt, fam.reset7dPassed)) {
+                  return true;
+                }
+              }
+            }
+            return false;
           };
 
           const evalAccountPoolHealthClient = (acc) => {
             const eff = acc?.effectiveQuota;
-            if (!eff || typeof eff !== 'object') return { hasAny: false, minPoolPct: null, anyExhausted: false };
+            const ph = acc?.poolHealth;
+            if (ph && typeof ph === 'object' && typeof ph.hasKnown === 'boolean' && !hasStalePassedReset(eff)) {
+              const minPoolPct = typeof ph.minPct === 'number' && Number.isFinite(ph.minPct) ? ph.minPct : null;
+              const avgPoolPct = typeof ph.avgPct === 'number' && Number.isFinite(ph.avgPct) ? ph.avgPct : null;
+              const anyExhausted = typeof ph.anyExhausted === 'boolean'
+                ? ph.anyExhausted
+                : Boolean(ph.hasKnown && minPoolPct !== null && minPoolPct < 20);
+              return { hasAny: Boolean(ph.hasKnown), minPoolPct, avgPoolPct, anyExhausted };
+            }
+            if (!eff || typeof eff !== 'object') return { hasAny: false, minPoolPct: null, avgPoolPct: null, anyExhausted: false };
             const samples = [];
             const pushWin = (p, rst, pass) => {
               const w = evalWindowPctClient(p, rst, pass);
               if (w.pct !== null) samples.push(w.pct);
             };
-            const fams = eff.families;
-            if (fams && (fams.gemini || fams.claude)) {
-              if (fams.gemini) {
-                pushWin(fams.gemini.pct5h, fams.gemini.reset5hAt || eff.reset5hAt, fams.gemini.reset5hPassed);
-                pushWin(fams.gemini.pct7d, fams.gemini.reset7dAt || eff.reset7dAt, fams.gemini.reset7dPassed);
+            const fams = eff.families && typeof eff.families === 'object' ? eff.families : null;
+            if (fams && (fams.gemini || fams.claude || fams.other)) {
+              for (const fk of ['gemini', 'claude', 'other']) {
+                const fam = fams[fk];
+                if (!fam) continue;
+                pushWin(fam.pct5h, fam.reset5hAt || eff.reset5hAt, fam.reset5hPassed);
+                pushWin(fam.pct7d, fam.reset7dAt || eff.reset7dAt, fam.reset7dPassed);
               }
-              if (fams.claude) {
-                pushWin(fams.claude.pct5h, fams.claude.reset5hAt || eff.reset5hAt, fams.claude.reset5hPassed);
-                pushWin(fams.claude.pct7d, fams.claude.reset7dAt || eff.reset7dAt, fams.claude.reset7dPassed);
-              }
-            } else {
+            }
+            if (!samples.length) {
               pushWin(eff.effective5hPct, eff.reset5hAt, eff.reset5hPassed);
               pushWin(eff.effective7dPct, eff.reset7dAt, eff.reset7dPassed);
             }
-            if (!samples.length) return { hasAny: false, minPoolPct: null, anyExhausted: false };
+            if (!samples.length) return { hasAny: false, minPoolPct: null, avgPoolPct: null, anyExhausted: false };
             const minPoolPct = Math.min(...samples);
-            return { hasAny: true, minPoolPct, anyExhausted: minPoolPct < 20 };
+            const avgPoolPct = samples.reduce((sum, x) => sum + x, 0) / samples.length;
+            return { hasAny: true, minPoolPct, avgPoolPct, anyExhausted: minPoolPct < 20 };
           };
 
           if (d.activeCredential?.unregistered && d.activeCredential?.email) {
@@ -6307,7 +6505,11 @@
             );
           }
           const priRecAcc = rec.primaryRecovery?.accountId ? accs.find((x) => x.id === rec.primaryRecovery.accountId) : null;
-          if (rec.primaryRecovery && (!priRecAcc || !evalAccountPoolHealthClient(priRecAcc).anyExhausted) && !isGuideDismissed('guide:accounts-primary-rec:v1')) {
+          if (
+            rec.primaryRecovery &&
+            (!priRecAcc || (priRecAcc.vaultHasBackup !== false && !evalAccountPoolHealthClient(priRecAcc).anyExhausted)) &&
+            !isGuideDismissed('guide:accounts-primary-rec:v1')
+          ) {
             mainParts.push(
               `<article class="relay-card is-accent">` +
                 `<div class="relay-card-head"><span class="relay-title">💡 主号恢复提醒</span>` +
@@ -6361,12 +6563,15 @@
           if (st.lastSwitchResult) {
             const sw = st.lastSwitchResult;
             const autoStarted = Boolean(sw.relaunch?.ok && sw.relaunch?.scheduled);
+            const relaunchBtnHtml = !autoStarted
+              ? renderRelaunchBtn('🚀 立即重启 Antigravity 生效')
+              : '';
             mainParts.push(
               `<article class="relay-card is-accent">` +
                 `<div class="relay-card-head">` +
                   `<span class="relay-title">${autoStarted ? '🚀 凭据切换完成 · 正在自动重启 Antigravity…' : '🔄 凭据切换完成（需重启 Antigravity 生效）'}</span>` +
                   `<div class="search-card-actions">` +
-                    (!autoStarted ? `<button type="button" class="mini-btn is-primary" data-acc-action="relaunch-now">🚀 立即重启 Antigravity 生效</button>` : '') +
+                    relaunchBtnHtml +
                     `<button type="button" class="mini-btn" data-acc-action="dismiss-sw">收起</button>` +
                   `</div>` +
                 `</div>` +
@@ -6382,7 +6587,7 @@
               `<article class="relay-card is-accent">` +
                 `<div class="relay-card-head">` +
                   `<span class="relay-title">🔄 已切换至 ${escapeHtml(d.pendingSwitch.targetEmail || '目标账号')}（待重启生效）</span>` +
-                  `<button type="button" class="mini-btn is-primary" data-acc-action="relaunch-now">🚀 立即重启 Antigravity 生效</button>` +
+                  renderRelaunchBtn('🚀 立即重启 Antigravity 生效') +
                 `</div>` +
                 `<p class="relay-sub">磁盘凭据已完成切换且会话记录 100% 保留，点右侧按钮将安全关闭并重开客户端，自动恢复扩展与原会话。</p>` +
               `</article>`
@@ -6394,20 +6599,35 @@
           } else {
             const standbyCandidates = accs.filter((x) => !x.isCurrentActive && x.vaultHasBackup !== false);
             const healthyStandby = standbyCandidates.filter((x) => !evalAccountPoolHealthClient(x).anyExhausted);
+            const fallbackStandbyScore = (item) => {
+              const h = evalAccountPoolHealthClient(item);
+              const qScore = h.hasAny
+                ? ((h.minPoolPct ?? 0) * 1.15 + (h.avgPoolPct ?? h.minPoolPct ?? 0) * 0.35)
+                : 92;
+              const depleted = h.anyExhausted;
+              const critical = h.hasAny && h.minPoolPct !== null && h.minPoolPct < 10;
+              const roleBoost = item.role === 'primary' && !depleted ? 200 : 0;
+              const lowPenalty = critical ? 600 : (depleted ? 380 : 0);
+              const backupPenalty = item.vaultHasBackup === false ? 1500 : 0;
+              return 1000 + roleBoost + qScore - lowPenalty - backupPenalty - (Number(item.priority) || 50);
+            };
+            const resolveStandbyScore = (item) => {
+              if (
+                typeof item?.standbyScore === 'number' &&
+                Number.isFinite(item.standbyScore) &&
+                !hasStalePassedReset(item?.effectiveQuota)
+              ) {
+                return item.standbyScore;
+              }
+              return fallbackStandbyScore(item);
+            };
+
             let effectiveRecId = '';
-            if (healthyStandby.length > 0) {
-              const srvRecId = rec?.recommended?.accountId || '';
-              const rankedHealthy = [...healthyStandby].sort((a, b) => {
-                const ha = evalAccountPoolHealthClient(a);
-                const hb = evalAccountPoolHealthClient(b);
-                const scoreOf = (item, h) => {
-                  const minQ = h.minPoolPct ?? 75;
-                  const priBonus = item.role === 'primary' ? (minQ >= 50 ? 200 : 90) : 0;
-                  const srvTie = srvRecId && item.id === srvRecId ? 5 : 0;
-                  return priBonus + minQ + srvTie - ((Number(item.priority) || 50) * 0.1);
-                };
-                return scoreOf(b, hb) - scoreOf(a, ha);
-              });
+            const srvRecId = rec?.recommended?.accountId || '';
+            if (srvRecId && healthyStandby.some((x) => x.id === srvRecId)) {
+              effectiveRecId = srvRecId;
+            } else if (rec?.recommended !== null && healthyStandby.length > 0) {
+              const rankedHealthy = [...healthyStandby].sort((a, b) => resolveStandbyScore(b) - resolveStandbyScore(a));
               effectiveRecId = rankedHealthy[0].id;
             }
 
@@ -6514,14 +6734,9 @@
             };
 
             const computeStandbyScore = (a) => {
+              const baseScore = resolveStandbyScore(a);
               const isRec = Boolean(effectiveRecId && effectiveRecId === a.id);
-              const h = evalAccountPoolHealthClient(a);
-              const minQ = h.minPoolPct ?? 75;
-              if (h.anyExhausted) {
-                return minQ - ((Number(a.priority) || 50) * 0.05);
-              }
-              const healthyPrimary = a.role === 'primary' && minQ >= 50 ? 220 : (a.role === 'primary' ? 90 : 0);
-              return (isRec ? 500 : 0) + healthyPrimary + minQ - ((Number(a.priority) || 50) * 0.05);
+              return (isRec ? 10000 : 0) + baseScore;
             };
 
             const renderAccountCard = (a) => {
@@ -6550,8 +6765,8 @@
               const editorHtml = isEditingQuota
                 ? `<div class="quota-editor" data-quota-editor="${escapeHtml(a.id)}">` +
                     `<div class="relay-form-row">` +
-                      `<input type="number" min="0" max="100" class="text-input" style="max-width:86px;" id="qe-5h-${escapeHtml(a.id)}" placeholder="5h 剩余%" value="${eff?.effective5hPct ?? ''}" />` +
-                      `<input type="number" min="0" max="100" class="text-input" style="max-width:86px;" id="qe-7d-${escapeHtml(a.id)}" placeholder="7d 剩余%" value="${eff?.effective7dPct ?? ''}" />` +
+                      `<input type="number" min="0" max="100" class="text-input" style="max-width:86px;" id="qe-5h-${escapeHtml(a.id)}" placeholder="5h 剩余%" value="${escapeHtml(eff?.effective5hPct ?? '')}" />` +
+                      `<input type="number" min="0" max="100" class="text-input" style="max-width:86px;" id="qe-7d-${escapeHtml(a.id)}" placeholder="7d 剩余%" value="${escapeHtml(eff?.effective7dPct ?? '')}" />` +
                       `<input type="number" min="0.1" step="0.5" class="text-input" style="max-width:96px;" id="qe-r5h-${escapeHtml(a.id)}" placeholder="5h 几h重置" />` +
                     `</div>` +
                     `<input type="text" class="text-input" id="qe-raw-${escapeHtml(a.id)}" placeholder="或直接粘贴额度文本（如 5h 剩余 80% 3h后重置；7d 剩余 45%）" />` +
@@ -6605,9 +6820,9 @@
 
                 let heroQuotaHtml = '';
                 const fams = eff?.families;
-                if (fams && (fams.gemini || fams.claude)) {
+                if (fams && (fams.gemini || fams.claude || fams.other)) {
                   const poolBlocks = [];
-                  for (const [fKey, fTitle] of [['gemini', 'Gemini'], ['claude', 'Claude / GPT']]) {
+                  for (const [fKey, fTitle] of [['gemini', 'Gemini'], ['claude', 'Claude / GPT'], ['other', '其他模型']]) {
                     const f = fams[fKey];
                     if (!f) continue;
                     const f5 = toCleanPct(f.pct5h);
@@ -6636,12 +6851,18 @@
                       }
                     }
                   }
-                  heroQuotaHtml = `<div class="hero-pool-stack">${poolBlocks.join('')}</div>`;
-                } else if (eff && (eff.effective5hPct !== null || eff.effective7dPct !== null)) {
+                  if (poolBlocks.length) {
+                    heroQuotaHtml = `<div class="hero-pool-stack">${poolBlocks.join('')}</div>`;
+                  }
+                }
+                if (!heroQuotaHtml && eff && (eff.effective5hPct !== null || eff.effective7dPct !== null)) {
                   const q5Html = barRow('5h', eff.effective5hPct, eff.reset5hPassed, eff.reset5hAt);
                   const q7Html = barRow('7d', eff.effective7dPct, eff.reset7dPassed, eff.reset7dAt);
-                  heroQuotaHtml = `<div class="quota-bars">${q5Html}${q7Html}</div>`;
-                } else {
+                  if (q5Html || q7Html) {
+                    heroQuotaHtml = `<div class="quota-bars">${q5Html}${q7Html}</div>`;
+                  }
+                }
+                if (!heroQuotaHtml) {
                   heroQuotaHtml = `<p class="relay-sub">${quotaWaitRetryTimer ? '等待客户端首次拉取该账号实时额度，将自动刷新（也可点右上 ↻ 立即刷新）' : '暂未读到本机实时额度缓存（点右上 ↻ 刷新，或点右上 ⋯ 手动录入）'}</p>`;
                 }
 
@@ -6674,16 +6895,14 @@
 
               const compactChips = [];
               const fams = eff?.families;
-              if (fams && (fams.gemini || fams.claude)) {
-                if (fams.gemini) {
-                  const chip = renderCompactPoolChip('Gemini', fams.gemini.pct5h, fams.gemini.reset5hPassed, fams.gemini.reset5hAt || eff.reset5hAt, fams.gemini.pct7d, fams.gemini.reset7dPassed, fams.gemini.reset7dAt || eff.reset7dAt);
+              if (fams && (fams.gemini || fams.claude || fams.other)) {
+                for (const [fKey, fLabel] of [['gemini', 'Gemini'], ['claude', 'Claude/GPT'], ['other', '其他']]) {
+                  if (!fams[fKey]) continue;
+                  const chip = renderCompactPoolChip(fLabel, fams[fKey].pct5h, fams[fKey].reset5hPassed, fams[fKey].reset5hAt || eff.reset5hAt, fams[fKey].pct7d, fams[fKey].reset7dPassed, fams[fKey].reset7dAt || eff.reset7dAt);
                   if (chip) compactChips.push(chip);
                 }
-                if (fams.claude) {
-                  const chip = renderCompactPoolChip('Claude/GPT', fams.claude.pct5h, fams.claude.reset5hPassed, fams.claude.reset5hAt || eff.reset5hAt, fams.claude.pct7d, fams.claude.reset7dPassed, fams.claude.reset7dAt || eff.reset7dAt);
-                  if (chip) compactChips.push(chip);
-                }
-              } else if (eff && (eff.effective5hPct !== null || eff.effective7dPct !== null)) {
+              }
+              if (!compactChips.length && eff && (eff.effective5hPct !== null || eff.effective7dPct !== null)) {
                 const chip = renderCompactPoolChip('可用额度', eff.effective5hPct, eff.reset5hPassed, eff.reset5hAt, eff.effective7dPct, eff.reset7dPassed, eff.reset7dAt);
                 if (chip) compactChips.push(chip);
               }
@@ -6909,7 +7128,7 @@
             `<div class="relay-card is-accent" style="padding:8px 10px;">` +
               `<div class="relay-card-head">` +
                 `<span class="relay-title">✅ 已更新至 ${escapeHtml(suRes.updatedTo || '最新版本')}</span>` +
-                `<button type="button" class="mini-btn is-primary" data-acc-action="relaunch-now">🚀 立即重启 Antigravity 生效</button>` +
+                renderRelaunchBtn('🚀 立即重启 Antigravity 生效') +
               `</div>` +
               `<p class="relay-sub">${escapeHtml(suRes.message || '插件与扩展已原地升级完成，重启 Antigravity 后全面生效。')}</p>` +
             `</div>`;
@@ -7012,7 +7231,7 @@
               ? `<span class="pill pill-warn">新版本 ${escapeHtml(suInfo.latestTag)}</span>`
               : st.radarLoading
                 ? '<span class="pill">检查中</span>'
-                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${rad.summary.high}</span>` : '<span class="pill">v0.7.0</span>');
+                : (rad?.summary?.high ? `<span class="pill pill-danger">上游重要 ${escapeHtml(rad.summary.high)}</span>` : '<span class="pill">v0.7.0</span>');
         const radarOpen = Boolean(st.openSections?.radar || st.radarLoading || rad || st.selfUpdateChecking || st.selfUpdateApplying || suInfo || suRes);
         sideParts.push(
           `<details class="relay-accordion" data-sec="radar" ${radarOpen ? 'open' : ''}>` +
@@ -7096,32 +7315,49 @@
 
         // Sanitized bridge from main window Prism Suite extension (ping/pong, quota sync & focused tab switch)
         if (msg.__agPrismBridge === 'v1') {
-          if (event.source && event.source !== window.parent && event.source !== window.top) return;
+          if (!event.source || (event.source !== window.parent && event.source !== window.top)) return;
           const orig = String(event.origin || '').trim();
           const trustedOrig = !orig || orig === 'null' || orig === window.location.origin ||
-            /^(?:app|vscode-webview|file):\/\//i.test(orig) ||
-            /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/i.test(orig);
+            /^(?:app|vscode-file|vscode-webview|file):\/\//i.test(orig) ||
+            /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/i.test(orig);
           if (!trustedOrig) return;
-          if (msg.source && msg.source !== 'prism-suite') return;
-          const replyWin = event.source || null;
-          const replyOrigin = orig && orig !== 'null' ? orig : '*';
+          if (msg.source !== 'prism-suite') return;
+          const replyWin = event.source;
+          const replyOrigin = orig && orig !== 'null' ? orig : (mainBridgeOrigin || '*');
 
           if (msg.type === 'bridge-ping') {
+            const nextSid = String(msg.sessionId || '').trim();
+            if (!nextSid) return;
+            mainBridgeWin = replyWin;
+            if (orig && orig !== 'null') mainBridgeOrigin = orig;
+            mainBridgeSessionId = nextSid;
             postBridgeToMain({
               type: 'bridge-pong',
               requestId: String(msg.requestId || ''),
-              sessionId: String(msg.sessionId || ''),
+              sessionId: mainBridgeSessionId,
               activeTab: appState.activeTab,
               initialized: Boolean(appState.initialized)
             }, replyWin, replyOrigin);
+            if (mainBridgeSessionId && appState.accounts.data) {
+              broadcastAccountSummary(appState.accounts.data);
+            }
             return;
           }
+
+          const incomingSessionId = String(msg.sessionId || '');
+          const isBridgeAuthed = Boolean(
+            mainBridgeSessionId &&
+            incomingSessionId === mainBridgeSessionId &&
+            (!mainBridgeWin || replyWin === mainBridgeWin)
+          );
+          if (!isBridgeAuthed) return;
+
           if (msg.type === 'init-sync') {
             if (msg.switchTab && ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'].includes(msg.switchTab)) {
               navigateFromExternalBridge(msg.switchTab, {
                 intentId: String(msg.intentId || ''),
                 requestId: String(msg.requestId || ''),
-                sessionId: String(msg.sessionId || ''),
+                sessionId: incomingSessionId,
                 focus: msg.focus !== false,
                 replyWin,
                 replyOrigin
@@ -7134,7 +7370,7 @@
             navigateFromExternalBridge(msg.tab, {
               intentId: String(msg.intentId || ''),
               requestId: String(msg.requestId || ''),
-              sessionId: String(msg.sessionId || ''),
+              sessionId: incomingSessionId,
               focus: msg.focus !== false,
               replyWin,
               replyOrigin
@@ -7143,7 +7379,7 @@
           return;
         }
 
-        if (window.parent !== window && event.source && event.source !== window.parent) return;
+        if (window.parent !== window && event.source !== window.parent) return;
         if (msg.jsonrpc !== '2.0') return;
 
         if (msg.id !== undefined && msg.id !== null && !msg.method) {
@@ -7180,7 +7416,7 @@
         } else if (msg.method === 'ui/notifications/tool-input') {
           appState.hasToolInput = true;
           const args = msg.params?.arguments || msg.params || {};
-          if (args.tab && ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'].includes(args.tab)) {
+          if (args.tab && ['browse', 'artifacts', 'pins', 'search', 'models', 'accounts'].includes(args.tab) && !isExternalNavLocked()) {
             switchTab(args.tab);
           }
         } else if (msg.method === 'ui/notifications/tool-result') {
@@ -7254,7 +7490,7 @@
         const ok = await persistPrefs({ showHidden: nextHidden });
         if (ok) {
           showToast(nextHidden ? '已显示隐藏文件' : '已隐藏点文件');
-          navigateToDir(appState.browse.dir, appState.browse.query);
+          navigateToDir(appState.browse.dir, appState.browse.query, { force: true });
         }
       });
 
@@ -7414,129 +7650,205 @@
         const btn = event.target.closest('button[data-acc-action]');
         if (!btn) return;
         const act = btn.dataset.accAction;
-        try {
-          if (act === 'reload-tab') {
-            await loadAccountsTab({ forceRefresh: true });
-          } else if (act === 'enable') {
+
+        const runSimpleAccountAction = async (fn, fallbackMsg = '操作失败') => {
+          try {
+            await fn();
+          } catch (err) {
+            showToast(formatAccountErrorMessage(err, fallbackMsg), true);
+          }
+        };
+
+        if (act === 'reload-tab') {
+          await runSimpleAccountAction(() => loadAccountsTab({ forceRefresh: true }), '刷新失败');
+          return;
+        }
+        if (act === 'enable') {
+          await runSimpleAccountAction(async () => {
             await callServerTool('accounts_toggle_enabled', { enabled: true });
             showToast('已开启主备账号接力（绝不触碰会话库）');
             await loadAccountsTab({ forceRefresh: true });
-          } else if (act === 'disable') {
+          }, '开启失败');
+          return;
+        }
+        if (act === 'disable') {
+          await runSimpleAccountAction(async () => {
             stopCountdown(false);
+            appState.accounts.countdown = null;
             await callServerTool('accounts_toggle_enabled', { enabled: false });
             showToast('已关闭账号接力模块');
             await loadAccountsTab({ forceRefresh: false });
-          } else if (act === 'verify') {
+          }, '关闭失败');
+          return;
+        }
+        if (act === 'verify') {
+          await runSimpleAccountAction(async () => {
             const res = await callServerTool('accounts_verify_integrity', {});
             showToast(`隔离校验正常 · brain 会话 ${res.brainSessionCount} · 后端 ${res.vaultBackend}`);
-          } else if (act === 'relaunch-now') {
-            btn.disabled = true;
+          }, '隔离校验失败');
+          return;
+        }
+        if (act === 'relaunch-now') {
+          if (appState.accounts.relaunchScheduled || appState.accounts.relaunching) return;
+          appState.accounts.relaunching = true;
+          renderAccounts();
+          try {
             const res = await callServerTool('accounts_relaunch_client', { dryRun: false });
-            btn.disabled = false;
             if (res?.ok && res?.scheduled) {
+              appState.accounts.relaunchScheduled = true;
               showToast(res.message || '正在自动关闭并重开 Antigravity，请稍候…');
             } else {
-              showToast(res?.error || '调度自动重启失败，请手动重启客户端', true);
+              showToast(formatAccountErrorMessage(res?.error, '调度自动重启失败，请手动重启客户端'), true);
             }
-          } else if (act === 'capture' || act === 'capture-quick') {
+          } catch (err) {
+            showToast(formatAccountErrorMessage(err, '调度自动重启失败，请手动重启客户端'), true);
+          } finally {
+            appState.accounts.relaunching = false;
+            renderAccounts();
+          }
+          return;
+        }
+        if (act === 'capture' || act === 'capture-quick') {
+          await runSimpleAccountAction(async () => {
             const aliasEl = document.getElementById('acc-capture-alias');
             const roleEl = document.getElementById('acc-capture-role');
             const res = await callServerTool('accounts_capture', {
               alias: act === 'capture-quick' ? '' : (aliasEl ? aliasEl.value.trim() : ''),
               role: act === 'capture-quick' ? 'backup' : (roleEl ? roleEl.value : 'backup')
             });
-            if (res.ok) {
+            if (res?.ok) {
               showToast(`已捕获 ${res.account.alias} (${res.account.email})`);
               await loadAccountsTab({ forceRefresh: false });
             } else {
-              showToast(res.error || '捕获失败', true);
+              showToast(res?.error || '捕获失败', true);
             }
-          } else if (act === 'snapshot') {
+          }, '捕获失败');
+          return;
+        }
+        if (act === 'snapshot') {
+          await runSimpleAccountAction(async () => {
             const res = await callServerTool('accounts_save_snapshot', {
               cwd: appState.browse.dir || appState.homeDir || '',
               verifiedSummary: '手动触发切前 4 要素交接快照'
             });
-            showToast(`已记录交接快照 ${res.snapshot?.slotTag || ''}`);
+            if (res?.ok === false) {
+              showToast(res.error || '记录交接快照失败', true);
+              return;
+            }
+            showToast(`已记录交接快照 ${res?.snapshot?.slotTag || ''}`);
             await loadAccountsTab({ forceRefresh: false });
-          } else if (act === 'countdown') {
-            const id = btn.dataset.id;
-            const acc = (appState.accounts.data?.accounts || []).find((a) => a.id === id);
-            if (acc) {
-              const display = btn.dataset.displayName || acc.alias || acc.email;
-              startSwitchCountdown({ ...acc, alias: display });
+          }, '记录交接快照失败');
+          return;
+        }
+        if (act === 'countdown') {
+          const id = btn.dataset.id;
+          const acc = (appState.accounts.data?.accounts || []).find((a) => a.id === id);
+          if (acc) {
+            const display = btn.dataset.displayName || acc.alias || acc.email;
+            startSwitchCountdown({ ...acc, alias: display });
+          }
+          return;
+        }
+        if (act === 'toggle-more') {
+          const id = btn.dataset.id;
+          if (id) {
+            const nextOpen = !appState.accounts.expandedMoreIds[id];
+            appState.accounts.expandedMoreIds[id] = nextOpen;
+            if (!nextOpen) {
+              if (appState.accounts.editingQuotaId === id) appState.accounts.editingQuotaId = '';
+              if (appState.accounts.editingAliasId === id) appState.accounts.editingAliasId = '';
             }
-          } else if (act === 'toggle-more') {
-            const id = btn.dataset.id;
-            if (id) {
-              const nextOpen = !appState.accounts.expandedMoreIds[id];
-              appState.accounts.expandedMoreIds[id] = nextOpen;
-              if (!nextOpen) {
-                if (appState.accounts.editingQuotaId === id) appState.accounts.editingQuotaId = '';
-                if (appState.accounts.editingAliasId === id) appState.accounts.editingAliasId = '';
-              }
-              renderAccounts();
-            }
-          } else if (act === 'copy-email') {
-            const email = btn.dataset.email || '';
-            if (email) {
-              const ok = await copyTextSafe(email);
-              if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
-              showToast(ok ? `已复制邮箱 ${email}` : '复制失败', !ok);
-            }
-          } else if (act === 'edit-alias') {
-            const id = btn.dataset.id || '';
-            appState.accounts.editingAliasId = appState.accounts.editingAliasId === id ? '' : id;
-            if (id) appState.accounts.expandedMoreIds[id] = true;
             renderAccounts();
-            if (appState.accounts.editingAliasId) {
-              document.getElementById(`ae-alias-${id}`)?.focus();
-            }
-          } else if (act === 'cancel-alias') {
-            appState.accounts.editingAliasId = '';
-            renderAccounts();
-          } else if (act === 'save-alias') {
+          }
+          return;
+        }
+        if (act === 'copy-email') {
+          const email = btn.dataset.email || '';
+          if (email) {
+            const ok = await copyTextSafe(email);
+            if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
+            showToast(ok ? `已复制邮箱 ${email}` : '复制失败', !ok);
+          }
+          return;
+        }
+        if (act === 'edit-alias') {
+          const id = btn.dataset.id || '';
+          appState.accounts.editingAliasId = appState.accounts.editingAliasId === id ? '' : id;
+          if (id) appState.accounts.expandedMoreIds[id] = true;
+          renderAccounts();
+          if (appState.accounts.editingAliasId) {
+            document.getElementById(`ae-alias-${id}`)?.focus();
+          }
+          return;
+        }
+        if (act === 'cancel-alias') {
+          appState.accounts.editingAliasId = '';
+          renderAccounts();
+          return;
+        }
+        if (act === 'save-alias') {
+          await runSimpleAccountAction(async () => {
             const id = btn.dataset.id;
             const nextAlias = document.getElementById(`ae-alias-${id}`)?.value?.trim() ?? '';
             const res = await callServerTool('accounts_update', { accountId: id, alias: nextAlias });
-            if (res.ok) {
+            if (res?.ok) {
               appState.accounts.editingAliasId = '';
               showToast(nextAlias ? `已更新备注为「${nextAlias}」` : '已恢复默认名称显示');
               await loadAccountsTab({ forceRefresh: false });
             } else {
-              showToast(res.error || '修改备注失败', true);
+              showToast(res?.error || '修改备注失败', true);
             }
-          } else if (act === 'cd-pause' && appState.accounts.countdown) {
-            const cd = appState.accounts.countdown;
-            if (!cd.paused) {
-              cd.paused = true;
-              cd.pausedRemainMs = Math.max(0, (cd.endAtMs || Date.now()) - Date.now());
-              if (countdownRaf) {
-                cancelAnimationFrame(countdownRaf);
-                countdownRaf = null;
-              }
-            } else {
-              cd.paused = false;
-              cd.endAtMs = Date.now() + (cd.pausedRemainMs || cd.totalMs);
-              countdownLastSec = -1;
-              countdownRaf = requestAnimationFrame(tickCountdownFrame);
-            }
-            renderAccounts();
-          } else if (act === 'cd-now' && appState.accounts.countdown) {
-            const cd = appState.accounts.countdown;
-            await executeAccountSwitchNow(cd.targetId, cd.saveSnapshot, cd.autoRelaunch, cd.autoCaptureUncaptured !== false);
-          } else if (act === 'cd-cancel') {
-            stopCountdown(true);
-            showToast('已取消切号倒计时');
-          } else if (act === 'dryrun') {
+          }, '修改备注失败');
+          return;
+        }
+        if (act === 'cd-pause' && appState.accounts.countdown) {
+          const cd = appState.accounts.countdown;
+          if (!cd.paused) {
+            cd.paused = true;
+            cd.hiddenAtMs = 0;
+            cd.pausedRemainMs = Math.max(0, (cd.endAtMs || Date.now()) - Date.now());
+            clearCountdownTimer();
+          } else {
+            const now = Date.now();
+            cd.paused = false;
+            cd.hiddenAtMs = 0;
+            cd.lastTickAtMs = now;
+            cd.endAtMs = now + (cd.pausedRemainMs || cd.totalMs);
+            countdownLastSec = -1;
+            startCountdownTimer();
+          }
+          renderAccounts();
+          return;
+        }
+        if (act === 'cd-now' && appState.accounts.countdown) {
+          const cd = appState.accounts.countdown;
+          await executeAccountSwitchNow(cd.targetId, cd.saveSnapshot, cd.autoRelaunch, cd.autoCaptureUncaptured !== false);
+          return;
+        }
+        if (act === 'cd-cancel') {
+          stopCountdown(true);
+          showToast('已取消切号倒计时');
+          return;
+        }
+        if (act === 'dryrun') {
+          await runSimpleAccountAction(async () => {
             const res = await callServerTool('accounts_switch', { targetId: btn.dataset.id, dryRun: true, autoCaptureUncaptured: true });
-            showToast(res.ok ? res.message : formatAccountErrorMessage(res.error, '预演拦截'), !res.ok);
-          } else if (act === 'edit-quota') {
-            appState.accounts.editingQuotaId = appState.accounts.editingQuotaId === btn.dataset.id ? '' : btn.dataset.id;
-            renderAccounts();
-          } else if (act === 'cancel-quota') {
-            appState.accounts.editingQuotaId = '';
-            renderAccounts();
-          } else if (act === 'save-quota') {
+            showToast(res?.ok ? res.message : formatAccountErrorMessage(res?.error, '预演拦截'), !res?.ok);
+          }, '预演失败');
+          return;
+        }
+        if (act === 'edit-quota') {
+          appState.accounts.editingQuotaId = appState.accounts.editingQuotaId === btn.dataset.id ? '' : btn.dataset.id;
+          renderAccounts();
+          return;
+        }
+        if (act === 'cancel-quota') {
+          appState.accounts.editingQuotaId = '';
+          renderAccounts();
+          return;
+        }
+        if (act === 'save-quota') {
+          await runSimpleAccountAction(async () => {
             const id = btn.dataset.id;
             const v5 = document.getElementById(`qe-5h-${id}`)?.value?.trim();
             const v7 = document.getElementById(`qe-7d-${id}`)?.value?.trim();
@@ -7548,91 +7860,141 @@
             if (r5 !== '' && r5 !== undefined && Number(r5) > 0) quota.reset5hInHours = Number(r5);
             if (raw) quota.rawText = raw;
             const res = await callServerTool('accounts_update', { accountId: id, quota });
-            if (res.ok) {
+            if (res?.ok) {
               appState.accounts.editingQuotaId = '';
               showToast('已更新该账号额度快照');
               await loadAccountsTab();
             } else {
-              showToast(res.error || '保存额度失败', true);
+              showToast(res?.error || '保存额度失败', true);
             }
-          } else if (act === 'setrole') {
+          }, '保存额度失败');
+          return;
+        }
+        if (act === 'setrole') {
+          await runSimpleAccountAction(async () => {
             const res = await callServerTool('accounts_update', { accountId: btn.dataset.id, role: btn.dataset.role });
-            if (res.ok) {
+            if (res?.ok) {
               showToast(`已设为 ${btn.dataset.role === 'primary' ? '主账号' : '备用账号'}`);
               await loadAccountsTab();
             } else {
-              showToast(res.error || '修改失败', true);
+              showToast(res?.error || '修改失败', true);
             }
-          } else if (act === 'delete') {
+          }, '修改角色失败');
+          return;
+        }
+        if (act === 'delete') {
+          await runSimpleAccountAction(async () => {
             const res = await callServerTool('accounts_delete', { accountId: btn.dataset.id });
-            showToast(res.ok ? '已移除隔离备份槽（不影响当前登录与会话）' : (res.error || '移除失败'), !res.ok);
+            showToast(res?.ok ? '已移除隔离备份槽（不影响当前登录与会话）' : (res?.error || '移除失败'), !res?.ok);
             await loadAccountsTab();
-          } else if (act === 'dismiss-sw') {
-            appState.accounts.lastSwitchResult = null;
-            renderAccounts();
-          } else if (act === 'copy-ext-mem' && appState.accounts.lastSwitchResult?.externalMemoryPrompt) {
-            const ok = await copyTextSafe(appState.accounts.lastSwitchResult.externalMemoryPrompt);
+          }, '移除失败');
+          return;
+        }
+        if (act === 'dismiss-sw') {
+          appState.accounts.lastSwitchResult = null;
+          renderAccounts();
+          return;
+        }
+        if (act === 'copy-ext-mem' && appState.accounts.lastSwitchResult?.externalMemoryPrompt) {
+          const ok = await copyTextSafe(appState.accounts.lastSwitchResult.externalMemoryPrompt);
+          if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
+          showToast(ok ? '已复制外部 memory_store 指令' : '复制失败', !ok);
+          return;
+        }
+        if (act === 'copy-resume' && appState.accounts.lastSwitchResult?.resumePrompt) {
+          const ok = await copyTextSafe(appState.accounts.lastSwitchResult.resumePrompt);
+          if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
+          showToast(ok ? '已复制切后「接力」提示' : '复制失败', !ok);
+          return;
+        }
+        if (act === 'mem-copy-ext') {
+          const item = appState.accounts.memories[Number(btn.dataset.idx)];
+          if (item?.externalMemoryPrompt) {
+            const ok = await copyTextSafe(item.externalMemoryPrompt);
             if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
             showToast(ok ? '已复制外部 memory_store 指令' : '复制失败', !ok);
-          } else if (act === 'copy-resume' && appState.accounts.lastSwitchResult?.resumePrompt) {
-            const ok = await copyTextSafe(appState.accounts.lastSwitchResult.resumePrompt);
+          }
+          return;
+        }
+        if (act === 'mem-copy-resume') {
+          const item = appState.accounts.memories[Number(btn.dataset.idx)];
+          if (item?.resumePrompt) {
+            const ok = await copyTextSafe(item.resumePrompt);
             if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
-            showToast(ok ? '已复制切后「接力」提示' : '复制失败', !ok);
-          } else if (act === 'mem-copy-ext') {
-            const item = appState.accounts.memories[Number(btn.dataset.idx)];
-            if (item?.externalMemoryPrompt) {
-              const ok = await copyTextSafe(item.externalMemoryPrompt);
-              if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
-              showToast(ok ? '已复制外部 memory_store 指令' : '复制失败', !ok);
+            showToast(ok ? '已复制「接力」恢复提示' : '复制失败', !ok);
+          }
+          return;
+        }
+        if (act === 'mem-del') {
+          await runSimpleAccountAction(async () => {
+            const res = await callServerTool('handoff_memory_remove', { id: btn.dataset.id });
+            if (res?.ok === false) {
+              showToast(res.error || '删除交接记忆失败', true);
+              return;
             }
-          } else if (act === 'mem-copy-resume') {
-            const item = appState.accounts.memories[Number(btn.dataset.idx)];
-            if (item?.resumePrompt) {
-              const ok = await copyTextSafe(item.resumePrompt);
-              if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
-              showToast(ok ? '已复制「接力」恢复提示' : '复制失败', !ok);
-            }
-          } else if (act === 'mem-del') {
-            await callServerTool('handoff_memory_remove', { id: btn.dataset.id });
             showToast('已删除该条交接记忆');
             await loadAccountsTab();
-          } else if (act === 'cat-open-form') {
-            appState.accounts.showCatalogForm = !appState.accounts.showCatalogForm;
-            appState.accounts.openSections.catalog = true;
-            renderAccounts();
-          } else if (act === 'cat-cancel') {
-            appState.accounts.showCatalogForm = false;
-            renderAccounts();
-          } else if (act === 'cat-save') {
+          }, '删除交接记忆失败');
+          return;
+        }
+        if (act === 'cat-open-form') {
+          appState.accounts.showCatalogForm = !appState.accounts.showCatalogForm;
+          appState.accounts.openSections.catalog = true;
+          renderAccounts();
+          return;
+        }
+        if (act === 'cat-cancel') {
+          appState.accounts.showCatalogForm = false;
+          renderAccounts();
+          return;
+        }
+        if (act === 'cat-save') {
+          await runSimpleAccountAction(async () => {
             const project = document.getElementById('cat-proj-in')?.value?.trim() || '';
             const slot = document.getElementById('cat-slot-in')?.value?.trim() || 'main';
             const cwd = document.getElementById('cat-cwd-in')?.value?.trim() || '';
             const summary = document.getElementById('cat-sum-in')?.value?.trim() || '';
-            await callServerTool('handoff_catalog_upsert', { project, slot, cwd, summary });
+            const res = await callServerTool('handoff_catalog_upsert', { project, slot, cwd, summary });
+            if (res?.ok === false) {
+              showToast(res.error || '保存槽位失败', true);
+              return;
+            }
             appState.accounts.showCatalogForm = false;
             showToast('已更新 catalog:master 槽位索引');
             await loadAccountsTab();
-          } else if (act === 'cat-reveal') {
-            if (btn.dataset.cwd) await revealPath(btn.dataset.cwd);
-          } else if (act === 'cat-copy-resume') {
-            const s = appState.accounts.catalogSlots[Number(btn.dataset.idx)];
-            if (s?.resumePrompt) {
-              const ok = await copyTextSafe(s.resumePrompt);
-              if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
-              showToast(ok ? `已复制 ${s.slotTag} 接力口令` : '复制失败', !ok);
-            }
-          } else if (act === 'rem-open-cfg') {
-            appState.accounts.showRemoteConfig = !appState.accounts.showRemoteConfig;
-            appState.accounts.openSections.catalog = true;
-            if (!appState.models.loaded) {
-              loadModelsTab({ silent: true }).then(() => renderAccounts());
-            } else {
-              renderAccounts();
-            }
-          } else if (act === 'rem-cancel') {
-            appState.accounts.showRemoteConfig = false;
+          }, '保存槽位失败');
+          return;
+        }
+        if (act === 'cat-reveal') {
+          if (btn.dataset.cwd) await runSimpleAccountAction(() => revealPath(btn.dataset.cwd), '定位目录失败');
+          return;
+        }
+        if (act === 'cat-copy-resume') {
+          const s = appState.accounts.catalogSlots[Number(btn.dataset.idx)];
+          if (s?.resumePrompt) {
+            const ok = await copyTextSafe(s.resumePrompt);
+            if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
+            showToast(ok ? `已复制 ${s.slotTag} 接力口令` : '复制失败', !ok);
+          }
+          return;
+        }
+        if (act === 'rem-open-cfg') {
+          appState.accounts.showRemoteConfig = !appState.accounts.showRemoteConfig;
+          appState.accounts.openSections.catalog = true;
+          if (!appState.models.loaded) {
+            loadModelsTab({ silent: true }).then(() => renderAccounts()).catch(() => {});
+          } else {
             renderAccounts();
-          } else if (act === 'rem-save') {
+          }
+          return;
+        }
+        if (act === 'rem-cancel') {
+          appState.accounts.showRemoteConfig = false;
+          renderAccounts();
+          return;
+        }
+        if (act === 'rem-save') {
+          await runSimpleAccountAction(async () => {
             const urlVal = document.getElementById('rem-mem-url')?.value?.trim() || '';
             const envVal = document.getElementById('rem-mem-env')?.value?.trim() || '';
             const upd = await callServerTool('model_hub_update_settings', {
@@ -7640,145 +8002,201 @@
                 ? { enabled: true, endpointUrl: urlVal, apiKeyEnv: envVal }
                 : false
             });
+            if (upd?.ok === false) {
+              showToast(upd.error || '保存远程桥配置失败', true);
+              return;
+            }
             if (upd?.profile) appState.models.data = upd.profile;
             if (upd?.remoteSync) appState.accounts.remoteSync = upd.remoteSync;
             appState.accounts.showRemoteConfig = false;
             showToast(urlVal ? '已开启远程 HTTP Memory 异步桥' : '已关闭远程 Memory 桥');
             await loadAccountsTab();
-          } else if (act === 'rem-sync-now') {
-            appState.accounts.syncingRemote = true;
-            renderAccounts();
-            const syncRes = await callServerTool('handoff_remote_sync', { limit: 20 });
-            appState.accounts.syncingRemote = false;
+          }, '保存远程桥配置失败');
+          return;
+        }
+        if (act === 'rem-sync-now') {
+          if (appState.accounts.syncingRemote) return;
+          appState.accounts.syncingRemote = true;
+          renderAccounts();
+          let shouldReload = false;
+          try {
+            const syncRes = await callServerTool('handoff_remote_sync', { limit: 20 }, 45000);
             if (syncRes?.remoteSync) appState.accounts.remoteSync = syncRes.remoteSync;
             showToast(syncRes?.ok ? `已从远程同步 ${syncRes.updatedSlots || 0} 个槽位` : (syncRes?.error || '远程离线，继续使用本地 SQLite'), !syncRes?.ok);
+            shouldReload = true;
+          } catch (err) {
+            showToast(formatAccountErrorMessage(err, '远程同步失败'), true);
+          } finally {
+            appState.accounts.syncingRemote = false;
+            renderAccounts();
+          }
+          if (shouldReload) {
             await loadAccountsTab();
-          } else if (act === 'self-update-check') {
-            appState.accounts.selfUpdateChecking = true;
-            appState.accounts.selfUpdateConfirmRepair = false;
-            appState.accounts.openSections.radar = true;
-            renderAccounts();
+          }
+          return;
+        }
+        if (act === 'self-update-check') {
+          if (appState.accounts.selfUpdateChecking || appState.accounts.selfUpdateApplying) return;
+          appState.accounts.selfUpdateChecking = true;
+          appState.accounts.selfUpdateConfirmRepair = false;
+          appState.accounts.openSections.radar = true;
+          renderAccounts();
+          try {
             const info = await callServerTool('prism_self_update_check', {});
+            if (info?.ok === false) {
+              showToast(formatAccountErrorMessage(info.error, '检查更新失败'), true);
+            } else {
+              appState.accounts.selfUpdateInfo = info;
+              showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.7.0'}`);
+            }
+          } catch (err) {
+            showToast(formatAccountErrorMessage(err, '检查更新失败'), true);
+          } finally {
             appState.accounts.selfUpdateChecking = false;
-            appState.accounts.selfUpdateInfo = info;
             renderAccounts();
-            showToast(info?.hasUpdate ? `发现新版本 ${info.latestTag}，可点击「一键更新」升级` : `当前已是最新正式版 v${info?.currentVersion || '0.7.0'}`);
-          } else if (act === 'self-update-repair-ask') {
-            appState.accounts.selfUpdateConfirmRepair = true;
-            renderAccounts();
-          } else if (act === 'self-update-repair-cancel') {
-            appState.accounts.selfUpdateConfirmRepair = false;
-            renderAccounts();
-          } else if (act === 'self-update-apply' || act === 'self-update-repair') {
-            const isForce = act === 'self-update-repair';
-            appState.accounts.selfUpdateApplying = true;
-            appState.accounts.selfUpdateConfirmRepair = false;
-            appState.accounts.openSections.radar = true;
-            setTopProgress(true);
-            renderAccounts();
-            const res = await callServerTool('prism_self_update_apply', { force: isForce });
+          }
+          return;
+        }
+        if (act === 'self-update-repair-ask') {
+          appState.accounts.selfUpdateConfirmRepair = true;
+          renderAccounts();
+          return;
+        }
+        if (act === 'self-update-repair-cancel') {
+          appState.accounts.selfUpdateConfirmRepair = false;
+          renderAccounts();
+          return;
+        }
+        if (act === 'self-update-apply' || act === 'self-update-repair') {
+          if (appState.accounts.selfUpdateApplying) return;
+          const isForce = act === 'self-update-repair';
+          appState.accounts.selfUpdateApplying = true;
+          appState.accounts.selfUpdateConfirmRepair = false;
+          appState.accounts.openSections.radar = true;
+          setTopProgress(true);
+          renderAccounts();
+          try {
+            const res = await callServerTool('prism_self_update_apply', { force: isForce }, 150000);
+            if (res?.ok === false) {
+              showToast(formatAccountErrorMessage(res.error, '一键更新失败'), true);
+            } else {
+              if (res && !res.skipped) appState.accounts.selfUpdateResult = res;
+              showToast(res?.message || `已更新至 ${res?.updatedTo || '最新版本'}，请重启 Antigravity 生效`);
+            }
+          } catch (err) {
+            showToast(formatAccountErrorMessage(err, '一键更新失败'), true);
+          } finally {
             appState.accounts.selfUpdateApplying = false;
             setTopProgress(false);
-            if (res && !res.skipped) appState.accounts.selfUpdateResult = res;
             renderAccounts();
-            showToast(res?.message || `已更新至 ${res?.updatedTo || '最新版本'}，请重启 Antigravity 生效`);
-          } else if (act === 'radar-check') {
-            appState.accounts.radarLoading = true;
-            renderAccounts();
-            const rep = await callServerTool('check_upstreams', { force: true });
-            appState.accounts.radarLoading = false;
-            appState.accounts.radarReport = rep;
-            renderAccounts();
-            showToast(`上游检查完成：重要更新 ${rep?.summary?.high ?? 0} 项 / 常规更新 ${rep?.summary?.medium ?? 0} 项`);
-          } else if (act === 'radar-copy-all-picked' || act === 'radar-copy-picked') {
-            const targetKey = act === 'radar-copy-picked' ? (btn.dataset.key || '') : '';
-            const selector = targetKey
-              ? `.radar-pick-cb[data-key="${safeCssEscape(targetKey)}"]:checked`
-              : '.radar-pick-cb:checked';
-            const checks = Array.from(accountsWrap.querySelectorAll(selector));
-            const allResults = Array.isArray(appState.accounts.radarReport?.results)
-              ? appState.accounts.radarReport.results
-              : [];
-            if (!checks.length) {
-              showToast('当前未勾选任何需融合的条目；若确认全部跳过，直接点击「✅ 一键同步全部基线」即可归绿', true);
-              return;
+          }
+          return;
+        }
+        if (act === 'radar-check') {
+          if (appState.accounts.radarLoading) return;
+          appState.accounts.radarLoading = true;
+          renderAccounts();
+          try {
+            const rep = await callServerTool('check_upstreams', { force: true }, 45000);
+            if (rep?.ok === false) {
+              showToast(formatAccountErrorMessage(rep.error, '检查上游动向失败'), true);
+            } else {
+              appState.accounts.radarReport = rep;
+              showToast(`上游检查完成：重要更新 ${rep?.summary?.high ?? 0} 项 / 常规更新 ${rep?.summary?.medium ?? 0} 项`);
             }
-            const byRepo = new Map();
-            for (const cb of checks) {
-              const repo = cb.dataset.repo || cb.dataset.key || 'unknown';
-              if (!byRepo.has(repo)) {
-                byRepo.set(repo, {
-                  key: cb.dataset.key || '',
-                  repo,
-                  license: cb.dataset.license || '',
-                  roleZh: cb.dataset.roleZh || '',
-                  items: []
-                });
-              }
-              byRepo.get(repo).items.push({
-                sha: cb.dataset.sha || '-',
-                tagZh: cb.dataset.tagZh || '更新',
-                zh: cb.dataset.zh || '',
-                msg: cb.dataset.msg || ''
+          } catch (err) {
+            showToast(formatAccountErrorMessage(err, '检查上游动向失败'), true);
+          } finally {
+            appState.accounts.radarLoading = false;
+            renderAccounts();
+          }
+          return;
+        }
+        if (act === 'radar-copy-all-picked') {
+          const checks = Array.from(accountsWrap.querySelectorAll('.radar-pick-cb:checked'));
+          const allResults = Array.isArray(appState.accounts.radarReport?.results)
+            ? appState.accounts.radarReport.results
+            : [];
+          if (!checks.length) {
+            showToast('当前未勾选任何需融合的条目；若确认全部跳过，直接点击「✅ 一键同步全部基线」即可归绿', true);
+            return;
+          }
+          const byRepo = new Map();
+          for (const cb of checks) {
+            const repo = cb.dataset.repo || cb.dataset.key || 'unknown';
+            if (!byRepo.has(repo)) {
+              byRepo.set(repo, {
+                key: cb.dataset.key || '',
+                repo,
+                license: cb.dataset.license || '',
+                roleZh: cb.dataset.roleZh || '',
+                items: []
               });
             }
-            const promptLines = [
-              '请评估以下我在 Prism 上游雷达中勾选的变更，以 Clean-room 方式择优融合进 `anti-claude-prism-suite`（未勾选条目一律跳过，严禁照搬照抄或引入 GPL 源码），完成后一并同步 `upstream.json` 与 `plugin/upstream.json` 基线：'
-            ];
-            let secIdx = 1;
-            for (const grp of byRepo.values()) {
-              const metaBits = [grp.license, grp.roleZh].filter(Boolean).join(' · ');
-              const isGpl = /GPL/i.test(grp.license);
-              promptLines.push('');
-              promptLines.push(`### ${secIdx}. ${grp.repo}${metaBits ? `（${metaBits}）` : ''}`);
-              if (isGpl) {
-                promptLines.push('> 注意：该仓库为 GPL 协议，仅参考公开交互思路或兼容信号，严禁复制或转写其源码。');
-              }
-              for (const it of grp.items) {
-                const zhDiffers = it.zh && it.zh !== it.msg;
-                promptLines.push(`- \`${it.sha}\` [${it.tagZh}] ${it.zh || it.msg}`);
-                if (zhDiffers && it.msg) {
-                  promptLines.push(`  - 原文：\`${it.msg}\``);
-                }
-              }
-              secIdx++;
-            }
-            if (!targetKey) {
-              const skippedUpdated = allResults.filter((r) => r.hasUpdate && !byRepo.has(r.repo));
-              if (skippedUpdated.length) {
-                promptLines.push('');
-                promptLines.push(`### ${secIdx}. 本轮未勾选代码融合、直接同步基线的仓库`);
-                for (const sr of skippedUpdated) {
-                  promptLines.push(`- \`${sr.repo}\`（${sr.baselineTag || sr.baselineCommit || '-'} → ${sr.latestTag || sr.latestCommit || '-'}）`);
-                }
-              }
-            }
-            const ok = await copyTextSafe(promptLines.join('\n'));
-            if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
-            showToast(ok ? `已合并复制 ${byRepo.size} 个仓库共 ${checks.length} 条融合指令，粘贴给 AI 即可` : '复制失败', !ok);
-          } else if (act === 'radar-sync-all') {
-            await callServerTool('sync_upstream_baseline', { keys: [] });
-            showToast('已将全部上游仓库基线同步至最新并归绿');
-            appState.accounts.radarReport = await callServerTool('check_upstreams', { force: true });
-            renderAccounts();
-          } else if (act === 'radar-sync-key') {
-            const key = btn.dataset.key;
-            await callServerTool('sync_upstream_baseline', { keys: [key] });
-            showToast(`已将 ${key} 基线同步至最新并归绿`);
-            appState.accounts.radarReport = await callServerTool('check_upstreams', { force: true });
-            renderAccounts();
-          } else if (act === 'radar-copy' && appState.accounts.radarReport?.markdown) {
-            const ok = await copyTextSafe(appState.accounts.radarReport.markdown);
-            if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
-            showToast(ok ? '已复制上游择优评估简报' : '复制失败', !ok);
+            byRepo.get(repo).items.push({
+              sha: cb.dataset.sha || '-',
+              tagZh: cb.dataset.tagZh || '更新',
+              zh: cb.dataset.zh || '',
+              msg: cb.dataset.msg || ''
+            });
           }
-        } catch (err) {
-          appState.accounts.radarLoading = false;
-          appState.accounts.selfUpdateChecking = false;
-          appState.accounts.selfUpdateApplying = false;
-          setTopProgress(false);
-          showToast(formatAccountErrorMessage(err, '操作失败'), true);
-          renderAccounts();
+          const promptLines = [
+            '请评估以下我在 Prism 上游雷达中勾选的变更，以 Clean-room 方式择优融合进 `anti-claude-prism-suite`（未勾选条目一律跳过，严禁照搬照抄或引入 GPL 源码），完成后一并同步 `upstream.json` 与 `plugin/upstream.json` 基线：'
+          ];
+          let secIdx = 1;
+          for (const grp of byRepo.values()) {
+            const metaBits = [grp.license, grp.roleZh].filter(Boolean).join(' · ');
+            const isGpl = /GPL/i.test(grp.license);
+            promptLines.push('');
+            promptLines.push(`### ${secIdx}. ${grp.repo}${metaBits ? `（${metaBits}）` : ''}`);
+            if (isGpl) {
+              promptLines.push('> 注意：该仓库为 GPL 协议，仅参考公开交互思路或兼容信号，严禁复制或转写其源码。');
+            }
+            for (const it of grp.items) {
+              const zhDiffers = it.zh && it.zh !== it.msg;
+              promptLines.push(`- \`${it.sha}\` [${it.tagZh}] ${it.zh || it.msg}`);
+              if (zhDiffers && it.msg) {
+                promptLines.push(`  - 原文：\`${it.msg}\``);
+              }
+            }
+            secIdx++;
+          }
+          const skippedUpdated = allResults.filter((r) => r.hasUpdate && !byRepo.has(r.repo));
+          if (skippedUpdated.length) {
+            promptLines.push('');
+            promptLines.push(`### ${secIdx}. 本轮未勾选代码融合、直接同步基线的仓库`);
+            for (const sr of skippedUpdated) {
+              promptLines.push(`- \`${sr.repo}\`（${sr.baselineTag || sr.baselineCommit || '-'} → ${sr.latestTag || sr.latestCommit || '-'}）`);
+            }
+          }
+          const ok = await copyTextSafe(promptLines.join('\n'));
+          if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
+          showToast(ok ? `已合并复制 ${byRepo.size} 个仓库共 ${checks.length} 条融合指令，粘贴给 AI 即可` : '复制失败', !ok);
+          return;
+        }
+        if (act === 'radar-sync-all' || act === 'radar-sync-key') {
+          const key = act === 'radar-sync-key' ? (btn.dataset.key || '') : '';
+          try {
+            const syncRes = await callServerTool('sync_upstream_baseline', { keys: key ? [key] : [] }, 45000);
+            if (syncRes?.ok === false) {
+              showToast(formatAccountErrorMessage(syncRes.error, '同步上游基线失败'), true);
+              return;
+            }
+            showToast(key ? `已将 ${key} 基线同步至最新并归绿` : '已将全部上游仓库基线同步至最新并归绿');
+            const rep = await callServerTool('check_upstreams', { force: true }, 45000);
+            if (rep && rep.ok !== false) {
+              appState.accounts.radarReport = rep;
+              renderAccounts();
+            }
+          } catch (err) {
+            showToast(formatAccountErrorMessage(err, '同步上游基线失败'), true);
+          }
+          return;
+        }
+        if (act === 'radar-copy' && appState.accounts.radarReport?.markdown) {
+          const ok = await copyTextSafe(appState.accounts.radarReport.markdown);
+          if (ok) flashButtonFeedback(btn, '✓ 已复制', 1200);
+          showToast(ok ? '已复制上游择优评估简报' : '复制失败', !ok);
         }
       });
 
@@ -8408,11 +8826,12 @@
           event.preventDefault();
           filterInput.blur();
           appState.browse.selectedPath = appState.browse.entries[0].path;
-          renderBrowse();
-          browseListWrap.querySelector('.list-row.is-selected')?.scrollIntoView({ block: 'nearest' });
+          selectAndScrollListRow('browse', 0, browseListWrap, renderBrowse);
         } else if (event.key === 'Enter' && appState.browse.entries.length > 0) {
           event.preventDefault();
-          const cur = appState.browse.entries.find((it) => it.path === appState.browse.selectedPath) || appState.browse.entries[0];
+          let curIdx = appState.browse.entries.findIndex((it) => it.path === appState.browse.selectedPath);
+          if (curIdx === -1) curIdx = 0;
+          const cur = appState.browse.entries[curIdx];
           if (cur) {
             appState.browse.selectedPath = cur.path;
             if (cur.isDir) {
@@ -8420,7 +8839,7 @@
               appState.browse.query = '';
               navigateToDir(cur.path, '');
             } else {
-              renderBrowse();
+              if (!updateListSelectionDom('browse', curIdx)) renderBrowse();
               loadPreview(cur.path);
             }
           }
@@ -8491,6 +8910,28 @@
         return null;
       }
 
+      function updateListSelectionDom(listType, targetIdx) {
+        const wrap = listType === 'browse' ? browseListWrap : (listType === 'artifacts' ? artifactsListWrap : pinsListWrap);
+        if (!wrap) return null;
+        const nextRow = wrap.querySelector(`.list-row[data-list="${listType}"][data-index="${targetIdx}"]`);
+        if (!nextRow) return null;
+        for (const el of wrap.querySelectorAll('.list-row.is-selected')) {
+          if (el !== nextRow) el.classList.remove('is-selected');
+        }
+        nextRow.classList.add('is-selected');
+        return nextRow;
+      }
+
+      function selectAndScrollListRow(listType, idx, wrap, renderFallback) {
+        const rowEl = idx >= 0 ? updateListSelectionDom(listType, idx) : null;
+        if (rowEl) {
+          rowEl.scrollIntoView({ block: 'nearest' });
+          return;
+        }
+        renderFallback();
+        wrap?.querySelector('.list-row.is-selected')?.scrollIntoView({ block: 'nearest' });
+      }
+
       async function handleListClick(event) {
         const actionBtn = event.target.closest('button[data-action]');
         const row = event.target.closest('.list-row');
@@ -8521,18 +8962,18 @@
           return;
         }
 
-        // Row single click
+        // Row single click (toggle .is-selected incrementally without rewriting list innerHTML)
         if (listType === 'browse') {
           appState.browse.selectedPath = item.path;
-          renderBrowse();
+          if (!updateListSelectionDom('browse', idx)) renderBrowse();
           if (!item.isDir) loadPreview(item.path);
         } else if (listType === 'artifacts') {
           appState.artifacts.selectedPath = item.path;
-          renderArtifacts();
+          if (!updateListSelectionDom('artifacts', idx)) renderArtifacts();
           loadPreview(item.path);
         } else if (listType === 'pins') {
           appState.pins.selectedPath = item.path;
-          renderPins();
+          if (!updateListSelectionDom('pins', idx)) renderPins();
           if (item.exists === false) {
             showToast('该路径已不存在，可点击移除', true);
             return;
@@ -8756,7 +9197,8 @@
         const data = appState.preview.data;
         if (!data?.ok || data.editable !== true) return;
         appState.preview.editing = true;
-        appState.preview.draft = String(data.text ?? '');
+        appState.preview.saving = false;
+        appState.preview.draft = normalizeNewlines(data.text ?? '');
         appState.preview.dirty = false;
         appState.preview.conflictMsg = '';
         renderPreviewDrawer();
@@ -8765,11 +9207,15 @@
       btnPreviewSave.addEventListener('click', saveEditedFile);
 
       btnPreviewCancel.addEventListener('click', () => {
+        if (appState.preview.saving) {
+          showToast('正在保存中，请稍候…');
+          return;
+        }
         appState.preview.editing = false;
         appState.preview.dirty = false;
         appState.preview.conflictMsg = '';
         appState.preview.pendingSwitchPath = '';
-        appState.preview.draft = String(appState.preview.data?.text ?? '');
+        appState.preview.draft = normalizeNewlines(appState.preview.data?.text ?? '');
         renderPreviewDrawer();
       });
 
@@ -8779,10 +9225,15 @@
       });
 
       btnPreviewClose.addEventListener('click', () => {
+        if (appState.preview.saving) {
+          showToast('正在保存中，请稍候…');
+          return;
+        }
         if (appState.preview.editing && appState.preview.dirty) {
           showToast('当前仍有未保存修改，请先保存或点击取消', true);
           return;
         }
+        closeOpenWithMenu();
         if (!appState.preview.visible && window.innerWidth >= WIDE_SPLIT_MIN_WIDTH) {
           if (isFileTab(appState.activeTab) && appState.preview.userClosedInWideByTab) {
             appState.preview.userClosedInWideByTab[appState.activeTab] = true;
@@ -8808,6 +9259,10 @@
         if (act === 'save-switch') {
           await saveEditedFile();
         } else if (act === 'discard-switch') {
+          if (appState.preview.saving) {
+            showToast('正在保存中，请稍候…');
+            return;
+          }
           const nextPath = appState.preview.pendingSwitchPath;
           appState.preview.editing = false;
           appState.preview.dirty = false;
@@ -8817,6 +9272,10 @@
           appState.preview.pendingSwitchPath = '';
           renderPreviewBanner();
         } else if (act === 'reload-file') {
+          if (appState.preview.saving) {
+            showToast('正在保存中，请稍候…');
+            return;
+          }
           const path = appState.preview.data?.path;
           appState.preview.conflictMsg = '';
           appState.preview.editing = false;
@@ -8998,8 +9457,7 @@
             ? (delta > 0 ? 0 : items.length - 1)
             : Math.max(0, Math.min(items.length - 1, curIdx + delta));
           appState.browse.selectedPath = items[nextIdx].path;
-          renderBrowse();
-          browseListWrap.querySelector('.list-row.is-selected')?.scrollIntoView({ block: 'nearest' });
+          selectAndScrollListRow('browse', nextIdx, browseListWrap, renderBrowse);
           scheduleLiveArrowPreview(items[nextIdx]);
         } else if (tab === 'artifacts') {
           const q = appState.artifacts.query.trim().toLowerCase();
@@ -9011,10 +9469,10 @@
           const nextIdx = curIdx === -1
             ? (delta > 0 ? 0 : items.length - 1)
             : Math.max(0, Math.min(items.length - 1, curIdx + delta));
-          appState.artifacts.selectedPath = items[nextIdx].path;
-          renderArtifacts();
-          artifactsListWrap.querySelector('.list-row.is-selected')?.scrollIntoView({ block: 'nearest' });
-          scheduleLiveArrowPreview(items[nextIdx]);
+          const targetItem = items[nextIdx];
+          appState.artifacts.selectedPath = targetItem.path;
+          selectAndScrollListRow('artifacts', appState.artifacts.items.indexOf(targetItem), artifactsListWrap, renderArtifacts);
+          scheduleLiveArrowPreview(targetItem);
         } else if (tab === 'pins') {
           const items = appState.pins.items;
           if (!items.length) return;
@@ -9023,8 +9481,7 @@
             ? (delta > 0 ? 0 : items.length - 1)
             : Math.max(0, Math.min(items.length - 1, curIdx + delta));
           appState.pins.selectedPath = items[nextIdx].path;
-          renderPins();
-          pinsListWrap.querySelector('.list-row.is-selected')?.scrollIntoView({ block: 'nearest' });
+          selectAndScrollListRow('pins', nextIdx, pinsListWrap, renderPins);
           scheduleLiveArrowPreview(items[nextIdx]);
         }
       }
@@ -9203,25 +9660,30 @@
           loadOpenTargets().catch(() => {});
 
           // Background warm sync of account summary for main-window Prism popover capsule
-          setTimeout(() => {
+          bootstrapTimers.push(setTimeout(() => {
             if (!appState.accounts.loaded && !appState.accounts.loading) {
               callServerTool('accounts_status', { forceRefresh: false })
-                .then((st) => { if (st && st.ok) broadcastAccountSummary(st); })
+                .then((st) => {
+                  if (st && st.ok) {
+                    if (!appState.accounts.data) appState.accounts.data = st;
+                    broadcastAccountSummary(st);
+                  }
+                })
                 .catch(() => {});
             }
-          }, 900);
+          }, 900));
 
           // Fallback when mounted directly as sidebar/aux pane without immediate tool-result
-          setTimeout(() => {
+          bootstrapTimers.push(setTimeout(() => {
             if (!appState.hasToolResult && !appState.hasToolInput) {
               fallbackLoadIfNoToolResult();
             }
-          }, 250);
-          setTimeout(() => {
+          }, 250));
+          bootstrapTimers.push(setTimeout(() => {
             if (!appState.hasToolResult && !appState.browse.dir && !appState.browse.loading) {
               fallbackLoadIfNoToolResult();
             }
-          }, 2200);
+          }, 2200));
         } catch (err) {
           appState.initialized = true;
           showToast(err?.message || '初始化通信失败', true);
