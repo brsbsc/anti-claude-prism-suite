@@ -134,9 +134,11 @@ if (VERIFY_ONCE && (process.env.ANTI_CLAUDE_FAKE_VERIFY_OK === '1' || process.en
 /* -------------------------------------------------------------------------- */
 
 function readProcessCommandLine(pid) {
+  const numPid = Number(pid);
+  if (!Number.isInteger(numPid) || numPid <= 0) return '';
   if (process.platform === 'linux') {
     try {
-      const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+      const raw = fs.readFileSync(`/proc/${numPid}/cmdline`, 'utf8');
       if (raw) return raw.replace(/\0+/g, ' ').trim();
     } catch {}
   }
@@ -144,15 +146,15 @@ function readProcessCommandLine(pid) {
     try {
       return execFileSync(
         'powershell',
-        ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
-        { encoding: 'utf8', timeout: 2000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
+        ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${numPid}").CommandLine`],
+        { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
       ).trim();
     } catch {
       return '';
     }
   }
   try {
-    return execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], {
+    return execFileSync('ps', ['-ww', '-p', String(numPid), '-o', 'command='], {
       encoding: 'utf8',
       timeout: 1500,
       stdio: ['ignore', 'pipe', 'ignore']
@@ -1265,6 +1267,63 @@ function getDbStatByPath(dbPath) {
 }
 
 let tmpSeq = 0;
+const MAX_UNC_DB_MIRRORS = 12;
+const UNC_DB_MIRROR_TTL_MS = 60000;
+const uncDbMirrorCache = new Map(); // dbPath -> { sig, tmpBase, lastUsedAt }
+let uncMirrorCleanupBound = false;
+
+function removeUncMirrorFiles(tmpBase) {
+  if (!tmpBase) return;
+  for (const sfx of ['', '-wal', '-shm']) {
+    try {
+      fs.rmSync(`${tmpBase}${sfx}`, { force: true });
+    } catch {}
+  }
+}
+
+function cleanupAllUncDbMirrors() {
+  for (const [, rec] of uncDbMirrorCache.entries()) {
+    removeUncMirrorFiles(rec.tmpBase);
+  }
+  uncDbMirrorCache.clear();
+}
+
+function pruneUncDbMirrors(now = Date.now()) {
+  for (const [k, rec] of Array.from(uncDbMirrorCache.entries())) {
+    if (now - rec.lastUsedAt > UNC_DB_MIRROR_TTL_MS) {
+      uncDbMirrorCache.delete(k);
+      removeUncMirrorFiles(rec.tmpBase);
+    }
+  }
+  while (uncDbMirrorCache.size > MAX_UNC_DB_MIRRORS) {
+    const oldestKey = uncDbMirrorCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = uncDbMirrorCache.get(oldestKey);
+    uncDbMirrorCache.delete(oldestKey);
+    removeUncMirrorFiles(oldest?.tmpBase);
+  }
+}
+
+function createUncDbMirror(dbPath) {
+  tmpSeq = (tmpSeq + 1) % 100000;
+  const tmpBase = path.join(os.tmpdir(), `ac-wsl-sqlite-${process.pid}-${Date.now()}-${tmpSeq}.db`);
+  try {
+    fs.copyFileSync(dbPath, tmpBase);
+    const walPath = `${dbPath}-wal`;
+    if (fs.existsSync(walPath)) {
+      try {
+        fs.copyFileSync(walPath, `${tmpBase}-wal`);
+      } catch {}
+    }
+    return tmpBase;
+  } catch (err) {
+    removeUncMirrorFiles(tmpBase);
+    throw err;
+  }
+}
+
+const UNC_DB_RECOVERABLE_ERR_RE = /SQLITE_(?:CORRUPT|CANTOPEN|IOERR|NOTADB)|database disk image is malformed|unable to open/i;
+
 function withReadOnlyDb(dbPath, timeoutMs, fn) {
   if (!isUncPath(dbPath)) {
     const db = new DatabaseSync(dbPath, { readOnly: true, timeout: timeoutMs });
@@ -1276,27 +1335,70 @@ function withReadOnlyDb(dbPath, timeoutMs, fn) {
       } catch {}
     }
   }
-  tmpSeq = (tmpSeq + 1) % 100000;
-  const tmpBase = path.join(os.tmpdir(), `ac-wsl-sqlite-${process.pid}-${Date.now()}-${tmpSeq}.db`);
-  let tmpDb = null;
-  try {
-    fs.copyFileSync(dbPath, tmpBase);
-    const walPath = `${dbPath}-wal`;
-    if (fs.existsSync(walPath)) {
+  if (!uncMirrorCleanupBound) {
+    uncMirrorCleanupBound = true;
+    process.on('exit', cleanupAllUncDbMirrors);
+  }
+  const now = Date.now();
+  pruneUncDbMirrors(now);
+
+  const curStat = getDbStatByPath(dbPath);
+  const curSig = curStat ? curStat.sig : '';
+  const cached = curSig ? uncDbMirrorCache.get(dbPath) : null;
+
+  if (cached && cached.sig === curSig && fs.existsSync(cached.tmpBase)) {
+    uncDbMirrorCache.delete(dbPath);
+    cached.lastUsedAt = now;
+    uncDbMirrorCache.set(dbPath, cached);
+    let opened = false;
+    let mirrorBroken = false;
+    let reusedDb = null;
+    try {
       try {
-        fs.copyFileSync(walPath, `${tmpBase}-wal`);
-      } catch {}
+        reusedDb = new DatabaseSync(cached.tmpBase, { readOnly: true, timeout: timeoutMs });
+        opened = true;
+        return fn(reusedDb);
+      } catch (err) {
+        const msg = `${err?.errstr || ''} ${err?.code || ''} ${err?.message || err}`;
+        if (!opened || UNC_DB_RECOVERABLE_ERR_RE.test(msg)) {
+          mirrorBroken = true;
+        } else {
+          throw err;
+        }
+      } finally {
+        try {
+          reusedDb?.close();
+        } catch {}
+      }
+    } finally {
+      if (mirrorBroken) {
+        uncDbMirrorCache.delete(dbPath);
+        removeUncMirrorFiles(cached.tmpBase);
+      }
     }
+  } else if (cached) {
+    uncDbMirrorCache.delete(dbPath);
+    removeUncMirrorFiles(cached.tmpBase);
+  }
+
+  const tmpBase = createUncDbMirror(dbPath);
+  let tmpDb = null;
+  let keepMirror = false;
+  try {
     tmpDb = new DatabaseSync(tmpBase, { readOnly: true, timeout: timeoutMs });
-    return fn(tmpDb);
+    const res = fn(tmpDb);
+    if (curSig) {
+      uncDbMirrorCache.set(dbPath, { sig: curSig, tmpBase, lastUsedAt: now });
+      pruneUncDbMirrors(now);
+      keepMirror = true;
+    }
+    return res;
   } finally {
     try {
       tmpDb?.close();
     } catch {}
-    for (const sfx of ['', '-wal', '-shm']) {
-      try {
-        fs.rmSync(`${tmpBase}${sfx}`, { force: true });
-      } catch {}
+    if (!keepMirror) {
+      removeUncMirrorFiles(tmpBase);
     }
   }
 }
@@ -1354,13 +1456,16 @@ function setBounded(map, key, val, max = 128) {
   }
 }
 
+const MAX_LINEAGE_DIRS = 16;
+const MAX_LINEAGE_NODES_PER_DIR = 2000;
+
 function getDescendantIds(cascadeId, conversationsDir) {
   if (!DatabaseSync || !conversationsDir) return [];
   let dirState = lineageCacheByDir.get(conversationsDir);
   if (!dirState) {
     dirState = { dirMtimeMs: -1, nodes: new Map() };
-    lineageCacheByDir.set(conversationsDir, dirState);
   }
+  setBounded(lineageCacheByDir, conversationsDir, dirState, MAX_LINEAGE_DIRS);
   const st = fs.statSync(conversationsDir, { throwIfNoEntry: false });
   if (!st || !st.isDirectory()) return [];
 
@@ -1371,21 +1476,44 @@ function getDescendantIds(cascadeId, conversationsDir) {
     } catch {
       return [];
     }
+    const dbFiles = [];
+    for (const name of entries) {
+      const m = name.match(DB_FILE_RE);
+      if (!m) continue;
+      dbFiles.push({ uuid: m[1], dbPath: path.join(conversationsDir, name) });
+    }
+    const statCache = new Map();
+    const getCachedStat = (dbPath) => {
+      if (statCache.has(dbPath)) return statCache.get(dbPath);
+      const info = getDbStatByPath(dbPath);
+      statCache.set(dbPath, info);
+      return info;
+    };
+    let activeDbFiles = dbFiles;
+    if (dbFiles.length > MAX_LINEAGE_NODES_PER_DIR) {
+      const withMtime = [];
+      for (const f of dbFiles) {
+        const info = getCachedStat(f.dbPath);
+        if (info) withMtime.push({ ...f, info });
+      }
+      withMtime.sort((a, b) => b.info.mtimeMs - a.info.mtimeMs);
+      activeDbFiles = withMtime.slice(0, MAX_LINEAGE_NODES_PER_DIR);
+    }
+
     const seen = new Set();
     const uncMode = isUncPath(conversationsDir);
     const maxBatchOpens = uncMode ? 6 : 20;
     const candidates = [];
-    for (const name of entries) {
-      const m = name.match(DB_FILE_RE);
-      if (!m) continue;
-      const uuid = m[1];
-      seen.add(uuid);
-      const existing = dirState.nodes.get(uuid);
+    for (const f of activeDbFiles) {
+      seen.add(f.uuid);
+      const existing = dirState.nodes.get(f.uuid);
       if (existing?.hasMeta) continue;
-      const dbPath = path.join(conversationsDir, name);
-      const info = getDbStatByPath(dbPath);
+      const info = f.info || getCachedStat(f.dbPath);
       if (!info || (existing && existing.sig === info.sig)) continue;
-      candidates.push({ uuid, dbPath, info });
+      candidates.push({ uuid: f.uuid, dbPath: f.dbPath, info });
+    }
+    for (const id of Array.from(dirState.nodes.keys())) {
+      if (!seen.has(id)) dirState.nodes.delete(id);
     }
     if (uncMode && candidates.length > maxBatchOpens) {
       candidates.sort((a, b) => b.info.mtimeMs - a.info.mtimeMs);
@@ -1405,13 +1533,15 @@ function getDescendantIds(cascadeId, conversationsDir) {
             rootId: readUtf8(meta.get(6)).trim()
           };
         });
-        dirState.nodes.set(item.uuid, { ...metaRes, sig: item.info.sig });
+        setBounded(dirState.nodes, item.uuid, { ...metaRes, sig: item.info.sig }, MAX_LINEAGE_NODES_PER_DIR);
       } catch {
-        dirState.nodes.set(item.uuid, { hasMeta: false, parentId: '', rootId: '', sig: item.info.sig });
+        setBounded(
+          dirState.nodes,
+          item.uuid,
+          { hasMeta: false, parentId: '', rootId: '', sig: item.info.sig },
+          MAX_LINEAGE_NODES_PER_DIR
+        );
       }
-    }
-    for (const id of Array.from(dirState.nodes.keys())) {
-      if (!seen.has(id)) dirState.nodes.delete(id);
     }
     if (opens < maxBatchOpens) dirState.dirMtimeMs = st.mtimeMs;
   }
@@ -1773,13 +1903,25 @@ function getBlockedSystemPrefixes() {
     'C:\\Program Files (x86)'
   ];
   for (const h of homes) {
+    const geminiConfig = path.join(h, '.gemini', 'config');
+    const geminiAg = path.join(h, '.gemini', 'antigravity');
+    const geminiOauth = path.join(h, '.gemini', 'jetski-standalone-oauth-token');
+    const configAg = path.join(h, '.config', 'antigravity');
     prefixes.push(
       path.join(h, '.ssh'),
       path.join(h, '.gnupg'),
       path.join(h, '.aws'),
       path.join(h, '.kube'),
       path.join(h, '.config', 'gcloud'),
-      path.join(h, 'Library', 'Keychains')
+      path.join(h, 'Library', 'Keychains'),
+      geminiConfig,
+      resolveRealPathBestEffort(geminiConfig),
+      geminiAg,
+      resolveRealPathBestEffort(geminiAg),
+      geminiOauth,
+      resolveRealPathBestEffort(geminiOauth),
+      configAg,
+      resolveRealPathBestEffort(configAg)
     );
   }
   return prefixes;
@@ -1795,9 +1937,11 @@ export function isSensitiveSourcePath(absPath) {
       const normBlocked = normalizePathForCompare(blocked);
       if (normCand === normBlocked || isPathInsideDir(normBlocked, normCand)) return true;
     }
-    /* Block common credential/key files directly under HOME */
-    const base = path.basename(cand).toLowerCase();
+    /* Block common credential/key/env files (strip Windows NTFS ADS & trailing dots/spaces) */
+    const base = path.basename(cand).toLowerCase().replace(/:.*$/, '').replace(/[. ]+$/, '');
     if (
+      base === '.env' ||
+      base.startsWith('.env.') ||
       base === '.netrc' ||
       base === '.npmrc' ||
       base === '.pypirc' ||
@@ -1897,29 +2041,14 @@ function formatHumanBytes(bytes) {
   return `${n} B`;
 }
 
-function resolveAtomicWriteTarget(filePath) {
-  try {
-    const lst = fs.lstatSync(filePath);
-    if (lst.isSymbolicLink()) {
-      try {
-        return fs.realpathSync(filePath);
-      } catch {
-        return path.resolve(path.dirname(filePath), fs.readlinkSync(filePath));
-      }
-    }
-  } catch {}
-  return filePath;
-}
-
 function writeAtomicUtf8(filePath, content) {
-  const target = resolveAtomicWriteTarget(filePath);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  let prevMode = null;
-  try {
-    const st = fs.statSync(target, { throwIfNoEntry: false });
-    if (st && st.isFile()) prevMode = st.mode & 0o777;
-  } catch {}
-  const tmp = `${target}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const lst = fs.lstatSync(filePath, { throwIfNoEntry: false });
+  if (lst && lst.isSymbolicLink()) {
+    throw new Error(`Refusing to write through symlink: ${filePath}`);
+  }
+  const prevMode = lst && lst.isFile() ? lst.mode & 0o777 : null;
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   try {
     fs.writeFileSync(tmp, content, prevMode !== null ? { encoding: 'utf8', mode: prevMode } : 'utf8');
     if (prevMode !== null) {
@@ -1927,12 +2056,76 @@ function writeAtomicUtf8(filePath, content) {
         fs.chmodSync(tmp, prevMode);
       } catch {}
     }
-    fs.renameSync(tmp, target);
+    const preRename = fs.lstatSync(filePath, { throwIfNoEntry: false });
+    if (preRename && preRename.isSymbolicLink()) {
+      throw new Error(`Refusing to write through symlink: ${filePath}`);
+    }
+    fs.renameSync(tmp, filePath);
   } catch (err) {
     try {
       fs.rmSync(tmp, { force: true });
     } catch {}
     throw err;
+  }
+}
+
+function isSameNormalizedPath(a, b) {
+  return normalizePathForCompare(a) === normalizePathForCompare(b);
+}
+
+/**
+ * Verify that every existing segment from `rootDir` down to `targetPath` is not a symlink
+ * and resolves strictly inside `realRootDir` (prevents symlink/junction escape on project writes).
+ */
+function checkProjectSubpathNoSymlink(rootDir, realRootDir, targetPath, { requireTargetExists = false } = {}) {
+  const absRoot = path.resolve(rootDir);
+  const absTarget = path.resolve(targetPath);
+  if (!isPathInsideDir(absRoot, absTarget)) return { ok: false, error: 'path_outside_project' };
+  let rel;
+  if (CASE_INSENSITIVE_FS) {
+    const normRoot = normalizePathForCompare(absRoot);
+    const normTarget = normalizePathForCompare(absTarget);
+    const rootPrefix = normRoot.endsWith(path.sep) ? normRoot : `${normRoot}${path.sep}`;
+    if (!normTarget.startsWith(rootPrefix)) return { ok: false, error: 'path_outside_project' };
+    const rawPrefix = absRoot.endsWith(path.sep) ? absRoot : `${absRoot}${path.sep}`;
+    const useRawSlice = absRoot.length === normRoot.length && absTarget.length === normTarget.length;
+    rel = useRawSlice ? absTarget.slice(rawPrefix.length) : normTarget.slice(rootPrefix.length);
+  } else {
+    rel = path.relative(absRoot, absTarget);
+  }
+  const parts = rel.split(path.sep).filter(Boolean);
+  if (parts.length === 0 || parts.some((seg) => seg === '..' || seg === '.')) {
+    return { ok: false, error: 'path_outside_project' };
+  }
+  let cur = absRoot;
+  let deepestExisting = absRoot;
+  let targetLst = null;
+  for (let i = 0; i < parts.length; i++) {
+    cur = path.join(cur, parts[i]);
+    let lst = null;
+    try {
+      lst = fs.lstatSync(cur);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') {
+        if (requireTargetExists) return { ok: false, error: 'not_found' };
+        break;
+      }
+      return { ok: false, error: 'stat_failed' };
+    }
+    if (lst.isSymbolicLink()) {
+      return { ok: false, error: 'symlink_path_blocked' };
+    }
+    deepestExisting = cur;
+    if (i === parts.length - 1) targetLst = lst;
+  }
+  try {
+    const realDeepest = fs.realpathSync(deepestExisting);
+    if (!isSameNormalizedPath(realDeepest, realRootDir) && !isPathInsideDir(realRootDir, realDeepest)) {
+      return { ok: false, error: 'symlink_path_blocked' };
+    }
+    return { ok: true, lstat: targetLst, realDeepest };
+  } catch {
+    return { ok: false, error: 'realpath_failed' };
   }
 }
 
@@ -2123,7 +2316,7 @@ function uniqueDestPath(destDir, rawBaseName) {
   const stem = ext ? cleanName.slice(0, -ext.length) : cleanName;
   let candidate = path.join(destDir, cleanName);
   let idx = 1;
-  while (fs.existsSync(candidate)) {
+  while (fs.lstatSync(candidate, { throwIfNoEntry: false })) {
     candidate = path.join(destDir, `${stem}-${idx}${ext}`);
     idx += 1;
   }
@@ -2133,12 +2326,25 @@ function uniqueDestPath(destDir, rawBaseName) {
 export function saveProjectContext(payload, { registryFile = PROJECTS_REGISTRY_FILE } = {}) {
   const dirPath = resolveLocalProjectDir(payload?.dirPath);
   if (!dirPath) return { ok: false, error: 'invalid_directory' };
+  let realDirPath;
+  try {
+    realDirPath = fs.realpathSync(dirPath);
+  } catch {
+    return { ok: false, error: 'invalid_directory' };
+  }
 
   const agentsPath = path.join(dirPath, 'AGENTS.md');
-  const existingAgents = readTextOrEmpty(agentsPath);
-  const prevMeta = readJsonOrFallback(path.join(dirPath, PROJECT_META_REL), null);
-  const prevFiles = Array.isArray(prevMeta?.files) ? prevMeta.files : [];
+  const metaPath = path.join(dirPath, PROJECT_META_REL);
   const filesDir = path.join(dirPath, PROJECT_FILES_REL);
+
+  const agentsPreCheck = checkProjectSubpathNoSymlink(dirPath, realDirPath, agentsPath);
+  if (!agentsPreCheck.ok) return { ok: false, error: agentsPreCheck.error };
+  const metaPreCheck = checkProjectSubpathNoSymlink(dirPath, realDirPath, metaPath);
+  if (!metaPreCheck.ok) return { ok: false, error: metaPreCheck.error };
+
+  const existingAgents = readTextOrEmpty(agentsPath);
+  const prevMeta = readJsonOrFallback(metaPath, null);
+  const prevFiles = Array.isArray(prevMeta?.files) ? prevMeta.files : [];
 
   const curDoc = splitAgentsMdDocument(existingAgents, prevMeta);
   const instructions =
@@ -2156,19 +2362,31 @@ export function saveProjectContext(payload, { registryFile = PROJECTS_REGISTRY_F
   const nextFiles = [];
   const seenRelPaths = new Set();
 
+  const ensureSafeFilesDir = () => {
+    const chk = checkProjectSubpathNoSymlink(dirPath, realDirPath, filesDir);
+    if (!chk.ok) return chk;
+    fs.mkdirSync(filesDir, { recursive: true });
+    const postChk = checkProjectSubpathNoSymlink(dirPath, realDirPath, filesDir, { requireTargetExists: true });
+    if (!postChk.ok || !postChk.lstat?.isDirectory()) {
+      return { ok: false, error: postChk.ok ? 'invalid_files_dir' : postChk.error };
+    }
+    return { ok: true };
+  };
+
   for (const op of ops) {
     if (!op || typeof op !== 'object') continue;
     if (op.action === 'keep' && typeof op.relPath === 'string') {
       const absPath = path.resolve(dirPath, op.relPath);
-      if (!isPathInsideDir(dirPath, absPath)) continue;
-      const st = fs.statSync(absPath, { throwIfNoEntry: false });
-      if (!st || !st.isFile()) continue;
+      const keepChk = checkProjectSubpathNoSymlink(dirPath, realDirPath, absPath, { requireTargetExists: true });
+      if (!keepChk.ok || !keepChk.lstat || !keepChk.lstat.isFile()) continue;
+      if (!isPathInsideDir(realDirPath, keepChk.realDeepest)) continue;
+      if (isSensitiveSourcePath(absPath) || isSensitiveSourcePath(keepChk.realDeepest)) continue;
       const relNorm = path.relative(dirPath, absPath).replace(/\\/g, '/');
       if (seenRelPaths.has(relNorm)) continue;
       seenRelPaths.add(relNorm);
       const managedCopy = isPathInsideDir(filesDir, absPath);
       if (managedCopy) keptManagedRelPaths.add(relNorm);
-      nextFiles.push({ name: op.name || path.basename(absPath), relPath: relNorm, size: st.size, managedCopy });
+      nextFiles.push({ name: op.name || path.basename(absPath), relPath: relNorm, size: keepChk.lstat.size, managedCopy });
     } else if (op.action === 'add' && typeof op.sourcePath === 'string') {
       const srcAbs = path.resolve(op.sourcePath.trim());
       if (isSensitiveSourcePath(srcAbs)) continue;
@@ -2178,10 +2396,16 @@ export function saveProjectContext(payload, { registryFile = PROJECTS_REGISTRY_F
       if (isSensitiveSourcePath(realSrc)) continue;
       let finalAbs = srcAbs;
       let managedCopy = false;
-      if (!isPathInsideDir(dirPath, realSrc)) {
-        fs.mkdirSync(filesDir, { recursive: true });
+      const srcInsideProject =
+        isPathInsideDir(realDirPath, realSrc) &&
+        checkProjectSubpathNoSymlink(dirPath, realDirPath, srcAbs, { requireTargetExists: true }).ok;
+      if (!srcInsideProject) {
+        const dirChk = ensureSafeFilesDir();
+        if (!dirChk.ok) return { ok: false, error: dirChk.error };
         finalAbs = uniqueDestPath(filesDir, path.basename(srcAbs));
-        fs.copyFileSync(realSrc, finalAbs);
+        const destChk = checkProjectSubpathNoSymlink(dirPath, realDirPath, finalAbs);
+        if (!destChk.ok) return { ok: false, error: destChk.error };
+        fs.copyFileSync(realSrc, finalAbs, fs.constants.COPYFILE_EXCL);
         try {
           fs.chmodSync(finalAbs, 0o644);
         } catch {}
@@ -2189,18 +2413,29 @@ export function saveProjectContext(payload, { registryFile = PROJECTS_REGISTRY_F
       } else {
         managedCopy = isPathInsideDir(filesDir, srcAbs);
       }
+      const finalChk = checkProjectSubpathNoSymlink(dirPath, realDirPath, finalAbs, { requireTargetExists: true });
+      if (!finalChk.ok || !finalChk.lstat?.isFile()) continue;
       const relNorm = path.relative(dirPath, finalAbs).replace(/\\/g, '/');
       if (seenRelPaths.has(relNorm)) continue;
       seenRelPaths.add(relNorm);
       if (managedCopy) keptManagedRelPaths.add(relNorm);
-      const finalSt = fs.statSync(finalAbs);
-      nextFiles.push({ name: path.basename(finalAbs), relPath: relNorm, size: finalSt.size, managedCopy });
+      nextFiles.push({ name: path.basename(finalAbs), relPath: relNorm, size: finalChk.lstat.size, managedCopy });
     } else if (op.action === 'addContent' && typeof op.name === 'string' && typeof op.base64 === 'string') {
       const buf = Buffer.from(op.base64, 'base64');
       if (buf.length > 50 * 1024 * 1024) continue;
-      fs.mkdirSync(filesDir, { recursive: true });
+      const dirChk = ensureSafeFilesDir();
+      if (!dirChk.ok) return { ok: false, error: dirChk.error };
       const finalAbs = uniqueDestPath(filesDir, op.name);
-      fs.writeFileSync(finalAbs, buf, { mode: 0o644 });
+      const destChk = checkProjectSubpathNoSymlink(dirPath, realDirPath, finalAbs);
+      if (!destChk.ok) return { ok: false, error: destChk.error };
+      fs.writeFileSync(finalAbs, buf, { flag: 'wx', mode: 0o644 });
+      const writtenChk = checkProjectSubpathNoSymlink(dirPath, realDirPath, finalAbs, { requireTargetExists: true });
+      if (!writtenChk.ok || !isPathInsideDir(realDirPath, writtenChk.realDeepest)) {
+        try {
+          fs.rmSync(finalAbs, { force: true });
+        } catch {}
+        return { ok: false, error: 'symlink_path_blocked' };
+      }
       const relNorm = path.relative(dirPath, finalAbs).replace(/\\/g, '/');
       if (seenRelPaths.has(relNorm)) continue;
       seenRelPaths.add(relNorm);
@@ -2216,7 +2451,10 @@ export function saveProjectContext(payload, { registryFile = PROJECTS_REGISTRY_F
       const relNorm = old.relPath.replace(/\\/g, '/');
       if (keptManagedRelPaths.has(relNorm)) continue;
       const oldAbs = path.resolve(dirPath, relNorm);
-      if (isPathInsideDir(filesDir, oldAbs)) {
+      if (
+        isPathInsideDir(filesDir, oldAbs) &&
+        checkProjectSubpathNoSymlink(dirPath, realDirPath, oldAbs, { requireTargetExists: true }).ok
+      ) {
         try {
           fs.rmSync(oldAbs, { force: true });
         } catch {}
@@ -2254,19 +2492,28 @@ export function saveProjectContext(payload, { registryFile = PROJECTS_REGISTRY_F
   }
 
   if (nextAgents !== existingAgents) {
+    const agentsWriteChk = checkProjectSubpathNoSymlink(dirPath, realDirPath, agentsPath);
+    if (!agentsWriteChk.ok) return { ok: false, error: agentsWriteChk.error };
     if (nextAgents) {
       writeAtomicUtf8(agentsPath, nextAgents);
-    } else if (fs.existsSync(agentsPath)) {
+    } else if (fs.lstatSync(agentsPath, { throwIfNoEntry: false })) {
       fs.rmSync(agentsPath, { force: true });
     }
   }
 
   const preservedTasks = Array.isArray(prevMeta?.scheduledTasks) ? prevMeta.scheduledTasks : [];
-  const metaPath = path.join(dirPath, PROJECT_META_REL);
   const hasManagedData = Boolean(
     nextFiles.length > 0 || nextExtraFolders.length > 0 || preservedTasks.length > 0
   );
   if (hasManagedData) {
+    const metaWriteChk = checkProjectSubpathNoSymlink(dirPath, realDirPath, metaPath);
+    if (!metaWriteChk.ok) return { ok: false, error: metaWriteChk.error };
+    const acDir = path.dirname(metaPath);
+    fs.mkdirSync(acDir, { recursive: true });
+    const acDirChk = checkProjectSubpathNoSymlink(dirPath, realDirPath, acDir, { requireTargetExists: true });
+    if (!acDirChk.ok || !acDirChk.lstat?.isDirectory()) {
+      return { ok: false, error: acDirChk.ok ? 'symlink_path_blocked' : acDirChk.error };
+    }
     writeAtomicUtf8(
       metaPath,
       `${JSON.stringify(
@@ -2284,10 +2531,21 @@ export function saveProjectContext(payload, { registryFile = PROJECTS_REGISTRY_F
     recordManagedProjectDir(dirPath, true, registryFile);
   } else {
     try {
-      fs.rmSync(metaPath, { force: true });
-      if (fs.existsSync(filesDir) && fs.readdirSync(filesDir).length === 0) fs.rmdirSync(filesDir);
+      const metaDelChk = checkProjectSubpathNoSymlink(dirPath, realDirPath, metaPath);
+      if (metaDelChk.ok) fs.rmSync(metaPath, { force: true });
+      if (
+        checkProjectSubpathNoSymlink(dirPath, realDirPath, filesDir, { requireTargetExists: true }).ok &&
+        fs.readdirSync(filesDir).length === 0
+      ) {
+        fs.rmdirSync(filesDir);
+      }
       const acDir = path.join(dirPath, '.anti-claude');
-      if (fs.existsSync(acDir) && fs.readdirSync(acDir).length === 0) fs.rmdirSync(acDir);
+      if (
+        checkProjectSubpathNoSymlink(dirPath, realDirPath, acDir, { requireTargetExists: true }).ok &&
+        fs.readdirSync(acDir).length === 0
+      ) {
+        fs.rmdirSync(acDir);
+      }
     } catch {}
     recordManagedProjectDir(dirPath, false, registryFile);
   }
@@ -2537,10 +2795,17 @@ export function saveProjectScheduledTask(
   const timezone = String(rawTask.timezone || getHostTimeZone()).trim() || 'Asia/Shanghai';
 
   const metaPath = path.join(dirPath, PROJECT_META_REL);
+  let realDirPath;
+  try {
+    realDirPath = fs.realpathSync(dirPath);
+  } catch {
+    return { ok: false, error: 'invalid_directory' };
+  }
+  const metaCheck = checkProjectSubpathNoSymlink(dirPath, realDirPath, metaPath);
+  if (!metaCheck.ok) return { ok: false, error: metaCheck.error };
   const prevMeta = readJsonOrFallback(metaPath, null) || {};
   const prevTasks = Array.isArray(prevMeta.scheduledTasks) ? prevMeta.scheduledTasks.slice() : [];
   const projectDirs = buildProjectDirSet(dirPath, prevMeta);
-  projectDirs.add(folderPath);
 
   const editId = typeof rawTask.id === 'string' && rawTask.id.trim() ? rawTask.id.trim() : '';
   const existingIdx = editId ? prevTasks.findIndex((t) => t && t.id === editId) : -1;
@@ -2669,6 +2934,14 @@ export function deleteProjectScheduledTask(
   if (!taskId && !reqSidecarId) return { ok: false, error: 'missing_task_id' };
 
   const metaPath = path.join(dirPath, PROJECT_META_REL);
+  let realDirPath;
+  try {
+    realDirPath = fs.realpathSync(dirPath);
+  } catch {
+    return { ok: false, error: 'invalid_directory' };
+  }
+  const metaCheck = checkProjectSubpathNoSymlink(dirPath, realDirPath, metaPath);
+  if (!metaCheck.ok) return { ok: false, error: metaCheck.error };
   const prevMeta = readJsonOrFallback(metaPath, null);
   const prevTasks = Array.isArray(prevMeta?.scheduledTasks) ? prevMeta.scheduledTasks : [];
   const projectDirs = buildProjectDirSet(dirPath, prevMeta);
@@ -2718,12 +2991,16 @@ export function deleteProjectScheduledTask(
       );
     } else {
       try {
-        fs.rmSync(metaPath, { force: true });
+        const rmMetaCheck = checkProjectSubpathNoSymlink(dirPath, realDirPath, metaPath);
+        if (rmMetaCheck.ok) fs.rmSync(metaPath, { force: true });
         const acDir = path.join(dirPath, '.anti-claude');
-        if (fs.existsSync(acDir) && fs.readdirSync(acDir).length === 0) fs.rmdirSync(acDir);
+        const acDirCheck = checkProjectSubpathNoSymlink(dirPath, realDirPath, acDir, { requireTargetExists: true });
+        if (acDirCheck.ok && acDirCheck.lstat && acDirCheck.lstat.isDirectory() && !acDirCheck.lstat.isSymbolicLink()) {
+          if (fs.readdirSync(acDir).length === 0) fs.rmdirSync(acDir);
+        }
       } catch {}
       const agentsText = readTextOrEmpty(path.join(dirPath, 'AGENTS.md'));
-      if (!agentsText.includes(PROJECT_RULE_BEGIN)) recordManagedProjectDir(dirPath, false);
+      if (!agentsText.includes(PROJECT_RULE_BEGIN)) recordManagedProjectDir(dirPath, false, registryFile);
     }
   }
 
@@ -3026,25 +3303,32 @@ const WIN_INSPECT_REVEAL_PS = [
   'try { $dt = [int]([System.IO.DriveInfo]::new($letter)).DriveType } catch { Write-Output "ERR:drive_type_check_failed"; exit 0 }',
   'if ($dt -eq 1) { Write-Output "ERR:not_found"; exit 0 }',
   'if ($dt -ne 2 -and $dt -ne 3 -and $dt -ne 6) { Write-Output "ERR:remote_drive_blocked"; exit 0 }',
+  '$testUnsafeReparse = { param($p, $attr) if (($attr -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) { return $false }; try { $it = Get-Item -LiteralPath $p -Force; $lt = [string]$it.LinkType; $tg = ($it.Target -join ""); if (-not [string]::IsNullOrEmpty($lt) -or -not [string]::IsNullOrEmpty($tg)) { return $true }; return $false } catch { return $true } }',
   '$root = $letter.ToUpperInvariant() + ":\\"',
   'try { $ra = [System.IO.File]::GetAttributes($root) } catch { Write-Output "ERR:not_found"; exit 0 }',
-  'if (($ra -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { Write-Output "ERR:reparse_point_blocked"; exit 0 }',
+  'if (& $testUnsafeReparse $root $ra) { Write-Output "ERR:reparse_point_blocked"; exit 0 }',
   '$rest = $t.Substring(3)',
   '$cur = $root',
   '$parts = $rest -split "\\\\" | Where-Object { $_ -ne "" }',
   'foreach ($p in $parts) {',
   '  $cur = [System.IO.Path]::Combine($cur, $p)',
   '  try { $a = [System.IO.File]::GetAttributes($cur) } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { Write-Output "ERR:not_found"; exit 0 } catch { Write-Output "ERR:stat_failed"; exit 0 }',
-  '  if (($a -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { Write-Output "ERR:reparse_point_blocked"; exit 0 }',
+  '  if (& $testUnsafeReparse $cur $a) { Write-Output "ERR:reparse_point_blocked"; exit 0 }',
   '}',
   '$finalAttr = [System.IO.File]::GetAttributes($cur)',
   'if (($finalAttr -band [System.IO.FileAttributes]::Directory) -ne 0) { Write-Output "OK:dir" } else { Write-Output "OK:file" }'
 ].join('; ');
 
+const MACOS_SYSTEM_ROOT_SYMLINKS = new Map([
+  ['/tmp', '/private/tmp'],
+  ['/var', '/private/var'],
+  ['/etc', '/private/etc']
+]);
+
 async function inspectWindowsLocalDrivePath(absPath) {
   const sysRoot = String(process.env.SystemRoot || process.env.windir || 'C:\\Windows').trim() || 'C:\\Windows';
   const psBin = path.win32.join(sysRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  return new Promise((resolve) => {
+  const psRes = await new Promise((resolve) => {
     execFile(
       psBin,
       ['-NoProfile', '-NonInteractive', '-Command', WIN_INSPECT_REVEAL_PS],
@@ -3063,6 +3347,25 @@ async function inspectWindowsLocalDrivePath(absPath) {
       }
     );
   });
+  if (!psRes.ok) return psRes;
+  /* Cross-verify with Node/libuv lstat (blocks true symlinks/junctions while allowing OneDrive cloud placeholders) */
+  try {
+    const driveRoot = `${absPath.slice(0, 2)}\\`;
+    const parts = absPath.slice(3).split('\\').filter(Boolean);
+    let cur = driveRoot;
+    for (const part of parts) {
+      cur = path.win32.join(cur, part);
+      const lst = await fs.promises.lstat(cur);
+      if (lst.isSymbolicLink()) {
+        return { ok: false, error: 'reparse_point_blocked' };
+      }
+    }
+  } catch (err) {
+    const code = err && err.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { ok: false, error: 'not_found' };
+    return { ok: false, error: `stat_failed:${code || 'io_error'}` };
+  }
+  return psRes;
 }
 
 async function revealLocalPath(rawPath, { openFolderContents = false, wslDistro = '' } = {}) {
@@ -3097,7 +3400,24 @@ async function revealLocalPath(rawPath, { openFolderContents = false, wslDistro 
         for (const part of parts) {
           cur = path.posix.join(cur, part);
           const lst = await fs.promises.lstat(cur);
-          if (lst.isSymbolicLink()) return { ok: false, error: 'reparse_point_blocked', path: cur };
+          if (lst.isSymbolicLink()) {
+            const expectedMacTarget = process.platform === 'darwin' ? MACOS_SYSTEM_ROOT_SYMLINKS.get(cur) : null;
+            let allowedMacRootSymlink = false;
+            if (expectedMacTarget) {
+              try {
+                const real = await fs.promises.realpath(cur);
+                if (real === expectedMacTarget) {
+                  allowedMacRootSymlink = true;
+                  const targetSt = await fs.promises.stat(cur);
+                  isDir = targetSt.isDirectory();
+                }
+              } catch {}
+            }
+            if (!allowedMacRootSymlink) {
+              return { ok: false, error: 'reparse_point_blocked', path: cur };
+            }
+            continue;
+          }
           isDir = lst.isDirectory();
         }
       }
@@ -3129,7 +3449,14 @@ async function revealLocalPath(rawPath, { openFolderContents = false, wslDistro 
     });
 
   if (process.platform === 'darwin') {
-    return spawnDetachedCheck('open', openInside ? [abs] : ['-R', abs]);
+    if (openInside) {
+      const cleanName = path.posix.basename(abs.replace(/\/+$/, ''));
+      if (/\.(?:app|workflow|bundle|pkg)$/i.test(cleanName)) {
+        return { ok: false, error: 'bundle_open_blocked', path: abs };
+      }
+      return spawnDetachedCheck('open', ['-a', 'Finder', abs]);
+    }
+    return spawnDetachedCheck('open', ['-R', abs]);
   }
   if (process.platform === 'win32') {
     const explorerBin = resolveTrustedWindowsExplorerBin();
@@ -3491,7 +3818,6 @@ export function collectOverviewSnapshot(payload = {}, opts = {}) {
     : explicitOverride
       ? []
       : discoverWslGeminiDirs();
-  const skipGit = Boolean(opts.skipGit);
 
   let absDir = '';
   const rawDir = typeof payload?.dirPath === 'string' ? payload.dirPath.trim() : '';
@@ -3677,10 +4003,15 @@ export function collectOverviewSnapshot(payload = {}, opts = {}) {
 }
 
 const USAGE_LEDGER_CACHE_FILE = path.join(STATE_DIR, 'usage-ledger-cache.json');
-let usageLedgerMem = null; // { cachePath, entries: Map<dbPath, { sig, mtimeMs, byDay }> }
-let usageSummaryMemo = { at: 0, key: '', data: null };
+const MAX_USAGE_CACHE_DAYS = 184;
+const MAX_USAGE_MEMO_ENTRIES = 8;
+const MAX_USAGE_FAIL_ENTRIES = 512;
+const MAX_TRANSLATE_CACHE_ENTRIES = 384;
+const MAX_TRANSLATE_CHUNKS = 12;
+let usageLedgerMem = null; // { cachePath, entries: Map<dbPath, { sig, mtimeMs, minDateKey, byDay }> }
+const usageSummaryMemo = new Map(); // memoKey -> { at, data }
 const usageReadFailUntil = new Map();
-const translateCache = new Map(); // hash -> translated string
+const translateCache = new Map(); // chunk key -> string; doc key -> { translated, truncatedByChunks }
 
 function splitTextForTranslation(text, maxChunkLen = 950) {
   const paragraphs = text.split(/\n{2,}/);
@@ -3721,7 +4052,7 @@ function splitTextForTranslation(text, maxChunkLen = 950) {
     if (buf.trim()) chunks.push(buf.trim());
   }
   pushCur();
-  return chunks.slice(0, 12);
+  return chunks;
 }
 
 async function translateChunk(chunk, tl) {
@@ -3733,14 +4064,15 @@ async function translateChunk(chunk, tl) {
   const data = await res.json();
   const translated = Array.isArray(data?.[0]) ? data[0].map((seg) => (Array.isArray(seg) ? seg[0] || '' : '')).join('') : '';
   if (!translated) throw new Error('empty_translation');
-  setBounded(translateCache, cKey, translated, 384);
+  setBounded(translateCache, cKey, translated, MAX_TRANSLATE_CACHE_ENTRIES);
   return translated;
 }
 
 async function translateThoughtText(rawText, targetLang = 'zh-CN') {
+  const MAX_INPUT_CHARS = 10000;
   const text = String(rawText || '').trim();
   if (!text) return { ok: true, translated: '', skipped: true };
-  const clipped = text.length > 10000 ? text.slice(0, 10000) : text;
+  const clipped = text.length > MAX_INPUT_CHARS ? text.slice(0, MAX_INPUT_CHARS) : text;
   const cjkCount = (clipped.match(/[\u4e00-\u9fff]/g) || []).length;
   const alphaCount = (clipped.match(/[A-Za-z]/g) || []).length;
   if (cjkCount > 0 && cjkCount / Math.max(1, cjkCount + alphaCount) >= 0.55) {
@@ -3749,17 +4081,25 @@ async function translateThoughtText(rawText, targetLang = 'zh-CN') {
   const tl = /^[a-zA-Z-]{2,10}$/.test(String(targetLang || '')) ? String(targetLang) : 'zh-CN';
   const cacheKey = `${tl}:${crypto.createHash('sha1').update(clipped).digest('hex')}`;
   if (translateCache.has(cacheKey)) {
-    return { ok: true, translated: translateCache.get(cacheKey), cached: true };
+    const entry = translateCache.get(cacheKey);
+    return {
+      ok: true,
+      translated: entry.translated,
+      truncated: Boolean(entry.truncatedByChunks || text.length > MAX_INPUT_CHARS),
+      cached: true
+    };
   }
   try {
-    const chunks = splitTextForTranslation(clipped, 950);
+    const allChunks = splitTextForTranslation(clipped, 950);
+    const truncatedByChunks = allChunks.length > MAX_TRANSLATE_CHUNKS;
+    const chunks = truncatedByChunks ? allChunks.slice(0, MAX_TRANSLATE_CHUNKS) : allChunks;
     const out = [];
     for (const ch of chunks) {
       out.push(await translateChunk(ch, tl));
     }
     const translated = out.join('\n\n');
-    setBounded(translateCache, cacheKey, translated, 256);
-    return { ok: true, translated, truncated: text.length > 10000 };
+    setBounded(translateCache, cacheKey, { translated, truncatedByChunks }, MAX_TRANSLATE_CACHE_ENTRIES);
+    return { ok: true, translated, truncated: Boolean(truncatedByChunks || text.length > MAX_INPUT_CHARS) };
   } catch (err) {
     return { ok: false, error: String(err?.name || err?.message || 'translate_failed') };
   }
@@ -3796,7 +4136,12 @@ function loadUsageLedgerStore(cacheFile) {
   if (raw && raw.schema === 1 && raw.files && typeof raw.files === 'object') {
     for (const [fp, val] of Object.entries(raw.files)) {
       if (val && typeof val.sig === 'string' && val.byDay && typeof val.byDay === 'object') {
-        entries.set(fp, { sig: val.sig, mtimeMs: Number(val.mtimeMs) || 0, byDay: val.byDay });
+        entries.set(fp, {
+          sig: val.sig,
+          mtimeMs: Number(val.mtimeMs) || 0,
+          minDateKey: typeof val.minDateKey === 'string' ? val.minDateKey : '',
+          byDay: val.byDay
+        });
       }
     }
   }
@@ -3805,20 +4150,13 @@ function loadUsageLedgerStore(cacheFile) {
 }
 
 function saveUsageLedgerStore(store) {
-  const tmp = `${store.cachePath}.tmp.${process.pid}`;
   try {
-    fs.mkdirSync(path.dirname(store.cachePath), { recursive: true });
     const files = {};
     for (const [fp, val] of store.entries.entries()) {
       files[fp] = val;
     }
-    fs.writeFileSync(tmp, JSON.stringify({ schema: 1, updatedAt: Date.now(), files }), 'utf8');
-    fs.renameSync(tmp, store.cachePath);
-  } catch {
-    try {
-      fs.rmSync(tmp, { force: true });
-    } catch {}
-  }
+    writeAtomicUtf8(store.cachePath, JSON.stringify({ schema: 1, updatedAt: Date.now(), files }));
+  } catch {}
 }
 
 function readDbDailyUsage(dbPath, fallbackMtimeMs, cutoffDateKey) {
@@ -3868,8 +4206,9 @@ export function collectUsageSummary(opts = {}) {
     : [path.join(HOME, '.gemini', 'antigravity', 'conversations'), ...discoverWslConversationsDirs()];
   const cacheFile = opts.cacheFile ? path.resolve(opts.cacheFile) : USAGE_LEDGER_CACHE_FILE;
   const memoKey = `${days}|${cacheFile}|${convDirs.join('|')}`;
-  if (!opts.force && !explicitDirs && usageSummaryMemo.data && usageSummaryMemo.key === memoKey && !usageSummaryMemo.data.partial && nowMs - usageSummaryMemo.at < 15000) {
-    return usageSummaryMemo.data;
+  const memoHit = !opts.force && !explicitDirs ? usageSummaryMemo.get(memoKey) : null;
+  if (memoHit && memoHit.data && !memoHit.data.partial && nowMs - memoHit.at < 15000) {
+    return memoHit.data;
   }
 
   const todayDateObj = new Date(nowMs);
@@ -3882,11 +4221,14 @@ export function collectUsageSummary(opts = {}) {
   const todayKey = windowDates[windowDates.length - 1];
   const cutoffDateKey = formatLocalDateKey(todayDateObj.getTime() - (days + 2) * 86400000);
   const cutoffMtimeMs = todayDateObj.getTime() - (days + 2) * 86400000;
+  /* Persist & prune ledger cache using the full 184-day max window so shorter queries (e.g. days=14)
+     never truncate historical byDay buckets or evict 17-84d WSL entries needed by the 12-week heatmap. */
+  const cacheCutoffDateKey = formatLocalDateKey(todayDateObj.getTime() - MAX_USAGE_CACHE_DAYS * 86400000);
+  const cacheCutoffMtimeMs = todayDateObj.getTime() - MAX_USAGE_CACHE_DAYS * 86400000;
 
   const store = loadUsageLedgerStore(cacheFile);
   const seenDirs = new Set();
   const discovered = [];
-  const livePaths = new Set();
 
   for (const dir of convDirs) {
     const normDir = normalizePathForCompare(dir);
@@ -3904,7 +4246,6 @@ export function collectUsageSummary(opts = {}) {
       const dbPath = path.join(dir, name);
       const info = getDbStatByPath(dbPath);
       if (!info) continue;
-      livePaths.add(dbPath);
       if (info.mtimeMs < cutoffMtimeMs) continue;
       discovered.push({ dbPath, info, unc });
     }
@@ -3912,6 +4253,12 @@ export function collectUsageSummary(opts = {}) {
 
   // Sort newest first so today and recent days populate immediately on cold start
   discovered.sort((a, b) => b.info.mtimeMs - a.info.mtimeMs);
+
+  if (usageReadFailUntil.size > 128) {
+    for (const [k, until] of Array.from(usageReadFailUntil.entries())) {
+      if (until <= nowMs) usageReadFailUntil.delete(k);
+    }
+  }
 
   let dirty = false;
   let uncachedScanned = 0;
@@ -3921,7 +4268,14 @@ export function collectUsageSummary(opts = {}) {
 
   for (const item of discovered) {
     const existing = store.entries.get(item.dbPath);
-    if (existing && existing.sig === item.info.sig) continue;
+    const existingCoversWindow = Boolean(
+      existing &&
+        existing.sig === item.info.sig &&
+        typeof existing.minDateKey === 'string' &&
+        existing.minDateKey !== '' &&
+        existing.minDateKey <= cutoffDateKey
+    );
+    if (existingCoversWindow) continue;
     const retryAfter = usageReadFailUntil.get(item.dbPath) || 0;
     if (retryAfter > nowMs) continue;
     if (uncachedScanned >= maxBatch) {
@@ -3930,18 +4284,23 @@ export function collectUsageSummary(opts = {}) {
     }
     uncachedScanned += 1;
     try {
-      const byDay = readDbDailyUsage(item.dbPath, item.info.mtimeMs, cutoffDateKey);
-      store.entries.set(item.dbPath, { sig: item.info.sig, mtimeMs: item.info.mtimeMs, byDay });
+      const byDay = readDbDailyUsage(item.dbPath, item.info.mtimeMs, cacheCutoffDateKey);
+      store.entries.set(item.dbPath, {
+        sig: item.info.sig,
+        mtimeMs: item.info.mtimeMs,
+        minDateKey: cacheCutoffDateKey,
+        byDay
+      });
       usageReadFailUntil.delete(item.dbPath);
       dirty = true;
     } catch {
-      usageReadFailUntil.set(item.dbPath, nowMs + 60000);
+      setBounded(usageReadFailUntil, item.dbPath, nowMs + 60000, MAX_USAGE_FAIL_ENTRIES);
     }
   }
 
-  // Prune deleted or very stale cache entries
+  // Prune stale cache entries beyond the unified 184-day threshold
   for (const [fp, val] of Array.from(store.entries.entries())) {
-    if (!livePaths.has(fp) && val.mtimeMs < cutoffMtimeMs) {
+    if (val.mtimeMs < cacheCutoffMtimeMs) {
       store.entries.delete(fp);
       dirty = true;
     }
@@ -4004,7 +4363,7 @@ export function collectUsageSummary(opts = {}) {
     dailyHistory
   };
   if (!explicitDirs) {
-    usageSummaryMemo = { at: nowMs, key: memoKey, data: result };
+    setBounded(usageSummaryMemo, memoKey, { at: nowMs, data: result }, MAX_USAGE_MEMO_ENTRIES);
   }
   return result;
 }
@@ -4274,7 +4633,7 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
       return {
         reqId,
         result: await revealLocalPath(rawTarget, {
-          openFolderContents: Boolean(payload?.openFolder),
+          openFolderContents: false,
           wslDistro: typeof payload?.wslDistro === 'string' ? payload.wslDistro : ''
         })
       };
@@ -4379,7 +4738,7 @@ async function isAntigravityFallbackPort(port) {
     const info = await res.json();
     const ua = String(info?.['User-Agent'] || '');
     const browser = String(info?.Browser || '');
-    return /\bAntigravity\b|\bElectron\//i.test(`${ua} ${browser}`);
+    return /\bAntigravity\b/i.test(`${ua} ${browser}`);
   } catch {
     return false;
   }
@@ -4389,27 +4748,40 @@ export const HOST_IDENTITY_PROBE_EXPR = `(function () {
   var loc = (typeof window !== 'undefined' && window.location) || {};
   if (loc.protocol === 'plugin:' && /^swarm--/i.test(loc.hostname || '')) return 'swarm';
   if (/^plugin:\\/\\/swarm--/i.test(loc.href || '')) return 'swarm';
-  if (loc.protocol === 'vscode-file:') return 'host';
-  if (loc.protocol === 'file:' && /\\/Antigravity\\.app\\/|\\/antigravity\\/resources\\//i.test(loc.href || '')) return 'host';
   var ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
   var isElectronHost = /\\bElectron\\//i.test(ua);
   if (!isElectronHost) return 'non_host';
   /* Require the genuine non-configurable, frozen contextBridge preload object rather than page-forgeable DOM or globals */
   var en = typeof window !== 'undefined' ? window.electronNative : null;
+  var hasFrozenElectronNative = false;
   if (en && typeof en === 'object' && Object.isFrozen(en)) {
     var desc = Object.getOwnPropertyDescriptor(window, 'electronNative');
     var lockedOnWindow = Boolean(desc && desc.configurable === false && desc.writable === false);
     var isNativeFn = function (fn) {
       if (typeof fn !== 'function') return false;
-      var name = String(fn.name || '');
-      if (name.indexOf('bound ') === 0) return false;
-      try { return Function.prototype.toString.call(fn).indexOf('[native code]') !== -1; } catch (_) { return false; }
+      if (fn.name !== '') return false;
+      if (Object.prototype.hasOwnProperty.call(fn, 'prototype') || fn.prototype !== undefined) return false;
+      try { return /^function\\s*\\(\\)\\s*\\{\\s*\\[native code\\]\\s*\\}$/.test(Function.prototype.toString.call(fn)); } catch (_) { return false; }
     };
     if (lockedOnWindow && isNativeFn(en.getZoomLevel) && isNativeFn(en.setTitleBarOverlay) && isNativeFn(en.openExternal)) {
-      return 'host';
+      hasFrozenElectronNative = true;
     }
   }
-  if (document.readyState === 'loading') return 'loading';
+  var hasAntigravityAppConfig = Boolean(
+    typeof window !== 'undefined' &&
+    window.__APP_CONFIG__ &&
+    window.__APP_CONFIG__.productName === 'antigravity'
+  );
+  var isLocalAppScheme =
+    loc.protocol === 'vscode-file:' ||
+    (loc.protocol === 'file:' && /\\/Antigravity\\.app\\/|\\/antigravity\\/resources\\//i.test(loc.href || ''));
+  if (isLocalAppScheme) {
+    if (hasFrozenElectronNative || hasAntigravityAppConfig) return 'host';
+    if (typeof document !== 'undefined' && document.readyState === 'loading') return 'loading';
+    return 'non_host';
+  }
+  if (hasFrozenElectronNative) return 'host';
+  if (typeof document !== 'undefined' && document.readyState === 'loading') return 'loading';
   return 'non_host';
 })()`;
 
@@ -4527,6 +4899,38 @@ export async function attachTarget(page, endpoint, opts = {}) {
     return send('Runtime.evaluate', params);
   };
 
+  const isLoopbackHttpUrl = (rawUrl) => {
+    try {
+      const u = new URL(String(rawUrl || ''));
+      return (u.protocol === 'http:' || u.protocol === 'https:') && (u.hostname === '127.0.0.1' || u.hostname === 'localhost');
+    } catch {
+      return false;
+    }
+  };
+
+  const verifyElectronNativeInspector = async (contextId = null) => {
+    const winEvalParams = { expression: 'window', returnByValue: false };
+    if (contextId !== null) winEvalParams.contextId = contextId;
+    const winRes = await send('Runtime.evaluate', winEvalParams).catch(() => null);
+    const objectId = winRes?.result?.result?.objectId;
+    if (!objectId) return true;
+    try {
+      const propsRes = await send('Runtime.getProperties', {
+        objectId,
+        ownProperties: true,
+        accessorPropertiesOnly: false,
+        generatePreview: false
+      }).catch(() => null);
+      const props = propsRes?.result?.result;
+      if (!Array.isArray(props)) return true;
+      const enProp = props.find((p) => p && p.name === 'electronNative');
+      if (!enProp || enProp.writable !== false || enProp.configurable !== false) return false;
+      return true;
+    } finally {
+      await send('Runtime.releaseObject', { objectId }).catch(() => {});
+    }
+  };
+
   const probeHostKind = async (contextId = null) => {
     let probeKind = 'non_host';
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -4537,6 +4941,10 @@ export async function attachTarget(page, endpoint, opts = {}) {
       probeKind = probeRes?.result?.result?.value || 'non_host';
       if (probeKind !== 'loading') break;
       await new Promise((r) => setTimeout(r, 150));
+    }
+    if (probeKind === 'host' && page.type === 'page' && isLoopbackHttpUrl(entry.url)) {
+      const verified = await verifyElectronNativeInspector(contextId);
+      if (!verified) return 'non_host';
     }
     return probeKind;
   };
@@ -4649,7 +5057,9 @@ export async function attachTarget(page, endpoint, opts = {}) {
     }
   };
 
-  entry.reverifyAfterNavigation = async (gen) => {
+  const isAcceptedProbeKind = (kind) => (page.type === 'iframe' ? kind === 'swarm' : kind === 'host');
+
+  entry.reverifyAfterNavigation = async (gen, attempt = 0) => {
     if (closed || gen !== entry.navGen) return;
     if (!isAllowedOrigin(entry.url)) {
       skippedNonHostTargets.set(page.id, { origin: getOriginKey(entry.url), expiresAt: Date.now() + NON_HOST_SKIP_TTL_MS });
@@ -4662,10 +5072,17 @@ export async function attachTarget(page, endpoint, opts = {}) {
     const probeKind = await probeHostKind(candidateCtxId);
     if (closed || gen !== entry.navGen) return;
     if (probeKind === 'loading') {
-      setTimeout(() => entry.reverifyAfterNavigation(gen).catch(() => {}), 200).unref?.();
+      if (attempt >= 25) {
+        skippedNonHostTargets.set(page.id, { origin: getOriginKey(entry.url), expiresAt: Date.now() + NON_HOST_SKIP_TTL_MS });
+        try {
+          ws.close();
+        } catch {}
+        return;
+      }
+      setTimeout(() => entry.reverifyAfterNavigation(gen, attempt + 1).catch(() => {}), 200).unref?.();
       return;
     }
-    if (probeKind !== 'host' && probeKind !== 'swarm') {
+    if (!isAcceptedProbeKind(probeKind)) {
       skippedNonHostTargets.set(page.id, { origin: getOriginKey(entry.url), expiresAt: Date.now() + NON_HOST_SKIP_TTL_MS });
       try {
         ws.close();
@@ -4835,7 +5252,7 @@ export async function attachTarget(page, endpoint, opts = {}) {
       return;
     }
 
-    if (probeKind !== 'host' && probeKind !== 'swarm') {
+    if (!isAcceptedProbeKind(probeKind)) {
       skippedNonHostTargets.set(page.id, { origin: getOriginKey(page.url), expiresAt: Date.now() + NON_HOST_SKIP_TTL_MS });
       try {
         ws.close();
@@ -4896,6 +5313,7 @@ async function sync(opts = {}) {
     const pendingIframes = [];
     const probedPorts = new Set();
     const nowMs = Date.now();
+    if (uncDbMirrorCache.size) pruneUncDbMirrors(nowMs);
 
     for (const endpoint of activeConfig.endpoints) {
       const port = readPort(endpoint.portFile);

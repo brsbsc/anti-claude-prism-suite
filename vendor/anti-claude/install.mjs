@@ -5,8 +5,8 @@
  * auto-updater, doctor & uninstaller (Node.js >= 22).
  *
  * Commands:
- *   node install.mjs install [--cli] [--cli-only] [--no-cli] [--no-cli-statusline] [--no-auto-update] [--no-step-unlock] [--no-agents-rule] [--overwrite-local]
- *   node install.mjs sync-upgrade [--force] [--overwrite-local]
+ *   node install.mjs install [--cli] [--cli-only] [--no-cli] [--no-cli-statusline] [--no-auto-update] [--no-step-unlock] [--no-agents-rule] [--skip-user-layer] [--overwrite-local]
+ *   node install.mjs sync-upgrade [--force] [--skip-user-layer] [--overwrite-local]
  *   node install.mjs auto-update-on | auto-update-off
  *   node install.mjs doctor
  *   node install.mjs sync-fonts
@@ -45,8 +45,11 @@ const AGY_CLI_SETTINGS_JSON = path.join(AGY_CLI_DIR, 'settings.json');
 const AGY_CLI_STATUSLINE_NAME = 'anti-claude-statusline.mjs';
 const AGY_CLI_STATUSLINE_FILE = path.join(AGY_CLI_DIR, AGY_CLI_STATUSLINE_NAME);
 
-const STATE_DIR = path.join(AGY_DIR, 'anti-claude');
-const USER_DIR = path.join(STATE_DIR, 'user');
+const DEFAULT_STATE_DIR = path.join(AGY_DIR, 'anti-claude');
+const STATE_DIR = path.resolve((process.env.ANTI_CLAUDE_STATE_DIR || '').trim() || DEFAULT_STATE_DIR);
+const USER_DIR = path.resolve((process.env.ANTI_CLAUDE_USER_DIR || '').trim() || path.join(STATE_DIR, 'user'));
+const normalizeStateDirPath = (p) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p));
+const IS_CUSTOM_STATE_DIR = normalizeStateDirPath(STATE_DIR) !== normalizeStateDirPath(DEFAULT_STATE_DIR);
 const STATE_FILE = path.join(STATE_DIR, 'install-state.json');
 const PID_FILE = path.join(STATE_DIR, 'daemon.pid');
 const PROJECTS_REGISTRY_FILE = path.join(STATE_DIR, 'projects-registry.json');
@@ -123,9 +126,11 @@ function readJsonSafe(p, fallback = null) {
 }
 
 function readProcessCommandLineSync(pid) {
+  const numPid = Number(pid);
+  if (!Number.isInteger(numPid) || numPid <= 0) return '';
   if (process.platform === 'linux') {
     try {
-      const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+      const raw = fs.readFileSync(`/proc/${numPid}/cmdline`, 'utf8');
       if (raw) return raw.replace(/\0+/g, ' ').trim();
     } catch {}
   }
@@ -133,15 +138,15 @@ function readProcessCommandLineSync(pid) {
     try {
       return execFileSync(
         'powershell',
-        ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
-        { encoding: 'utf8', timeout: 2000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
+        ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${numPid}").CommandLine`],
+        { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }
       ).trim();
     } catch {
       return '';
     }
   }
   try {
-    return execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], {
+    return execFileSync('ps', ['-ww', '-p', String(numPid), '-o', 'command='], {
       encoding: 'utf8',
       timeout: 1500,
       stdio: ['ignore', 'pipe', 'ignore']
@@ -163,29 +168,14 @@ export function isMatchingDaemonPid(pid, pattern = /(?:^|[\\/ "'])daemon\.mjs(?:
   return Boolean(cmd && pattern.test(cmd));
 }
 
-function resolveAtomicWriteTarget(p) {
-  try {
-    const lst = fs.lstatSync(p);
-    if (lst.isSymbolicLink()) {
-      try {
-        return fs.realpathSync(p);
-      } catch {
-        return path.resolve(path.dirname(p), fs.readlinkSync(p));
-      }
-    }
-  } catch {}
-  return p;
-}
-
 function writeFileAtomic(p, content) {
-  const target = resolveAtomicWriteTarget(p);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  let prevMode = null;
-  try {
-    const st = fs.statSync(target, { throwIfNoEntry: false });
-    if (st && st.isFile()) prevMode = st.mode & 0o777;
-  } catch {}
-  const tmp = `${target}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const lst = fs.lstatSync(p, { throwIfNoEntry: false });
+  if (lst && lst.isSymbolicLink()) {
+    throw new Error(`Refusing to write through symlink: ${p}`);
+  }
+  const prevMode = lst && lst.isFile() ? lst.mode & 0o777 : null;
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  const tmp = `${p}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   try {
     fs.writeFileSync(tmp, content, prevMode !== null ? { encoding: 'utf8', mode: prevMode } : 'utf8');
     if (prevMode !== null) {
@@ -193,7 +183,11 @@ function writeFileAtomic(p, content) {
         fs.chmodSync(tmp, prevMode);
       } catch {}
     }
-    fs.renameSync(tmp, target);
+    const preRename = fs.lstatSync(p, { throwIfNoEntry: false });
+    if (preRename && preRename.isSymbolicLink()) {
+      throw new Error(`Refusing to write through symlink: ${p}`);
+    }
+    fs.renameSync(tmp, p);
   } catch (err) {
     try {
       fs.rmSync(tmp, { force: true });
@@ -412,11 +406,16 @@ function syncFontsFromLocalClaudeApp(state = null) {
   return { synced: true, copied, note: 'Fonts are copied from your own local Claude.app for personal use only.' };
 }
 
-function findAgyCliBinary() {
-  if (NO_CLI) return null;
+function findAgyCliBinary({ skipProbe = NO_CLI } = {}) {
+  if (skipProbe) return null;
   const cmd = process.platform === 'win32' ? 'where' : 'which';
   try {
-    const out = execFileSync(cmd, ['agy'], { encoding: 'utf8', timeout: 2000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const out = execFileSync(cmd, ['agy'], {
+      encoding: 'utf8',
+      timeout: 2000,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim();
     const first = out.split(/\r?\n/)[0]?.trim();
     if (first && fs.existsSync(first)) return first;
   } catch {}
@@ -430,14 +429,20 @@ function findAgyCliBinary() {
   return null;
 }
 
-function detectAntigravityCli() {
+function detectAntigravityCli({ skipProbe = NO_CLI } = {}) {
   const configDirExists = fs.existsSync(AGY_CLI_DIR);
   const settingsExists = fs.existsSync(AGY_CLI_SETTINGS_JSON);
-  const binary = findAgyCliBinary();
+  const binary = findAgyCliBinary({ skipProbe });
   let version = null;
   if (binary) {
     try {
-      version = execFileSync(binary, ['--version'], { encoding: 'utf8', timeout: 2000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null;
+      version =
+        execFileSync(binary, ['--version'], {
+          encoding: 'utf8',
+          timeout: 2000,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'ignore']
+        }).trim() || null;
     } catch {}
   }
   const settings = settingsExists ? readJsonSafe(AGY_CLI_SETTINGS_JSON, null) : null;
@@ -1299,7 +1304,10 @@ function runLiveVerify() {
   }
   let stdout = '';
   let exitStatus = 0;
-  const env = Object.assign({}, process.env);
+  const env = Object.assign({}, process.env, {
+    ANTI_CLAUDE_STATE_DIR: STATE_DIR,
+    ANTI_CLAUDE_USER_DIR: USER_DIR
+  });
   if (fakeEnv !== undefined) env.ANTI_CLAUDE_FAKE_VERIFY_OK = String(fakeEnv);
   try {
     stdout = execFileSync(process.execPath, [CORE_DAEMON_SCRIPT, '--verify-once', '--user-dir', USER_DIR], {
@@ -1335,6 +1343,7 @@ function runLiveTeardownOnce() {
     execFileSync(process.execPath, [CORE_DAEMON_SCRIPT, '--once', '--user-dir', tmpTeardownDir], {
       timeout: 8000,
       windowsHide: true,
+      env: Object.assign({}, process.env, { ANTI_CLAUDE_STATE_DIR: STATE_DIR }),
       stdio: 'ignore'
     });
     return { ok: true };
@@ -1389,9 +1398,14 @@ function spawnDetachedDaemon(nodePath) {
     stdio = ['ignore', logFd, logFd];
   } catch {}
   try {
+    const daemonEnv = Object.assign({}, process.env, {
+      ANTI_CLAUDE_STATE_DIR: STATE_DIR,
+      ANTI_CLAUDE_USER_DIR: USER_DIR
+    });
     const child = spawn(nodePath, [CORE_DAEMON_SCRIPT, '--user-dir', USER_DIR], {
       detached: true,
       windowsHide: true,
+      env: daemonEnv,
       stdio
     });
     child.unref();
@@ -1438,6 +1452,10 @@ function ensureCoreDaemon() {
   <dict>
     <key>PATH</key>
     <string>${xmlEscape(envPath)}</string>
+    <key>ANTI_CLAUDE_STATE_DIR</key>
+    <string>${xmlEscape(STATE_DIR)}</string>
+    <key>ANTI_CLAUDE_USER_DIR</key>
+    <string>${xmlEscape(USER_DIR)}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -1521,7 +1539,7 @@ function ensureCoreDaemon() {
 
   if (process.platform === 'win32') {
     const vbsPath = getWinStartupVbsPath();
-    const vbs = buildWinStartupVbs(nodePath, CORE_DAEMON_SCRIPT, USER_DIR);
+    const vbs = buildWinStartupVbs(nodePath, CORE_DAEMON_SCRIPT, USER_DIR, STATE_DIR);
     try {
       writeFileAtomic(vbsPath, vbs);
     } catch {}
@@ -1530,7 +1548,8 @@ function ensureCoreDaemon() {
   }
 
   const unitPath = getLinuxSystemdUnitPath();
-  const unit = `[Unit]\nDescription=Anti-Claude CDP Daemon\nAfter=default.target\n\n[Service]\nExecStart="${nodePath}" "${CORE_DAEMON_SCRIPT}" --user-dir "${USER_DIR}"\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n`;
+  const escapeSystemd = (s) => String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%');
+  const unit = `[Unit]\nDescription=Anti-Claude CDP Daemon\nAfter=default.target\n\n[Service]\nEnvironment="ANTI_CLAUDE_STATE_DIR=${escapeSystemd(STATE_DIR)}"\nEnvironment="ANTI_CLAUDE_USER_DIR=${escapeSystemd(USER_DIR)}"\nExecStart="${escapeSystemd(nodePath)}" "${escapeSystemd(CORE_DAEMON_SCRIPT)}" --user-dir "${escapeSystemd(USER_DIR)}"\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n`;
   try {
     writeFileAtomic(unitPath, unit);
     execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore', timeout: 4000 });
@@ -1543,7 +1562,7 @@ function ensureCoreDaemon() {
   }
 }
 
-export function buildWinStartupVbs(nodePath, daemonScript, userDir) {
+export function buildWinStartupVbs(nodePath, daemonScript, userDir, stateDir = '') {
   /* Encode non-ASCII characters via ChrW() so WScript never garbles Unicode usernames without BOM */
   const vbsExpr = (s) => {
     const parts = [];
@@ -1571,8 +1590,16 @@ export function buildWinStartupVbs(nodePath, daemonScript, userDir) {
     flush();
     return parts.length ? parts.join(' & ') : '""';
   };
+  const lines = ['Set sh = CreateObject("WScript.Shell")'];
+  if (stateDir) {
+    lines.push(`sh.Environment("Process")("ANTI_CLAUDE_STATE_DIR") = ${vbsExpr(stateDir)}`);
+  }
+  if (userDir) {
+    lines.push(`sh.Environment("Process")("ANTI_CLAUDE_USER_DIR") = ${vbsExpr(userDir)}`);
+  }
   const cmdExpr = vbsExpr(`"${nodePath}" "${daemonScript}" --user-dir "${userDir}"`);
-  return `Set sh = CreateObject("WScript.Shell")\r\nsh.Run ${cmdExpr}, 0, False\r\n`;
+  lines.push(`sh.Run ${cmdExpr}, 0, False`, '');
+  return lines.join('\r\n');
 }
 
 function disableCoreDaemon() {
@@ -1607,10 +1634,36 @@ function disableCoreDaemon() {
 
   if (fs.existsSync(PID_FILE)) {
     const pid = parseInt(readTextSafe(PID_FILE) || '0', 10);
+    let stillAlive = false;
     if (pid > 0 && !NO_LAUNCHD && isMatchingDaemonPid(pid)) {
+      const isPidAlive = () => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch (err) {
+          return Boolean(err && err.code === 'EPERM');
+        }
+      };
       try {
         process.kill(pid, 'SIGTERM');
       } catch {}
+      const termDeadline = Date.now() + 3000;
+      while (Date.now() < termDeadline && isPidAlive()) {
+        sleepSync(100);
+      }
+      if (isPidAlive()) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {}
+        const killDeadline = Date.now() + 1500;
+        while (Date.now() < killDeadline && isPidAlive()) {
+          sleepSync(100);
+        }
+      }
+      stillAlive = isPidAlive();
+    }
+    if (stillAlive) {
+      return { stopped: false, pid, stillAlive: true };
     }
     fs.rmSync(PID_FILE, { force: true });
     stopped = true;
@@ -1682,6 +1735,10 @@ function enableMacAutoUpdateAgent() {
   <dict>
     <key>PATH</key>
     <string>${xmlEscape(envPath)}</string>
+    <key>ANTI_CLAUDE_STATE_DIR</key>
+    <string>${xmlEscape(STATE_DIR)}</string>
+    <key>ANTI_CLAUDE_USER_DIR</key>
+    <string>${xmlEscape(USER_DIR)}</string>
   </dict>
   <key>WatchPaths</key>
   <array>
@@ -2039,7 +2096,7 @@ async function cmdInstall(flags) {
   const cliOnly = flags.has('--cli-only');
   const explicitCli = flags.has('--cli') || cliOnly;
   const noCli = flags.has('--no-cli') || (NO_CLI && !explicitCli);
-  const antigravityCli = detectAntigravityCli();
+  const antigravityCli = detectAntigravityCli({ skipProbe: noCli });
 
   const existingState = loadState();
   const desktopAlreadyInstalled = Boolean(
@@ -2083,13 +2140,16 @@ async function cmdInstall(flags) {
     state.sync = Object.assign({}, state.sync, { cliVersion: antigravityCli.version, lastAppliedAt: Date.now() });
     saveState(state);
     return finalize(
-      { mode: desktopAlreadyInstalled ? 'desktop+cli' : 'cli-only', scope: 'cli-only', antigravityCli: detectAntigravityCli(), cliLayer, ruleStatus },
+      { mode: desktopAlreadyInstalled ? 'desktop+cli' : 'cli-only', scope: 'cli-only', antigravityCli: detectAntigravityCli({ skipProbe: noCli }), cliLayer, ruleStatus },
       { critical, warnings }
     );
   }
 
   /* Migrate any user overrides from legacy theme-patch/user and retire upstream theme-patch */
-  const legacyMigration = retireLegacyThemePatch(state);
+  const skipUserLayer = flags.has('--skip-user-layer');
+  const legacyMigration = IS_CUSTOM_STATE_DIR
+    ? { migratedFiles: [], retiredDaemon: false, removedDir: false, backupDir: null, skipped: 'custom_state_dir' }
+    : retireLegacyThemePatch(state);
   if (legacyMigration.backupDir) {
     warnings.push(`standalone theme-patch archived to ${legacyMigration.backupDir}`);
   }
@@ -2098,13 +2158,18 @@ async function cmdInstall(flags) {
   const fontSync = fontsBefore.hasAnthropicSans || NO_FONTS ? null : syncFontsFromLocalClaudeApp(state);
 
   let layer;
-  try {
-    layer = installUserLayer(state, { overwriteLocal: flags.has('--overwrite-local') });
-  } catch (err) {
-    saveState(state);
-    return finalize({}, { critical: [`user layer deploy failed: ${err?.message || err}`] });
+  if (skipUserLayer) {
+    fs.mkdirSync(USER_DIR, { recursive: true });
+    layer = { skipped: 'skip_user_layer', created: [], updated: [], merged: [], conflicts: [], unchanged: [] };
+  } else {
+    try {
+      layer = installUserLayer(state, { overwriteLocal: flags.has('--overwrite-local') });
+    } catch (err) {
+      saveState(state);
+      return finalize({}, { critical: [`user layer deploy failed: ${err?.message || err}`] });
+    }
+    if (layer.conflicts.length) warnings.push(`local edits kept, new versions saved to ${INCOMING_DIR}: ${layer.conflicts.join(', ')} (use --overwrite-local to replace)`);
   }
-  if (layer.conflicts.length) warnings.push(`local edits kept, new versions saved to ${INCOMING_DIR}: ${layer.conflicts.join(', ')} (use --overwrite-local to replace)`);
   saveState(state);
 
   const coreDaemon = ensureCoreDaemon();
@@ -2149,7 +2214,7 @@ async function cmdInstall(flags) {
     {
       mode: state.options.cli ? 'desktop+cli' : 'desktop',
       antigravityVersion: fp.version,
-      antigravityCli: detectAntigravityCli(),
+      antigravityCli: detectAntigravityCli({ skipProbe: noCli }),
       legacyMigration,
       fontSync,
       userLayer: layer,
@@ -2238,8 +2303,12 @@ async function cmdSyncUpgrade(flags) {
     return finalize({ mode: 'cli-only', summary, selfPull, cliLayer, ruleStatus }, { warnings });
   }
 
-  const legacyMigration = retireLegacyThemePatch(state);
-  const layer = installUserLayer(state, { overwriteLocal: flags.has('--overwrite-local') });
+  const legacyMigration = IS_CUSTOM_STATE_DIR
+    ? { migratedFiles: [], retiredDaemon: false, removedDir: false, backupDir: null, skipped: 'custom_state_dir' }
+    : retireLegacyThemePatch(state);
+  const layer = flags.has('--skip-user-layer')
+    ? { skipped: 'skip_user_layer', created: [], updated: [], merged: [], conflicts: [], unchanged: [] }
+    : installUserLayer(state, { overwriteLocal: flags.has('--overwrite-local') });
   if (layer.conflicts.length) warnings.push(`local edits kept, new versions in ${INCOMING_DIR}: ${layer.conflicts.join(', ')}`);
 
   const coreDaemon = ensureCoreDaemon();
@@ -2273,13 +2342,24 @@ async function cmdUninstall() {
   if (!state) {
     const autoUpdateRemoved = disableMacAutoUpdateAgent();
     const daemonStopped = disableCoreDaemon();
+    if (daemonStopped?.stillAlive) {
+      return finalize(
+        { noop: false, reason: 'daemon_still_alive', autoUpdateRemoved, daemonStopped },
+        { critical: [`daemon pid ${daemonStopped.pid} still alive`] }
+      );
+    }
     return finalize({ noop: true, reason: 'not_installed', autoUpdateRemoved, daemonStopped });
   }
+  const critical = [];
   const warnings = [];
-  const saveDir = path.join(AGY_DIR, `anti-claude-uninstall-saved-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+  const saveDir = path.join(path.dirname(STATE_DIR), `anti-claude-uninstall-saved-${new Date().toISOString().replace(/[:.]/g, '-')}`);
   const isDesktop = state.options?.desktop !== false || Object.keys(state.files || {}).length > 0;
   const autoUpdateRemoved = disableMacAutoUpdateAgent();
   const daemonStopped = isDesktop ? disableCoreDaemon() : { stopped: false };
+  const daemonStillAlive = Boolean(daemonStopped?.stillAlive);
+  if (daemonStillAlive) {
+    critical.push(`daemon pid ${daemonStopped.pid} still alive`);
+  }
   const liveTeardown = isDesktop ? runLiveTeardownOnce() : { skipped: 'cli_only' };
   const settings = isDesktop ? await revertStepUnlock(state) : { skipped: 'cli_only' };
   if (settings.live && !settings.live.ok && settings.live.appRunning !== false) warnings.push(`live settings revert: ${settings.live.reason}`);
@@ -2294,10 +2374,10 @@ async function cmdUninstall() {
   const ruleRemoved = removeAgentsMdRule();
   const extras = cleanupUninstallExtras(state);
 
-  /* Remove owned state artifacts while preserving USER_DIR if pre-existing user files were restored into it */
-  for (const p of [
-    STATE_FILE,
-    PID_FILE,
+  /* Remove owned state artifacts while preserving USER_DIR if pre-existing user files were restored into it.
+     Preserve STATE_FILE & PID_FILE when the daemon is still alive so the user can retry uninstall cleanly. */
+  const stateArtifacts = [
+    ...(daemonStillAlive ? [] : [STATE_FILE, PID_FILE]),
     PROJECTS_REGISTRY_FILE,
     UI_PREFS_FILE,
     BACKUP_DIR,
@@ -2307,15 +2387,18 @@ async function cmdUninstall() {
     SYNC_LOG_FILE,
     LAUNCHD_LOG_FILE,
     DAEMON_LOG_FILE
-  ]) {
+  ];
+  for (const p of stateArtifacts) {
     fs.rmSync(p, { recursive: true, force: true });
   }
   removeDirIfEmpty(USER_DIR);
   removeDirIfEmpty(STATE_DIR);
-  fs.rmSync(LEGACY_V2_STATE_DIR, { recursive: true, force: true });
-  fs.rmSync(LEGACY_SYNC_LOG_FILE, { force: true });
+  if (!IS_CUSTOM_STATE_DIR) {
+    fs.rmSync(LEGACY_V2_STATE_DIR, { recursive: true, force: true });
+    fs.rmSync(LEGACY_SYNC_LOG_FILE, { force: true });
+  }
 
-  return finalize({ autoUpdateRemoved, daemonStopped, liveTeardown, settings, files, cli, ruleRemoved, extras }, { warnings });
+  return finalize({ autoUpdateRemoved, daemonStopped, liveTeardown, settings, files, cli, ruleRemoved, extras }, { critical, warnings });
 }
 
 async function main(argv) {

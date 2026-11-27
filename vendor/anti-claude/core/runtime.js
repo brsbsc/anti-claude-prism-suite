@@ -138,6 +138,25 @@
   );
   const RPC_TOKEN = typeof boot.rpcToken === 'string' ? boot.rpcToken : '';
   const RPC_SESSION_ID = typeof boot.rpcSessionId === 'string' ? boot.rpcSessionId : '';
+  const PREV_RPC_SESSION_ID = typeof window.__ag_rpc_session_id === 'string' ? window.__ag_rpc_session_id : '';
+
+  function flushPendingProjectRpc(errorCode) {
+    if (
+      window.__ag_project_rpc_pending &&
+      typeof window.__ag_project_rpc_pending.entries === 'function' &&
+      typeof window.__ag_project_rpc_pending.clear === 'function'
+    ) {
+      for (const [, pending] of window.__ag_project_rpc_pending.entries()) {
+        try {
+          if (pending && pending.timer) clearTimeout(pending.timer);
+          if (pending && typeof pending.resolve === 'function') {
+            pending.resolve({ ok: false, error: errorCode });
+          }
+        } catch {}
+      }
+      window.__ag_project_rpc_pending.clear();
+    }
+  }
 
   /* Run previous cleanup callbacks before hot-reloading or tearing down */
   if (Array.isArray(window.__ag_cleanup_fns) && window.__ag_cleanup_fns.length > 0) {
@@ -358,6 +377,7 @@
     runtimeDisposed = true;
     window.__ag_rpc_session_id = '';
     window.__ag_watched_cascade_id = '';
+    flushPendingProjectRpc('runtime_disabled');
     for (const id of ['ag-custom-fonts', 'ag-user-theme-vars', 'antigravity-user-custom-style', 'ag-live-metrics-pill', 'ag-live-metrics-tooltip']) {
       const el = document.getElementById(id);
       if (el) el.remove();
@@ -874,6 +894,9 @@
 
   /* Local project context RPC bridge (via daemon CDP binding __agProjectRpc) */
   if (!IS_SWARM_PLUGIN_FRAME) {
+    if (RPC_SESSION_ID !== PREV_RPC_SESSION_ID) {
+      flushPendingProjectRpc('rpc_session_replaced');
+    }
     window.__ag_rpc_session_id = RPC_SESSION_ID;
     if (!(window.__ag_project_rpc_pending instanceof Map)) {
       window.__ag_project_rpc_pending = new Map();

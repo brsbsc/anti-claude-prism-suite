@@ -23,8 +23,11 @@ const ANSI = {
   green: '\x1b[32m'
 };
 
+const ANSI_CONTROL_RE =
+  /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)|\x9d[^\x07\x9c]*(?:\x07|\x9c|$)|\x1b[PX^_][^\x1b]*(?:\x1b\\|$)|[\x90\x98\x9e\x9f][^\x9c]*(?:\x9c|$)|(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]|\x1b[ -/]+[@-~]|\x1b[@-Z\\-_]|[\r\x07]/g;
+
 export function stripAnsi(str) {
-  return String(str || '').replace(/\x1b\[[0-9;]*m/g, '');
+  return String(str || '').replace(ANSI_CONTROL_RE, '');
 }
 
 function codePointDisplayWidth(cp) {
@@ -154,18 +157,25 @@ function renderBar(pct, width = 8) {
   return `${'▓'.repeat(filled)}${'░'.repeat(Math.max(0, width - filled))}`;
 }
 
+function sanitizeInlineText(str) {
+  return stripAnsi(str)
+    .replace(/\n+/g, ' ')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '')
+    .trim();
+}
+
 export function formatStatusLine(payload, options = {}) {
   if (!payload || typeof payload !== 'object') return '';
   const noColor = Boolean(options.noColor ?? (process.env.NO_COLOR !== undefined && process.env.NO_COLOR !== ''));
   const maxCols = Number(options.terminalWidth ?? payload.terminal_width ?? process.stdout.columns ?? 100) || 100;
   const sep = paint(' · ', ANSI.dim, noColor);
 
-  const model = resolveModelName(payload);
+  const model = sanitizeInlineText(resolveModelName(payload));
   const pct = resolveContextPct(payload);
-  const state = resolveStateLabel(payload.agent_state);
-  const branch = typeof payload?.vcs?.branch === 'string' ? payload.vcs.branch.trim() : '';
+  const state = resolveStateLabel(sanitizeInlineText(payload.agent_state));
+  const branch = typeof payload?.vcs?.branch === 'string' ? sanitizeInlineText(payload.vcs.branch) : '';
   const dirty = Boolean(payload?.vcs?.dirty);
-  const workspace = resolveWorkspaceName(payload);
+  const workspace = sanitizeInlineText(resolveWorkspaceName(payload));
 
   const pctColor = pct === null ? ANSI.muted : pct >= 85 ? ANSI.red : pct >= 60 ? ANSI.amber : ANSI.muted;
 
@@ -210,13 +220,21 @@ export function formatStatusLine(payload, options = {}) {
   return model ? paint(truncatedPlain, ANSI.bold, noColor) : truncatedPlain;
 }
 
-async function readStdinText() {
+const MAX_STDIN_BYTES = 256 * 1024;
+
+async function readStdinText(maxBytes = MAX_STDIN_BYTES) {
   if (process.stdin.isTTY) return '';
-  let raw = '';
+  const chunks = [];
+  let totalBytes = 0;
   for await (const chunk of process.stdin) {
-    raw += chunk;
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
+    totalBytes += buf.length;
+    if (totalBytes > maxBytes) {
+      return '';
+    }
+    chunks.push(buf);
   }
-  return raw;
+  return Buffer.concat(chunks, totalBytes).toString('utf8');
 }
 
 const isMain = (() => {

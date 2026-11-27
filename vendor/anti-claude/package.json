@@ -8,8 +8,5 @@
   },
   "scripts": {
     "test": "node --test test/"
-  },
-  "devDependencies": {
-    "jsdom": "^31.0.1"
   }
 }
