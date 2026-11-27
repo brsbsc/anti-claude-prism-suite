@@ -11,6 +11,19 @@ $ExtDir = Join-Path $RepoRoot "extensions"
 $PluginDir = Join-Path $RepoRoot "plugin"
 $KernelDir = Join-Path (Join-Path $RepoRoot "vendor") "anti-claude"
 
+function Assert-NoCommaInPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$PathValue,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    if ($PathValue.Contains(",")) {
+        throw ("Path contains comma (',') which breaks csc.exe /resource: parsing ({0}): {1}" -f $Label, $PathValue)
+    }
+}
+
+Assert-NoCommaInPath -PathValue $RepoRoot -Label "RepoRoot"
+Assert-NoCommaInPath -PathValue $SourceCs -Label "SourceCs"
+
 if (-not (Test-Path -LiteralPath $SourceCs -PathType Leaf)) {
     throw "Missing installer source file: $SourceCs"
 }
@@ -23,7 +36,7 @@ if (-not (Test-Path -LiteralPath $PluginDir -PathType Container)) {
 if (-not (Test-Path -LiteralPath $KernelDir -PathType Container)) {
     throw "Missing bundled Anti-Claude kernel directory: $KernelDir"
 }
-foreach ($requiredKernel in @("install.mjs", "package.json", "LICENSE", "core\daemon.mjs", "core\runtime.js", "core\base.css", "core\i18n.json", "user\custom.js", "user\custom.css", "user\config.json")) {
+foreach ($requiredKernel in @("install.mjs", "package.json", "LICENSE", "cli\statusline.mjs", "rules\claude-execution-sync.md", "core\daemon.mjs", "core\runtime.js", "core\base.css", "core\i18n.json", "user\custom.js", "user\custom.css", "user\config.json", "user\i18n.override.json")) {
     $reqKernelPath = Join-Path $KernelDir $requiredKernel
     if (-not (Test-Path -LiteralPath $reqKernelPath -PathType Leaf)) {
         throw "Missing required Anti-Claude kernel file: $reqKernelPath"
@@ -68,7 +81,41 @@ $TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("prism-win-build-" + [Gu
 New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
 
 try {
+    Assert-NoCommaInPath -PathValue $TempDir -Label "TempDir"
     $IgnoredNames = @(".DS_Store", "Thumbs.db")
+    $ExcludedDirs = @(".git", "node_modules")
+
+    function Test-ShouldIncludePayloadFile {
+        param(
+            [Parameter(Mandatory = $true)][System.IO.FileInfo]$File,
+            [Parameter(Mandatory = $true)][string]$RootDir
+        )
+        $name = $File.Name
+        foreach ($ign in $IgnoredNames) {
+            if ($name.Equals($ign, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $false
+            }
+        }
+        if ($name.EndsWith(".tmp", [System.StringComparison]::OrdinalIgnoreCase) `
+            -or $name.EndsWith(".log", [System.StringComparison]::OrdinalIgnoreCase) `
+            -or $name.Equals(".env", [System.StringComparison]::OrdinalIgnoreCase) `
+            -or $name.StartsWith(".env.", [System.StringComparison]::OrdinalIgnoreCase) `
+            -or $name.Equals(".git", [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+        $rootLen = $RootDir.TrimEnd("\", "/").Length
+        $rel = $File.FullName.Substring($rootLen).TrimStart("\", "/")
+        $segments = $rel -split '[/\\]'
+        for ($i = 0; $i -lt ($segments.Length - 1); $i++) {
+            foreach ($exDir in $ExcludedDirs) {
+                if ($segments[$i].Equals($exDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    return $false
+                }
+            }
+        }
+        return $true
+    }
+
     $ManifestLines = New-Object System.Collections.Generic.List[string]
     $RspLines = New-Object System.Collections.Generic.List[string]
 
@@ -83,11 +130,12 @@ try {
 
     $resIndex = 0
 
-    $extFiles = Get-ChildItem -LiteralPath $ExtDir -File |
-        Where-Object { $IgnoredNames -notcontains $_.Name -and -not $_.Name.EndsWith(".tmp") } |
-        Sort-Object -Property Name
+    $extFiles = @(Get-ChildItem -LiteralPath $ExtDir -File |
+        Where-Object { Test-ShouldIncludePayloadFile -File $_ -RootDir $ExtDir } |
+        Sort-Object -Property Name)
 
     foreach ($file in $extFiles) {
+        Assert-NoCommaInPath -PathValue $file.FullName -Label "ExtensionFile"
         $rel = $file.Name.Replace("\", "/")
         $resName = "payload.extensions.res_" + $resIndex
         $ManifestLines.Add(("{0}|extensions/{1}" -f $resName, $rel))
@@ -96,15 +144,16 @@ try {
     }
 
     $pluginRootLen = $PluginDir.TrimEnd("\", "/").Length
-    $pluginFiles = Get-ChildItem -LiteralPath $PluginDir -Recurse -File |
-        Where-Object { $IgnoredNames -notcontains $_.Name -and -not $_.Name.EndsWith(".tmp") } |
-        Sort-Object -Property FullName
+    $pluginFiles = @(Get-ChildItem -LiteralPath $PluginDir -Recurse -File |
+        Where-Object { Test-ShouldIncludePayloadFile -File $_ -RootDir $PluginDir } |
+        Sort-Object -Property FullName)
 
     if ($pluginFiles.Count -eq 0) {
         throw "No plugin files found under: $PluginDir"
     }
 
     foreach ($file in $pluginFiles) {
+        Assert-NoCommaInPath -PathValue $file.FullName -Label "PluginFile"
         $rel = $file.FullName.Substring($pluginRootLen).TrimStart("\", "/").Replace("\", "/")
         $resName = "payload.plugin.res_" + $resIndex
         $ManifestLines.Add(("{0}|plugin/{1}" -f $resName, $rel))
@@ -113,15 +162,16 @@ try {
     }
 
     $kernelRootLen = $KernelDir.TrimEnd("\", "/").Length
-    $kernelFiles = Get-ChildItem -LiteralPath $KernelDir -Recurse -File |
-        Where-Object { $IgnoredNames -notcontains $_.Name -and -not $_.Name.EndsWith(".tmp") } |
-        Sort-Object -Property FullName
+    $kernelFiles = @(Get-ChildItem -LiteralPath $KernelDir -Recurse -File |
+        Where-Object { Test-ShouldIncludePayloadFile -File $_ -RootDir $KernelDir } |
+        Sort-Object -Property FullName)
 
     if ($kernelFiles.Count -eq 0) {
         throw "No kernel files found under: $KernelDir"
     }
 
     foreach ($file in $kernelFiles) {
+        Assert-NoCommaInPath -PathValue $file.FullName -Label "KernelFile"
         $rel = $file.FullName.Substring($kernelRootLen).TrimStart("\", "/").Replace("\", "/")
         $resName = "payload.kernel.res_" + $resIndex
         $ManifestLines.Add(("{0}|kernel/{1}" -f $resName, $rel))
@@ -130,6 +180,7 @@ try {
     }
 
     $ManifestPath = Join-Path $TempDir "payload.manifest.txt"
+    Assert-NoCommaInPath -PathValue $ManifestPath -Label "ManifestPath"
     $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     $Utf8WithBom = New-Object System.Text.UTF8Encoding($true)
 

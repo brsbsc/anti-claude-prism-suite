@@ -23,6 +23,31 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const GENERATED_EXTENSION_FILES = ['prism-suite-00-prefs.js'];
 
+function pathsEqual(a, b) {
+  const na = path.resolve(a);
+  const nb = path.resolve(b);
+  return process.platform === 'win32' ? na.toLowerCase() === nb.toLowerCase() : na === nb;
+}
+
+function cleanUntouchedUserTemplates(resolvedUserDir, resolvedStateDir, removed) {
+  const baseDir = path.join(resolvedStateDir, 'base');
+  for (const fileName of KERNEL_USER_LAYER_FILES) {
+    const livePath = path.join(resolvedUserDir, fileName);
+    const basePath = path.join(baseDir, fileName);
+    try {
+      const liveLst = fs.lstatSync(livePath, { throwIfNoEntry: false });
+      const baseLst = fs.lstatSync(basePath, { throwIfNoEntry: false });
+      if (!liveLst || !baseLst || liveLst.isSymbolicLink() || baseLst.isSymbolicLink() || !liveLst.isFile() || !baseLst.isFile()) {
+        continue;
+      }
+      if (fs.readFileSync(livePath, 'utf8') === fs.readFileSync(basePath, 'utf8')) {
+        fs.rmSync(livePath, { force: true });
+        removed.push(livePath);
+      }
+    } catch {}
+  }
+}
+
 export function uninstallExtensions({ userDir = resolveUserDir() } = {}) {
   const targetDir = path.join(path.resolve(userDir), 'extensions');
   const removed = [];
@@ -43,38 +68,47 @@ export function uninstallKernel({ userDir = resolveUserDir(), stateDir, deactiva
   const runtimeInstallScript = path.join(runtimeDir, 'install.mjs');
   const removed = [];
 
-  if (deactivateDaemon && fs.existsSync(runtimeInstallScript)) {
+  let daemonDeactivateError = null;
+  if (deactivateDaemon) {
+    // Before runtime/install.mjs uninstall removes base/, clean untouched template files
+    // when install-state.json records empty `files` (installed via Prism Suite --skip-user-layer).
     try {
-      execFileSync(process.execPath, [runtimeInstallScript, 'uninstall'], {
-        cwd: runtimeDir,
-        env: { ...process.env, ANTI_CLAUDE_NO_NETWORK: '1' },
-        timeout: 25000,
-        windowsHide: true,
-        stdio: 'ignore'
-      });
+      const stRaw = fs.readFileSync(path.join(resolvedStateDir, 'install-state.json'), 'utf8');
+      const st = JSON.parse(stRaw);
+      const filesObj = st && typeof st === 'object' ? st.files : null;
+      if (filesObj && typeof filesObj === 'object' && !Array.isArray(filesObj) && Object.keys(filesObj).length === 0) {
+        cleanUntouchedUserTemplates(resolvedUserDir, resolvedStateDir, removed);
+      }
     } catch {}
+
+    if (fs.existsSync(runtimeInstallScript)) {
+      try {
+        execFileSync(process.execPath, [runtimeInstallScript, 'uninstall'], {
+          cwd: runtimeDir,
+          env: {
+            ...process.env,
+            ANTI_CLAUDE_NO_NETWORK: '1',
+            ANTI_CLAUDE_STATE_DIR: resolvedStateDir,
+            ANTI_CLAUDE_USER_DIR: resolvedUserDir
+          },
+          timeout: 25000,
+          windowsHide: true,
+          stdio: 'ignore'
+        });
+      } catch (err) {
+        daemonDeactivateError = String(err?.message || err).split('\n')[0];
+      }
+    }
   }
 
-  if (fs.existsSync(runtimeDir)) {
+  if (!daemonDeactivateError && fs.existsSync(runtimeDir)) {
     fs.rmSync(runtimeDir, { recursive: true, force: true });
     removed.push(runtimeDir);
   }
 
   // In sandbox / non-daemon mode, clean untouched template user/base files we deployed
   if (!deactivateDaemon) {
-    const baseDir = path.join(resolvedStateDir, 'base');
-    for (const fileName of KERNEL_USER_LAYER_FILES) {
-      const livePath = path.join(resolvedUserDir, fileName);
-      const basePath = path.join(baseDir, fileName);
-      if (fs.existsSync(livePath) && fs.existsSync(basePath)) {
-        try {
-          if (fs.readFileSync(livePath, 'utf8') === fs.readFileSync(basePath, 'utf8')) {
-            fs.rmSync(livePath, { force: true });
-            removed.push(livePath);
-          }
-        } catch {}
-      }
-    }
+    cleanUntouchedUserTemplates(resolvedUserDir, resolvedStateDir, removed);
     for (const sub of ['base', 'incoming']) {
       const subDir = path.join(resolvedStateDir, sub);
       if (fs.existsSync(subDir)) {
@@ -83,7 +117,7 @@ export function uninstallKernel({ userDir = resolveUserDir(), stateDir, deactiva
     }
   }
 
-  return { stateDir: resolvedStateDir, runtimeDir, removed };
+  return { stateDir: resolvedStateDir, runtimeDir, removed, daemonDeactivateError };
 }
 
 export function uninstallPlugin({ pluginsDir = resolvePluginsDir() } = {}) {
@@ -125,7 +159,7 @@ export function uninstallAll({
   let kernel = null;
   if (removeKernel && !onlyPlugin) {
     const defaultHostUserDir = path.join(os.homedir(), '.gemini', 'antigravity', 'anti-claude', 'user');
-    const isDefaultHost = userDir === undefined && path.resolve(resolvedUserDir) === path.resolve(defaultHostUserDir);
+    const isDefaultHost = userDir === undefined && pathsEqual(resolvedUserDir, defaultHostUserDir);
     const shouldDeactivate = deactivateKernelDaemon !== undefined ? Boolean(deactivateKernelDaemon) : isDefaultHost;
     kernel = uninstallKernel({ userDir: resolvedUserDir, deactivateDaemon: shouldDeactivate });
   }
@@ -172,7 +206,10 @@ if (isMain) {
     }
   }
   if (res.kernel) {
-    if (res.kernel.removed.length) {
+    if (res.kernel.daemonDeactivateError) {
+      console.error(`[Bundled Anti-Claude Kernel] Failed to deactivate daemon (runtime preserved at ${res.kernel.runtimeDir} for retry): ${res.kernel.daemonDeactivateError}`);
+      process.exitCode = 1;
+    } else if (res.kernel.removed.length) {
       console.log(`[Bundled Anti-Claude Kernel] Removed runtime from: ${res.kernel.stateDir}`);
     } else {
       console.log(`[Bundled Anti-Claude Kernel] No bundled runtime found in: ${res.kernel.stateDir}`);

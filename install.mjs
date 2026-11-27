@@ -33,6 +33,12 @@ function readArgValue(argv, flag) {
   return null;
 }
 
+function pathsEqual(a, b) {
+  const na = path.resolve(a);
+  const nb = path.resolve(b);
+  return process.platform === 'win32' ? na.toLowerCase() === nb.toLowerCase() : na === nb;
+}
+
 export function resolveUserDir(argv = process.argv.slice(2)) {
   const flagVal = readArgValue(argv, '--user-dir');
   if (flagVal) {
@@ -356,20 +362,28 @@ export function installKernel({
   let daemonNote = '';
   if (activateDaemon) {
     let keepAgentsRule = false;
+    let keepCli = false;
     try {
       const stRaw = fs.readFileSync(path.join(resolvedStateDir, 'install-state.json'), 'utf8');
       const st = JSON.parse(stRaw);
       keepAgentsRule = st?.options?.agentsRule === true;
+      keepCli = st?.options?.cli === true;
     } catch {}
 
     const runtimeInstallScript = path.join(runtimeDir, 'install.mjs');
-    const args = [runtimeInstallScript, 'install', '--no-auto-update'];
+    const args = [runtimeInstallScript, 'install', '--no-auto-update', '--skip-user-layer'];
+    if (!keepCli) args.push('--no-cli');
     if (!keepAgentsRule) args.push('--no-agents-rule');
     try {
       // Use stdio: 'ignore' so detached grandchild daemon on Windows never inherits open stdout/stderr pipes
       execFileSync(process.execPath, args, {
         cwd: runtimeDir,
-        env: { ...process.env, ANTI_CLAUDE_NO_NETWORK: '1' },
+        env: {
+          ...process.env,
+          ANTI_CLAUDE_NO_NETWORK: '1',
+          ANTI_CLAUDE_STATE_DIR: resolvedStateDir,
+          ANTI_CLAUDE_USER_DIR: resolvedUserDir
+        },
         timeout: 35000,
         windowsHide: true,
         stdio: 'ignore'
@@ -472,7 +486,7 @@ export function installAll({
     const isCrossMountOnLinux = process.platform === 'linux' && /^\/mnt\/[a-z]\//i.test(resolvedUserDir);
     const shouldActivate = activateKernelDaemon !== undefined
       ? Boolean(activateKernelDaemon)
-      : (!isCustomSandbox && !isCrossMountOnLinux && !argv.includes('--no-kernel-daemon') && path.resolve(resolvedUserDir) === path.resolve(defaultHostUserDir));
+      : (!isCustomSandbox && !isCrossMountOnLinux && !argv.includes('--no-kernel-daemon') && pathsEqual(resolvedUserDir, defaultHostUserDir));
 
     kernel = installKernel({
       userDir: resolvedUserDir,

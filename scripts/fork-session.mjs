@@ -13,6 +13,7 @@
  *   node scripts/fork-session.mjs <conversationId> [turnNumber] [options]
  * ============================================================================ */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,7 +22,7 @@ import process from 'node:process';
 const DEFAULT_TIMEOUT_MS = 15000;
 const MIN_TIMEOUT_MS = 3000;
 const MAX_TIMEOUT_MS = 60000;
-const LOCK_STALE_MS = 30000;
+const LOCK_STALE_MS = MAX_TIMEOUT_MS + 15000;
 const CONV_ID_RE = /^[A-Za-z0-9._:-]{4,128}$/;
 
 function printUsage() {
@@ -231,9 +232,16 @@ function enforceLoopbackWsUrl(rawWsUrl, expectedPort) {
   if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost') {
     throw new Error(`安全拦截：仅允许连接本地回环 127.0.0.1，拒绝主机 ${parsed.hostname}`);
   }
-  const portNum = Number(parsed.port || expectedPort);
+  const expectedPortNum = Number(expectedPort);
+  if (!Number.isInteger(expectedPortNum) || expectedPortNum < 1 || expectedPortNum > 65535) {
+    throw new Error('预期 CDP 端口无效');
+  }
+  const portNum = parsed.port ? Number(parsed.port) : 80;
   if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
     throw new Error('CDP WebSocket 端口无效');
+  }
+  if (portNum !== expectedPortNum) {
+    throw new Error(`安全拦截：CDP WebSocket 端口 (${portNum}) 与预期本地调试端口 (${expectedPortNum}) 不一致`);
   }
   // Always normalize hostname strictly to 127.0.0.1
   parsed.hostname = '127.0.0.1';
@@ -299,6 +307,7 @@ async function discoverAntigravityHubTarget(port, timeoutMs, portFilePath = '') 
       '请确认 Antigravity 正在运行且已启用本地调试端口（DevToolsActivePort 未过期）。'
     );
     connErr.code = 'CDP_CONNECT_FAILED';
+    connErr.cause = err;
     if (isRunningInWsl() && isWindowsUsersPortFile(portFilePath)) {
       connErr.hints = [WSL2_NAT_HINT];
     }
@@ -358,10 +367,13 @@ class CdpClient {
       const ws = new WebSocket(this.wsUrl);
       this.ws = ws;
 
+      const connectTimeoutMs = Math.min(this.timeoutMs, 6000);
       const openTimer = setTimeout(() => {
         try { ws.close(); } catch {}
-        reject(new Error(`连接本地 CDP WebSocket 超时 (${this.timeoutMs}ms)`));
-      }, Math.min(this.timeoutMs, 6000));
+        const err = new Error(`连接本地 CDP WebSocket 超时 (${connectTimeoutMs}ms)`);
+        err.code = 'ETIMEDOUT';
+        reject(err);
+      }, connectTimeoutMs);
 
       ws.addEventListener('open', () => {
         clearTimeout(openTimer);
@@ -370,7 +382,9 @@ class CdpClient {
 
       ws.addEventListener('error', () => {
         clearTimeout(openTimer);
-        reject(new Error('连接本地 CDP WebSocket 发生错误'));
+        const err = new Error('连接本地 CDP WebSocket 发生错误');
+        err.code = 'CDP_CONNECT_FAILED';
+        reject(err);
       });
 
       ws.addEventListener('message', (event) => {
@@ -442,40 +456,160 @@ class CdpClient {
 /* ==========================================================================
  * Process-Level Concurrency Lock (Prevents Double-Fork Races)
  * ========================================================================== */
-function acquireFileLock() {
-  const lockPath = path.join(os.tmpdir(), 'ag-prism-fork-session.lock');
-  const payload = JSON.stringify({ pid: process.pid, ts: Date.now() });
-
-  for (let attempt = 0; attempt < 2; attempt++) {
+function getLockUserScopeTag() {
+  if (typeof process.getuid === 'function') {
+    return `uid-${process.getuid()}`;
+  }
+  let rawUser = process.env.USERNAME || process.env.USER || '';
+  if (!rawUser) {
     try {
-      const fd = fs.openSync(lockPath, 'wx');
+      rawUser = os.userInfo().username || '';
+    } catch {}
+  }
+  const clean = String(rawUser || 'user').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 48) || 'user';
+  return `user-${clean}`;
+}
+
+function resolveLockFileCandidates() {
+  const candidates = [];
+  const preferredDir = path.join(os.homedir(), '.gemini', 'antigravity', 'prism-suite');
+  candidates.push({ dir: preferredDir, lockPath: path.join(preferredDir, 'fork-session.lock') });
+  const fallbackDir = path.join(os.tmpdir(), `ag-prism-${getLockUserScopeTag()}`);
+  candidates.push({ dir: fallbackDir, lockPath: path.join(fallbackDir, 'fork-session.lock') });
+  return candidates;
+}
+
+function isProcessAlive(pid) {
+  const num = Number(pid);
+  if (!Number.isInteger(num) || num <= 0) return false;
+  try {
+    process.kill(num, 0);
+    return true;
+  } catch (err) {
+    return Boolean(err && err.code === 'EPERM');
+  }
+}
+
+function tryCreateLockAt(lockDir, lockPath, payload, lockToken) {
+  fs.mkdirSync(lockDir, { recursive: true, mode: 0o700 });
+  const dirLst = fs.lstatSync(lockDir);
+  if (dirLst.isSymbolicLink() || !dirLst.isDirectory()) {
+    const dirErr = new Error(`锁目录不可用或为符号链接: ${lockDir}`);
+    dirErr.code = 'EACCES';
+    throw dirErr;
+  }
+  if (process.platform !== 'win32' && typeof process.getuid === 'function') {
+    if (dirLst.uid !== process.getuid() || (dirLst.mode & 0o022) !== 0) {
+      const ownerErr = new Error(`锁目录属主或权限不安全: ${lockDir}`);
+      ownerErr.code = 'EACCES';
+      throw ownerErr;
+    }
+  }
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let fd = null;
+    try {
+      fd = fs.openSync(lockPath, 'wx', 0o600);
       fs.writeFileSync(fd, payload, 'utf8');
       fs.closeSync(fd);
+      fd = null;
       return () => {
-        try { fs.unlinkSync(lockPath); } catch {}
-      };
-    } catch (err) {
-      if (err && err.code === 'EEXIST') {
         try {
-          const st = fs.statSync(lockPath);
-          if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+          const curRaw = fs.readFileSync(lockPath, 'utf8');
+          const cur = JSON.parse(curRaw);
+          if (cur && cur.lockToken === lockToken) {
             fs.unlinkSync(lockPath);
-            continue;
           }
         } catch {}
-        throw new Error('另一个 fork-session 任务正在运行，请稍后重试（防并发重复分支）');
+      };
+    } catch (err) {
+      if (fd !== null) {
+        try { fs.closeSync(fd); } catch {}
+        try { fs.unlinkSync(lockPath); } catch {}
+        fd = null;
+      }
+      if (err && err.code === 'EEXIST') {
+        let shouldReclaim = false;
+        let retryNow = false;
+        try {
+          const st = fs.lstatSync(lockPath);
+          if (st.isSymbolicLink()) {
+            throw new Error(`拒绝使用符号链接锁文件: ${lockPath}`);
+          }
+          const ageMs = Date.now() - st.mtimeMs;
+          let holderAlive = null;
+          try {
+            const existingRaw = fs.readFileSync(lockPath, 'utf8');
+            const existingData = JSON.parse(existingRaw);
+            if (existingData && Number.isInteger(Number(existingData.pid)) && Number(existingData.pid) > 0) {
+              holderAlive = isProcessAlive(existingData.pid);
+            }
+          } catch {}
+          if (holderAlive === false || ageMs > LOCK_STALE_MS) {
+            shouldReclaim = true;
+          }
+        } catch (staleErr) {
+          if (staleErr && staleErr.code === 'ENOENT') {
+            retryNow = true;
+          } else if (staleErr && /符号链接/.test(String(staleErr.message || ''))) {
+            throw staleErr;
+          }
+        }
+
+        if (retryNow) {
+          continue;
+        }
+        if (shouldReclaim) {
+          const stalePath = `${lockPath}.stale-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+          try {
+            fs.renameSync(lockPath, stalePath);
+            try { fs.unlinkSync(stalePath); } catch {}
+            continue;
+          } catch (reclaimErr) {
+            if (reclaimErr && reclaimErr.code === 'ENOENT') {
+              continue;
+            }
+          }
+        }
+        const busyErr = new Error('另一个 fork-session 任务正在运行，请稍后重试（防并发重复分支）');
+        busyErr.code = 'FORK_LOCK_BUSY';
+        throw busyErr;
       }
       throw err;
     }
   }
-  throw new Error('无法获取本地并发锁');
+  const failErr = new Error('无法获取本地并发锁');
+  failErr.code = 'FORK_LOCK_FAILED';
+  throw failErr;
+}
+
+function acquireFileLock() {
+  const lockToken = `${process.pid}-${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
+  const payload = JSON.stringify({ pid: process.pid, ts: Date.now(), lockToken });
+  const candidates = resolveLockFileCandidates();
+  let lastErr = null;
+
+  for (let i = 0; i < candidates.length; i++) {
+    const { dir, lockPath } = candidates[i];
+    try {
+      return tryCreateLockAt(dir, lockPath, payload, lockToken);
+    } catch (err) {
+      if (err && (err.code === 'FORK_LOCK_BUSY' || err.code === 'FORK_LOCK_FAILED')) {
+        throw err;
+      }
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error('无法获取本地并发锁');
 }
 
 /* ==========================================================================
  * Remote Page Evaluation Payload (Pure JSON-Parameterized Invocation)
  * ========================================================================== */
-function buildForkEvaluationExpression(conversationId, turnNumber, dryRun) {
-  const argLiteral = JSON.stringify({ conversationId, turnNumber, dryRun });
+function buildForkEvaluationExpression(conversationId, turnNumber, dryRun, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const safeTimeoutMs = Number.isFinite(Number(timeoutMs)) ? Math.round(Number(timeoutMs)) : DEFAULT_TIMEOUT_MS;
+  const inflightTtlMs = Math.max(10000, safeTimeoutMs + 5000);
+  const argLiteral = JSON.stringify({ conversationId, turnNumber, dryRun, inflightTtlMs });
   return `(async () => {
     const args = ${argLiteral};
     const href = String(window.location.href || '');
@@ -490,8 +624,16 @@ function buildForkEvaluationExpression(conversationId, turnNumber, dryRun) {
       return { ok: false, code: 'NOT_ANTIGRAVITY_HUB', message: '目标页面不是有效的 Antigravity Hub 上下文', href };
     }
 
-    if (window.__agPrismForkInFlight) {
-      return { ok: false, code: 'CONCURRENT_FORK', message: '页面内已有正在执行的分支任务，请稍候' };
+    const INFLIGHT_TTL_MS = Math.max(10000, Number(args.inflightTtlMs) || 20000);
+    const prevInFlight = window.__agPrismForkInFlight;
+    if (prevInFlight) {
+      const startedAt = (typeof prevInFlight === 'object' && prevInFlight !== null)
+        ? Number(prevInFlight.startedAt || 0)
+        : 0;
+      if (startedAt > 0 && Date.now() - startedAt < INFLIGHT_TTL_MS) {
+        return { ok: false, code: 'CONCURRENT_FORK', message: '页面内已有正在执行的分支任务，请稍候' };
+      }
+      window.__agPrismForkInFlight = null;
     }
 
     // Inspect currently loaded turns if the target conversation is active in DOM
@@ -536,7 +678,8 @@ function buildForkEvaluationExpression(conversationId, turnNumber, dryRun) {
       };
     }
 
-    window.__agPrismForkInFlight = true;
+    const inFlightToken = { startedAt: Date.now(), conversationId: args.conversationId };
+    window.__agPrismForkInFlight = inFlightToken;
     try {
       const reqPayload = {
         conversationId: args.conversationId,
@@ -557,6 +700,18 @@ function buildForkEvaluationExpression(conversationId, turnNumber, dryRun) {
       for (const [name, fn] of directFns) {
         if (!fn) continue;
         const result = await fn(reqPayload);
+        if (result && typeof result === 'object' && result.ok === false) {
+          return {
+            ok: false,
+            code: typeof result.code === 'string' && result.code ? result.code : 'FORK_HOOK_FAILED',
+            via: name,
+            conversationId: args.conversationId,
+            turnNumber: args.turnNumber,
+            turnPreview,
+            message: String(result.message || result.error || (name + ' 返回失败')),
+            result
+          };
+        }
         return {
           ok: true,
           via: name,
@@ -568,6 +723,7 @@ function buildForkEvaluationExpression(conversationId, turnNumber, dryRun) {
       }
 
       if (typeof window.__agProjectCall === 'function') {
+        const unsupportedRe = /(?:unknown|unsupported|unimplemented)[_\\s-]?(?:method|action|command|rpc|handler)|method[_\\s-]?not[_\\s-]?found|no[_\\s-]?handler/i;
         try {
           const rpcRes = await window.__agProjectCall('forkConversation', reqPayload, 12000);
           if (rpcRes && rpcRes.ok) {
@@ -580,7 +736,36 @@ function buildForkEvaluationExpression(conversationId, turnNumber, dryRun) {
               result: rpcRes
             };
           }
-        } catch {}
+          if (rpcRes && typeof rpcRes === 'object') {
+            const rpcErrText = String(rpcRes.message || rpcRes.error || '');
+            const rpcProbe = String(rpcRes.code || '') + ' ' + rpcErrText;
+            if (!unsupportedRe.test(rpcProbe) && (rpcRes.ok === false || rpcErrText || rpcRes.code)) {
+              return {
+                ok: false,
+                code: typeof rpcRes.code === 'string' && rpcRes.code ? rpcRes.code : 'FORK_RPC_FAILED',
+                via: '__agProjectCall:forkConversation',
+                conversationId: args.conversationId,
+                turnNumber: args.turnNumber,
+                turnPreview,
+                message: rpcErrText || '__agProjectCall(forkConversation) 返回失败',
+                result: rpcRes
+              };
+            }
+          }
+        } catch (rpcErr) {
+          const errMsg = String(rpcErr && rpcErr.message ? rpcErr.message : rpcErr || '');
+          if (errMsg && !unsupportedRe.test(errMsg)) {
+            return {
+              ok: false,
+              code: 'FORK_RPC_ERROR',
+              via: '__agProjectCall:forkConversation',
+              conversationId: args.conversationId,
+              turnNumber: args.turnNumber,
+              turnPreview,
+              message: errMsg
+            };
+          }
+        }
       }
 
       return {
@@ -603,7 +788,9 @@ function buildForkEvaluationExpression(conversationId, turnNumber, dryRun) {
         message: String(err && err.message ? err.message : err)
       };
     } finally {
-      window.__agPrismForkInFlight = false;
+      if (window.__agPrismForkInFlight === inFlightToken) {
+        window.__agPrismForkInFlight = null;
+      }
     }
   })()`;
 }
@@ -635,6 +822,9 @@ function emitOutput(opts, data, exitCode = 0) {
     }
   } else {
     process.stderr.write(`[分支失败] ${data.message || '未知错误'}\n`);
+    if (Array.isArray(data.attemptedPortFiles) && data.attemptedPortFiles.length) {
+      process.stderr.write(`  已尝试端口文件: ${data.attemptedPortFiles.join(', ')}\n`);
+    }
     if (Array.isArray(data.hints) && data.hints.length) {
       for (const h of data.hints) {
         process.stderr.write(`  - ${h}\n`);
@@ -645,12 +835,21 @@ function emitOutput(opts, data, exitCode = 0) {
 }
 
 async function main() {
+  const rawArgv = process.argv.slice(2);
   let opts;
   try {
-    opts = parseCliArgs(process.argv.slice(2));
+    opts = parseCliArgs(rawArgv);
   } catch (err) {
-    process.stderr.write(`[参数错误] ${err.message}\n`);
-    process.exitCode = 2;
+    if (rawArgv.includes('--json')) {
+      emitOutput({ json: true }, {
+        ok: false,
+        code: 'INVALID_ARGS',
+        message: err && err.message ? err.message : String(err)
+      }, 2);
+    } else {
+      process.stderr.write(`[参数错误] ${err.message}\n`);
+      process.exitCode = 2;
+    }
     return;
   }
 
@@ -690,20 +889,87 @@ async function main() {
       return;
     }
 
-    const active = readDevToolsActivePort(existing[0].filePath);
-    const target = await discoverAntigravityHubTarget(active.port, opts.timeoutMs, active.filePath);
-
-    cdp = new CdpClient(target.wsUrl, opts.timeoutMs);
-    try {
-      await cdp.connect();
-    } catch (wsErr) {
-      if (isRunningInWsl() && isWindowsUsersPortFile(active.filePath)) {
-        wsErr.hints = Array.isArray(wsErr.hints) ? [...wsErr.hints, WSL2_NAT_HINT] : [WSL2_NAT_HINT];
+    const isConnectFailureError = (err) => {
+      if (!err) return true;
+      const codes = [err.code, err.cause && err.cause.code, err.name, err.cause && err.cause.name]
+        .filter(Boolean)
+        .map(String);
+      if (codes.some((c) => /^(?:CDP_CONNECT_FAILED|ECONNREFUSED|ETIMEDOUT|ECONNRESET|EHOSTUNREACH|ENETUNREACH|TimeoutError|AbortError)$/i.test(c))) {
+        return true;
       }
-      throw wsErr;
+      const msg = String(err.message || '');
+      return /ECONNREFUSED|ETIMEDOUT|无法连接本地 CDP 端口|连接本地 CDP WebSocket (?:超时|发生错误)/i.test(msg);
+    };
+
+    const deadline = Date.now() + opts.timeoutMs;
+    const attemptedPortFiles = [];
+    let active = null;
+    let target = null;
+    let primaryErr = null;
+    let fallbackErr = null;
+    for (const candidate of existing) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        if (!primaryErr && !fallbackErr) {
+          const timeoutErr = new Error(`连接候选 DevToolsActivePort 超出总超时预算 (${opts.timeoutMs}ms)`);
+          timeoutErr.code = 'ETIMEDOUT';
+          fallbackErr = timeoutErr;
+        }
+        break;
+      }
+      attemptedPortFiles.push(candidate.filePath);
+      let candActive = null;
+      let candTarget = null;
+      let candCdp = null;
+      try {
+        candActive = readDevToolsActivePort(candidate.filePath);
+        candTarget = await discoverAntigravityHubTarget(candActive.port, remainingMs, candActive.filePath);
+        const wsRemainingMs = deadline - Date.now();
+        if (wsRemainingMs <= 0) {
+          const timeoutErr = new Error(`连接本地 CDP WebSocket 超出总超时预算 (${opts.timeoutMs}ms)`);
+          timeoutErr.code = 'ETIMEDOUT';
+          throw timeoutErr;
+        }
+        candCdp = new CdpClient(candTarget.wsUrl, wsRemainingMs);
+        await candCdp.connect();
+        active = candActive;
+        target = candTarget;
+        cdp = candCdp;
+        break;
+      } catch (err) {
+        if (candCdp) {
+          try { candCdp.close(); } catch {}
+        }
+        if (isRunningInWsl() && isWindowsUsersPortFile(candidate.filePath)) {
+          const hints = Array.isArray(err.hints) ? err.hints : [];
+          if (!hints.includes(WSL2_NAT_HINT)) {
+            err.hints = [...hints, WSL2_NAT_HINT];
+          }
+        }
+        if (!fallbackErr) {
+          fallbackErr = err;
+        }
+        if (!primaryErr && !isConnectFailureError(err)) {
+          primaryErr = err;
+        }
+      }
     }
 
-    const expression = buildForkEvaluationExpression(opts.conversationId, opts.turnNumber, opts.dryRun);
+    if (!cdp || !active || !target) {
+      const finalErr = primaryErr || fallbackErr || new Error('无法连接到任何候选 DevToolsActivePort 对应的 Antigravity Hub');
+      finalErr.attemptedPortFiles = attemptedPortFiles;
+      throw finalErr;
+    }
+
+    const evalRemainingMs = deadline - Date.now();
+    if (evalRemainingMs <= 0) {
+      const timeoutErr = new Error(`执行分支调用前已超出总超时预算 (${opts.timeoutMs}ms)`);
+      timeoutErr.code = 'ETIMEDOUT';
+      timeoutErr.attemptedPortFiles = attemptedPortFiles;
+      throw timeoutErr;
+    }
+    const evalTimeoutMs = Math.max(1000, evalRemainingMs);
+    const expression = buildForkEvaluationExpression(opts.conversationId, opts.turnNumber, opts.dryRun, evalTimeoutMs);
     const evalRes = await cdp.send(
       'Runtime.evaluate',
       {
@@ -712,7 +978,7 @@ async function main() {
         returnByValue: true,
         userGesture: true
       },
-      opts.timeoutMs
+      evalTimeoutMs
     );
 
     if (evalRes && evalRes.exceptionDetails) {
@@ -755,6 +1021,9 @@ async function main() {
       code: (err && err.code) || 'FORK_CLI_ERROR',
       message: err && err.message ? err.message : String(err)
     };
+    if (err && Array.isArray(err.attemptedPortFiles) && err.attemptedPortFiles.length) {
+      payload.attemptedPortFiles = err.attemptedPortFiles;
+    }
     if (err && Array.isArray(err.hints) && err.hints.length) {
       payload.hints = err.hints;
     }
