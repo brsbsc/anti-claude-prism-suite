@@ -17,6 +17,7 @@ import vm from 'node:vm';
 import { execFile, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { startCuaBroker, stopCuaBroker, stopCuaBrokerSync } from './cua-broker.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -214,7 +215,10 @@ export function claimPidFile({
     fs.writeFileSync(pidFile, `${process.pid}\n`, 'utf8');
     if (bindExit && !pidCleanupBound && pidFile === PID_FILE) {
       pidCleanupBound = true;
-      process.on('exit', () => removeOwnPidFile(PID_FILE));
+      process.on('exit', () => {
+        stopCuaBrokerSync();
+        removeOwnPidFile(PID_FILE);
+      });
       for (const sig of ['SIGTERM', 'SIGINT']) {
         process.on(sig, () => {
           if (shuttingDown) return;
@@ -223,11 +227,11 @@ export function claimPidFile({
             removeOwnPidFile(PID_FILE);
             process.exit(0);
           };
-          if (activeRelaunchPromise) {
-            Promise.race([activeRelaunchPromise, new Promise((r) => setTimeout(r, 6000))]).finally(finish);
-          } else {
-            finish();
-          }
+          const shutdownTasks = Promise.allSettled([
+            stopCuaBroker(),
+            ...(activeRelaunchPromise ? [activeRelaunchPromise] : [])
+          ]);
+          Promise.race([shutdownTasks, new Promise((r) => setTimeout(r, 6000))]).finally(finish);
         });
       }
     }
@@ -4092,7 +4096,7 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
           'unreadBadge', 'keepOverviewOpen', 'alwaysOutlineRail', 'switchReturnHelper',
           'switchAutoReturn', 'autoDismissOnboarding', 'quotaHandoffAlert',
           'imageContextMenu', 'cleanCopy', 'sshPaste', 'inlineEditHelper',
-          'sessionFork', 'composerFileDrop', 'wslExplorerRevealFix'
+          'sessionFork', 'composerFileDrop', 'wslExplorerRevealFix', 'fastWindowRestore'
         ]);
         const sanitizeSeedObj = (obj) => {
           if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
@@ -4267,6 +4271,49 @@ async function handleProjectRpcRequest(rawPayload, callerEntry = null) {
     if (action === 'translateText') {
       const result = await translateThoughtText(payload?.text, payload?.targetLang || 'zh-CN');
       return { reqId, result };
+    }
+    if (action === 'setFastWindowRestoreShortcut') {
+      const wantEnabled = Boolean(payload?.enabled);
+      if (process.platform !== 'win32') {
+        return { reqId, result: { ok: true, updated: 0, note: 'windows_only' } };
+      }
+      try {
+        const psScript = [
+          "$ErrorActionPreference = 'SilentlyContinue'",
+          `$enableFlag = $${wantEnabled ? 'true' : 'false'}`,
+          '$roots = @([Environment]::GetFolderPath("DesktopDirectory"), [Environment]::GetFolderPath("Programs")) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }',
+          '$shell = New-Object -ComObject WScript.Shell',
+          '$updated = 0',
+          'foreach ($r in $roots) {',
+          '  Get-ChildItem -LiteralPath $r -Filter "*Antigravity*.lnk" -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {',
+          '    try {',
+          '      $sc = $shell.CreateShortcut($_.FullName)',
+          '      if ($sc.TargetPath -and $sc.TargetPath.EndsWith("Antigravity.exe", [System.StringComparison]::OrdinalIgnoreCase)) {',
+          '        $cur = [string]$sc.Arguments',
+          '        $cleaned = ($cur -replace "(?i)(?:^|\\s+)--disable-renderer-backgrounding(?=\\s|$)", " " -replace "(?i)(?:^|\\s+)--disable-backgrounding-occluded-windows(?=\\s|$)", " ").Trim()',
+          '        $next = if ($enableFlag) { ($cleaned + " --disable-renderer-backgrounding --disable-backgrounding-occluded-windows").Trim() } else { $cleaned }',
+          '        if ($next -ne $cur.Trim()) {',
+          '          $sc.Arguments = $next',
+          '          $sc.Save()',
+          '          $updated++',
+          '        }',
+          '      }',
+          '    } catch {}',
+          '  }',
+          '}',
+          'Write-Output $updated'
+        ].join('\r\n');
+        const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+        const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
+          encoding: 'utf8',
+          timeout: 8000,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'ignore']
+        }).trim();
+        return { reqId, result: { ok: true, enabled: wantEnabled, updated: parseInt(out, 10) || 0 } };
+      } catch (err) {
+        return { reqId, result: { ok: false, error: String(err?.message || err) } };
+      }
     }
     if (action === 'revealInOsFileManager') {
       const rawTarget = typeof payload?.targetPath === 'string' ? payload.targetPath.trim() : '';
@@ -4642,7 +4689,7 @@ export async function attachTarget(page, endpoint, opts = {}) {
     if (page.type !== 'page') return;
     const bindParams = (name) =>
       entry.trustedContextId !== null ? { name, executionContextId: entry.trustedContextId } : { name };
-    for (const name of ['__agRequestMetrics', '__agSyncHostThemeMode', '__agProjectRpc']) {
+    for (const name of ['__agRequestMetrics', '__agSyncHostThemeMode', '__agSyncHostVisibility', '__agProjectRpc']) {
       await send('Runtime.addBinding', bindParams(name)).catch(() =>
         send('Runtime.addBinding', { name }).catch(() => {})
       );
@@ -4762,6 +4809,15 @@ export async function attachTarget(page, endpoint, opts = {}) {
               })
               .catch(() => {});
           }
+        }
+      } else if (name === '__agSyncHostVisibility' && (payload === 'hidden' || payload === 'visible')) {
+        entry.docHidden = payload === 'hidden';
+        if (!entry.docHidden && entry.watchedCascadeId) {
+          setTimeout(() => {
+            if (!entry.docHidden && entry.hostConfirmed) {
+              pushMetricsToTarget(entry.watchedCascadeId, false).catch(() => {});
+            }
+          }, 260).unref?.();
         }
       } else if (name === '__agProjectRpc' && payload) {
         let parsedEnv = null;
@@ -4985,8 +5041,8 @@ async function sync(opts = {}) {
           entry.updateTargetUrl(page.url);
           if (entry.hostConfirmed) {
             if (bundleChanged) await entry.updateNewDocScript();
-            if (shouldHeartbeatCheck) await entry.checkAndInject(bundleChanged);
-            await entry.syncMetricsForSession(bundleChanged);
+            if (bundleChanged || (!entry.docHidden && shouldHeartbeatCheck)) await entry.checkAndInject(bundleChanged);
+            if (bundleChanged || !entry.docHidden) await entry.syncMetricsForSession(bundleChanged);
           }
         }
       }
@@ -5133,6 +5189,9 @@ if (isMainModule) {
     process.exit(0);
   } else {
     rebuildBundleIfNeeded();
+    await startCuaBroker({ discoverWslGeminiDirs }).catch((err) => {
+      console.warn(`[Anti-Claude Daemon] CUA Broker warning: ${err?.message || err}`);
+    });
     console.log(`[Anti-Claude Daemon] Started (${cachedVersion}) | userDir=${USER_DIR} | sqlite=${Boolean(DatabaseSync)}`);
     await sync();
     setInterval(sync, 2500);

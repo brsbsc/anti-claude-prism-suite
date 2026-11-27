@@ -35,6 +35,7 @@
     sshPaste: true,
     composerFileDrop: true,
     wslExplorerRevealFix: true,
+    fastWindowRestore: false,
     i18nExtraMode: 'off',
     inlineEditHelper: true,
     sessionFork: true
@@ -3046,6 +3047,13 @@
                 <button type="button" class="ag-ps-switch" data-wf-toggle="wslExplorerRevealFix" data-on="${p.wslExplorerRevealFix !== false ? '1' : '0'}" aria-label="WSL 资源管理器定位修复"></button>
               </div>
               <div class="ag-ps-toggle-row">
+                <div class="ag-ps-toggle-label" data-ag-ps-tip="为桌面/开始菜单快捷方式追加 --disable-renderer-backgrounding，防止最小化掉入低频休眠（下次重启客户端生效，关闭即还原）">
+                  <span>极速窗口恢复（防最小化白屏）</span>
+                  <span class="ag-ps-toggle-sub">禁止最小化后台降频驱逐显存帧 · 重启客户端生效</span>
+                </div>
+                <button type="button" class="ag-ps-switch" data-wf-toggle="fastWindowRestore" data-on="${p.fastWindowRestore === true ? '1' : '0'}" aria-label="极速窗口恢复（防最小化白屏）"></button>
+              </div>
+              <div class="ag-ps-toggle-row">
                 <div class="ag-ps-toggle-label">
                   <span>原位消息编辑补位</span>
                   <span class="ag-ps-toggle-sub">优先原生消息编辑，不可用时启用乐观锁编辑</span>
@@ -3084,7 +3092,11 @@
             const key = toggleBtn.getAttribute('data-wf-toggle');
             if (key && Object.prototype.hasOwnProperty.call(DEFAULT_PREFS, key)) {
               const cur = getPrefs()[key];
-              bus.setPref(key, !cur);
+              const nextVal = !cur;
+              bus.setPref(key, nextVal);
+              if (key === 'fastWindowRestore' && typeof window.__agProjectCall === 'function') {
+                window.__agProjectCall('setFastWindowRestoreShortcut', { enabled: nextVal }, 8000).catch(() => {});
+              }
               if (key === 'imageContextMenu' && cur) closeImageMenu();
               if (key === 'inlineEditHelper' || key === 'sessionFork') {
                 if (key === 'inlineEditHelper' && cur) closeActiveInlineEditor();

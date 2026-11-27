@@ -11,17 +11,17 @@ using System.Threading;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Anti-Claude Prism Suite 一键安装器")]
-[assembly: AssemblyDescription("Anti-Claude Prism Suite Standalone All-in-One Installer (Kernel + Extensions + prism-files MCP App)")]
+[assembly: AssemblyDescription("Anti-Claude Prism Suite Standalone All-in-One Installer (Kernel + Extensions + prism-files + prism-cua + chrome-bridge)")]
 [assembly: AssemblyProduct("Anti-Claude Prism Suite")]
-[assembly: AssemblyVersion("0.7.0.0")]
-[assembly: AssemblyFileVersion("0.7.0.0")]
+[assembly: AssemblyVersion("0.8.0.0")]
+[assembly: AssemblyFileVersion("0.8.0.0")]
 
 namespace AntiClaudePrismSuiteInstaller
 {
     internal sealed class PayloadEntry
     {
         public string ResourceName;
-        public string Category; // "kernel", "extensions", or "plugin"
+        public string Category; // "kernel", "extensions", "chrome-bridge", "plugin", or "plugin-cua"
         public string RelativePath;
     }
 
@@ -168,6 +168,30 @@ namespace AntiClaudePrismSuiteInstaller
                         {
                             ResourceName = resourceName,
                             Category = "extensions",
+                            RelativePath = rel
+                        });
+                    }
+                    else if (targetRel.StartsWith("chrome-bridge/", StringComparison.OrdinalIgnoreCase)
+                        && (resourceName.StartsWith("payload.chromebridge.", StringComparison.Ordinal)
+                            || resourceName.StartsWith("payload.chrome-bridge.", StringComparison.Ordinal)))
+                    {
+                        string rel = ValidateSafeRelativePath(targetRel.Substring("chrome-bridge/".Length));
+                        entries.Add(new PayloadEntry
+                        {
+                            ResourceName = resourceName,
+                            Category = "chrome-bridge",
+                            RelativePath = rel
+                        });
+                    }
+                    else if (targetRel.StartsWith("plugin-cua/", StringComparison.OrdinalIgnoreCase)
+                        && (resourceName.StartsWith("payload.plugincua.", StringComparison.Ordinal)
+                            || resourceName.StartsWith("payload.plugin-cua.", StringComparison.Ordinal)))
+                    {
+                        string rel = ValidateSafeRelativePath(targetRel.Substring("plugin-cua/".Length));
+                        entries.Add(new PayloadEntry
+                        {
+                            ResourceName = resourceName,
+                            Category = "plugin-cua",
                             RelativePath = rel
                         });
                     }
@@ -855,6 +879,24 @@ namespace AntiClaudePrismSuiteInstaller
             }
         }
 
+        public static string ResolveChromeBridgeTargetFromExtDir(string targetExtDir)
+        {
+            string stateDir;
+            string userDir;
+            ResolveAntiClaudeDirsFromExtDir(targetExtDir, out stateDir, out userDir);
+            string fullState = TrimTrailingSepPreserveRoot(stateDir);
+            string stateName = Path.GetFileName(fullState) ?? string.Empty;
+            string stateParent = Path.GetDirectoryName(fullState);
+            if (!string.IsNullOrEmpty(stateParent)
+                && !string.Equals(stateParent, fullState, StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(stateName, "anti-claude", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(stateName, ".anti-claude", StringComparison.OrdinalIgnoreCase)))
+            {
+                return Path.Combine(Path.Combine(stateParent, "prism-suite"), "chrome-bridge");
+            }
+            return Path.Combine(Path.Combine(fullState, "prism-suite"), "chrome-bridge");
+        }
+
         public static int InstallExtensions(string targetExtDir, List<PayloadEntry> entries, Action<string> log)
         {
             if (string.IsNullOrEmpty(targetExtDir) || targetExtDir.Trim().Length == 0)
@@ -880,6 +922,39 @@ namespace AntiClaudePrismSuiteInstaller
                 log(string.Format("  [扩展] 已写入: {0}", dest));
             }
             log(string.Format("[完成] Anti-Claude 棱镜扩展已安装至 {0}（共 {1} 个文件）", resolvedDir, count));
+
+            // Deploy Chrome/Edge MV3 CUA Bridge unpacked directory alongside prism-suite state
+            string bridgeDir = ResolveChromeBridgeTargetFromExtDir(targetExtDir);
+            string bridgeRoot = Path.GetPathRoot(bridgeDir) ?? string.Empty;
+            AssertSafeManagedDirectory(bridgeDir, bridgeRoot);
+            HashSet<string> bridgeExpected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int bridgeCount = 0;
+            for (int i = 0; i < entries.Count; i++)
+            {
+                PayloadEntry entry = entries[i];
+                if (!string.Equals(entry.Category, "chrome-bridge", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+                if (bridgeCount == 0)
+                {
+                    Directory.CreateDirectory(bridgeDir);
+                }
+                string dest = Path.GetFullPath(Path.Combine(bridgeDir, entry.RelativePath));
+                if (!IsInsideRoot(dest, Path.GetFullPath(bridgeDir)))
+                {
+                    throw new InvalidOperationException("安全拦截：浏览器扩展桥路径越界：" + dest);
+                }
+                WriteResourceToFile(asm, entry.ResourceName, dest);
+                bridgeExpected.Add(dest);
+                bridgeCount++;
+            }
+            if (bridgeCount > 0)
+            {
+                PruneObsoletePluginEntries(bridgeDir, Path.GetFullPath(bridgeDir), bridgeExpected, true);
+                log(string.Format("[完成] Chrome/Edge 受控浏览器桥扩展已部署至 {0}（共 {1} 个文件）", bridgeDir, bridgeCount));
+            }
+
             return count;
         }
 
@@ -919,6 +994,31 @@ namespace AntiClaudePrismSuiteInstaller
             {
                 log(string.Format("[完成] 已从 {0} 干净移除 {1} 个扩展文件（其余扩展已保留）", resolvedDir, removed));
             }
+
+            string bridgeDir = ResolveChromeBridgeTargetFromExtDir(targetExtDir);
+            if (Directory.Exists(bridgeDir) && !IsExistingReparsePoint(bridgeDir))
+            {
+                try
+                {
+                    Directory.Delete(bridgeDir, true);
+                    log(string.Format("[完成] 已移除 Chrome/Edge 受控扩展桥目录: {0}", bridgeDir));
+                    string suiteParent = Path.GetDirectoryName(bridgeDir);
+                    if (!string.IsNullOrEmpty(suiteParent)
+                        && string.Equals(Path.GetFileName(suiteParent), "prism-suite", StringComparison.OrdinalIgnoreCase)
+                        && Directory.Exists(suiteParent)
+                        && !IsExistingReparsePoint(suiteParent)
+                        && Directory.GetFiles(suiteParent).Length == 0
+                        && Directory.GetDirectories(suiteParent).Length == 0)
+                    {
+                        Directory.Delete(suiteParent, false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    log("[提示] 清理 chrome-bridge 目录时部分文件占用：" + ex.Message);
+                }
+            }
+
             return removed;
         }
 
@@ -965,7 +1065,46 @@ namespace AntiClaudePrismSuiteInstaller
             {
                 log(string.Format("  [插件] 已清理 {0} 个旧版残留条目", pruned));
             }
-            log(string.Format("[完成] Prism 文件工作台插件已部署至 {0}（共 {1} 个文件）", targetDir, count));
+            log(string.Format("[完成] Prism 工作台插件 (prism-files) 已部署至 {0}（共 {1} 个文件）", targetDir, count));
+
+            // Deploy companion default-off CUA plugin (prism-cua) in-place preserving directory inode when present in manifest
+            if (!string.IsNullOrEmpty(parentPluginsDir))
+            {
+                string cuaTargetDir = Path.GetFullPath(Path.Combine(parentPluginsDir, "prism-cua"));
+                if (string.Equals(Path.GetFileName(cuaTargetDir), "prism-cua", StringComparison.OrdinalIgnoreCase)
+                    && !IsExistingReparsePoint(cuaTargetDir))
+                {
+                    HashSet<string> cuaExpected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    int cuaCount = 0;
+                    for (int i = 0; i < entries.Count; i++)
+                    {
+                        PayloadEntry entry = entries[i];
+                        if (!string.Equals(entry.Category, "plugin-cua", StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+                        if (cuaCount == 0)
+                        {
+                            Directory.CreateDirectory(cuaTargetDir);
+                        }
+                        string cuaDest = Path.GetFullPath(Path.Combine(cuaTargetDir, entry.RelativePath));
+                        if (!IsInsideRoot(cuaDest, cuaTargetDir))
+                        {
+                            throw new InvalidOperationException("安全拦截：prism-cua 资源路径越界：" + cuaDest);
+                        }
+                        WriteResourceToFile(asm, entry.ResourceName, cuaDest);
+                        cuaExpected.Add(cuaDest);
+                        cuaCount++;
+                    }
+                    if (cuaCount > 0)
+                    {
+                        PruneObsoletePluginEntries(cuaTargetDir, cuaTargetDir, cuaExpected, true);
+                        log(string.Format("[完成] Prism 电脑操控受控插件 (prism-cua，默认关闭) 已部署至 {0}（共 {1} 个文件）", cuaTargetDir, cuaCount));
+                        count += cuaCount;
+                    }
+                }
+            }
+
             return count;
         }
 
@@ -1123,14 +1262,33 @@ namespace AntiClaudePrismSuiteInstaller
                 throw new InvalidOperationException("安全拦截：拒绝删除非 prism-files 目录：" + targetDir);
             }
 
-            if (Directory.Exists(targetDir))
+            bool removedAny = false;
+            if (Directory.Exists(targetDir) && !IsExistingReparsePoint(targetDir))
             {
                 Directory.Delete(targetDir, true);
                 log(string.Format("[完成] 已干净移除插件目录: {0}（其余同级插件未受影响）", targetDir));
-                return true;
+                removedAny = true;
             }
-            log(string.Format("[跳过] 未发现插件目录: {0}", targetDir));
-            return false;
+            else
+            {
+                log(string.Format("[跳过] 未发现插件目录: {0}", targetDir));
+            }
+
+            string parentPluginsDir = Path.GetDirectoryName(targetDir);
+            if (!string.IsNullOrEmpty(parentPluginsDir))
+            {
+                string cuaTargetDir = Path.GetFullPath(Path.Combine(parentPluginsDir, "prism-cua"));
+                if (string.Equals(Path.GetFileName(cuaTargetDir), "prism-cua", StringComparison.OrdinalIgnoreCase)
+                    && Directory.Exists(cuaTargetDir)
+                    && !IsExistingReparsePoint(cuaTargetDir))
+                {
+                    Directory.Delete(cuaTargetDir, true);
+                    log(string.Format("[完成] 已干净移除插件目录: {0}", cuaTargetDir));
+                    removedAny = true;
+                }
+            }
+
+            return removedAny;
         }
 
         public static WslDetectionResult DetectWslPluginTargets()
@@ -1421,7 +1579,7 @@ namespace AntiClaudePrismSuiteInstaller
 
         private void InitializeUi()
         {
-            Text = "Anti-Claude Prism Suite 一键安装器 v0.7.0（独立完整版）";
+            Text = "Anti-Claude Prism Suite 一键安装器 v0.8.0（独立完整版）";
             Size = new Size(740, 660);
             MinimumSize = new Size(660, 580);
             StartPosition = FormStartPosition.CenterScreen;
@@ -1439,14 +1597,14 @@ namespace AntiClaudePrismSuiteInstaller
             header.Paint += PaintHeaderAccent;
 
             Label lblTitle = new Label();
-            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.7.0";
+            lblTitle.Text = "Anti-Claude Prism Suite 一键安装器  v0.8.0";
             lblTitle.ForeColor = Color.White;
             lblTitle.Font = new Font("Microsoft YaHei UI", 13.5f, FontStyle.Bold);
             lblTitle.AutoSize = true;
             lblTitle.Location = new Point(22, 15);
 
             Label lblSubtitle = new Label();
-            lblSubtitle.Text = "已内嵌 Anti-Claude v3.1.9 增强内核 + 棱镜扩展套件 + Prism 工作台插件（无需额外安装任何前置项目）";
+            lblSubtitle.Text = "已内嵌 Anti-Claude v3.1.9 内核 + 棱镜扩展 + Prism 七合一工作台 + 受控电脑操控桥（零前置依赖）";
             lblSubtitle.ForeColor = Color.FromArgb(148, 163, 184);
             lblSubtitle.Font = new Font("Microsoft YaHei UI", 8.8f, FontStyle.Regular);
             lblSubtitle.AutoSize = true;
@@ -1482,7 +1640,7 @@ namespace AntiClaudePrismSuiteInstaller
             chkExtensions.Margin = new Padding(2, 6, 2, 4);
 
             chkWinPlugin = new CheckBox();
-            chkWinPlugin.Text = "安装 Prism 工作台 MCP App 插件（文件树 / 拖拽引用 / 历史检索 / 多账号安全接力）";
+            chkWinPlugin.Text = "安装 Prism 工作台与受控电脑操控插件（prism-files + 默认关闭的 prism-cua）";
             chkWinPlugin.Checked = true;
             chkWinPlugin.AutoSize = true;
             chkWinPlugin.Margin = new Padding(2, 4, 2, 4);
@@ -1887,7 +2045,7 @@ namespace AntiClaudePrismSuiteInstaller
                         MessageBox.Show(
                             this,
                             isInstall
-                                ? "Anti-Claude Prism Suite v0.7.0（独立完整版）安装成功！\n\n已一并部署内置 Anti-Claude v3.1.9 增强内核、棱镜扩展套件与 Prism 工作台插件，无需再单独安装其他项目。若 Antigravity 正在运行，重启一次应用即可全面生效。"
+                                ? "Anti-Claude Prism Suite v0.8.0（独立完整版）安装成功！\n\n已一并部署内置 Anti-Claude v3.1.9 增强内核、棱镜扩展套件、Chrome/Edge 扩展桥与双插件（prism-files + 默认关闭零开销的 prism-cua）。若 Antigravity 正在运行，重启一次应用即可全面生效。"
                                 : "已干净卸载选中的 Anti-Claude Prism Suite 组件。",
                             isInstall ? "安装成功" : "卸载完成",
                             MessageBoxButtons.OK,
